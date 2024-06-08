@@ -29,6 +29,8 @@ public:
 
     void onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action, glfw::ModifierKeyBit mods) override;
 
+    void onCursorDrag(double x, double y) override;
+
 private:
     std::string name;
 

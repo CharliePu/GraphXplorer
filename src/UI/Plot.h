@@ -33,6 +33,10 @@ public:
 
     std::vector<Mesh> prepareMeshes(const std::vector<Interval<bool>> & image);
 
+    void onCursorDrag(double x, double y) override;
+
+    void onWindowSizeChanged(int width, int height) override;
+
 private:
     std::shared_ptr<Graph> graph;
     std::shared_ptr<Formula> formula;

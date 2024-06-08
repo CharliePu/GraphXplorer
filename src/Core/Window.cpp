@@ -12,6 +12,7 @@ Window::Window(const int width, const int height, const std::string &name):
     window{std::make_shared<glfw::Window>(width, height, name.c_str())}
 {
     glfw::makeContextCurrent(*window);
+
 }
 
 bool Window::shouldClose() const

@@ -28,3 +28,15 @@ void MainScene::onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState act
     plot->onKeyPressed(key, scancode, action, mods);
     cmd->onKeyPressed(key, scancode, action, mods);
 }
+
+void MainScene::onCursorDrag(const double x, const double y)
+{
+    plot->onCursorDrag(x, y);
+    cmd->onCursorDrag(x, y);
+}
+
+void MainScene::onWindowSizeChanged(const int width, const int height)
+{
+    plot->onWindowSizeChanged(width, height);
+    cmd->onWindowSizeChanged(width, height);
+}

@@ -45,6 +45,7 @@ void Application::onWindowSizeChanged(const int width, const int height)
     // Swap buffers to allow smooth resizing
     window->swapBuffers();
 
+    window->onWindowSizeChanged(width, height);
     renderer->onWindowSizeChanged(width, height);
     sceneManager->onWindowSizeChanged(width, height);
 }
@@ -55,5 +56,12 @@ void Application::onKeyPressed(const glfw::KeyCode key, const int scancode, cons
     window->onKeyPressed(key, scancode, action, mods);
     renderer->onKeyPressed(key, scancode, action, mods);
     sceneManager->onKeyPressed(key, scancode, action, mods);
+}
+
+void Application::onCursorDrag(double x, double y)
+{
+    window->onCursorDrag(x, y);
+    renderer->onCursorDrag(x, y);
+    sceneManager->onCursorDrag(x, y);
 }
 

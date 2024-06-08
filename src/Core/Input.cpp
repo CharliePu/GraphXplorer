@@ -10,11 +10,16 @@ void UserInputHandler::onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeySt
 {
 }
 
+void UserInputHandler::onCursorDrag(double x, double y)
+{
+}
+
 void UserInputHandler::onWindowSizeChanged(int width, int height)
 {
 }
 
-Input::Input(const std::shared_ptr<Window> &window): window(window)
+Input::Input(const std::shared_ptr<Window> &window):
+mouseButtonState{glfw::MouseButtonState::Release}, window{window}
 {
     auto glfwWindow = window->getGlfwWindow();
 
@@ -26,6 +31,15 @@ Input::Input(const std::shared_ptr<Window> &window): window(window)
     glfwWindow->framebufferSizeEvent.setCallback([this](glfw::Window &window, int width, int height) {
         windowSizeCallback(window, width, height);
     });
+
+    glfwWindow->cursorPosEvent.setCallback([this](glfw::Window &window, double x, double y) {
+        cursorPosCallback(window, x, y);
+    });
+
+    glfwWindow->mouseButtonEvent.setCallback([this](glfw::Window &window, glfw::MouseButton button,
+                                                    glfw::MouseButtonState action, glfw::ModifierKeyBit mods) {
+        mouseButtonCallback(window, button, action, mods);
+    });
 }
 
 void Input::setInputHandlers(const std::shared_ptr<UserInputHandler> &handler)
@@ -34,12 +48,31 @@ void Input::setInputHandlers(const std::shared_ptr<UserInputHandler> &handler)
 }
 
 void Input::keyCallback(glfw::Window &window, glfw::KeyCode key, int scancode, glfw::KeyState action,
-                        glfw::ModifierKeyBit mods)
+                        glfw::ModifierKeyBit mods) const
 {
     inputHandler->onKeyPressed(key, scancode, action, mods);
 }
 
-void Input::windowSizeCallback(glfw::Window &window, int width, int height)
+void Input::windowSizeCallback(glfw::Window &window, int width, int height) const
 {
     inputHandler->onWindowSizeChanged(width, height);
+}
+
+void Input::cursorPosCallback(glfw::Window &window, double x, double y)
+{
+
+    if (mouseButtonState == glfw::MouseButtonState::Press)
+    {
+        inputHandler->onCursorDrag(x - mouseX, y - mouseY);
+    }
+
+    mouseX = x;
+    mouseY = y;
+}
+
+void Input::mouseButtonCallback(glfw::Window &window, glfw::MouseButton button, glfw::MouseButtonState action,
+                                glfw::ModifierKeyBit mods)
+{
+    if (button == glfw::MouseButton::Left)
+        mouseButtonState = action;
 }

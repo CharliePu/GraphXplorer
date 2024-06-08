@@ -6,7 +6,7 @@ find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 26)
 
 add_executable(GraphXplorer src/main.cpp
         src/Core/Application.cpp
@@ -53,5 +53,6 @@ target_link_libraries(GraphXplorer PRIVATE glfw glad::glad glm::glm)
 # Unit testing
 add_executable(GraphXplorerTests
         test/TestFormula.cpp
-        src/Math/Formula.cpp)
+        src/Math/Formula.cpp
+        test/TestComputeEngine.cpp)
 target_link_libraries(GraphXplorerTests PRIVATE Catch2::Catch2WithMain)

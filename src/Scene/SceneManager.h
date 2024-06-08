@@ -18,6 +18,10 @@ public:
 
     void onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action, glfw::ModifierKeyBit mods) override;
 
+    void onCursorDrag(double x, double y) override;
+
+    void onWindowSizeChanged(int width, int height) override;
+
 private:
     std::shared_ptr<MainScene> mainScene;
     std::shared_ptr<Scene> currentScene;

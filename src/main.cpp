@@ -2,7 +2,7 @@
 
 int main()
 {
-    const auto app = std::make_shared<Application>(1200, 800, "GraphXplorer");
+    const auto app = std::make_shared<Application>(800, 800, "GraphXplorer");
 
     app->run();
 

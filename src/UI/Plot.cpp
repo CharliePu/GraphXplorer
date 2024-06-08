@@ -33,14 +33,23 @@ Plot::Plot(const std::shared_ptr<ComputeEngine> &engine, const std::shared_ptr<W
         }
     }
 {
-    computeEngine->setComputeCompleteCallback([this]() {
-        graphRasterizer->rasterize(graph, xRange, yRange);
+    computeEngine->setComputeCompleteCallback([this](const ComputeRequest &result) {
+        graphRasterizer->rasterize(result.graph, result.xRange, result.yRange, result.windowWidth, result.windowHeight);
     });
 
     graphRasterizer->setRasterizeCompleteCallback([this](const std::vector<Interval<bool> > &image) {
         const auto meshes = prepareMeshes(image);
         plotCompleteCallback(meshes);
     });
+
+    // computeEngine->setComputeCompleteCallback([this](const std::shared_ptr<Graph> &graph, const ComputeRequest &request) {
+    //     graphRasterizer->rasterize(graph, xRange, yRange);
+    // });
+    //
+    // graphRasterizer->setRasterizeCompleteCallback([this](const std::vector<Interval<bool> > &image) {
+    //     const auto meshes = prepareMeshes(image);
+    //     plotCompleteCallback(meshes);
+    // });
 
     std::array vertices = {
         1.0f, 1.0f, 0.0f, // top right
@@ -81,13 +90,14 @@ void Plot::requestNewPlot(const std::string &input)
 
     graph = std::make_shared<Graph>();
 
-    computeEngine->run(graph, {formula, xRange, yRange});
+    computeEngine->processGraph({graph, formula, xRange, yRange, window->getWidth(), window->getHeight()});
 }
 
 std::vector<Mesh> Plot::prepareMeshes(const std::vector<Interval<bool> > &image)
 {
     auto getGradent = [](const Interval<bool> &interval) -> float {
-        return static_cast<float>(interval.lower * 0.5 + interval.upper * 0.5);
+        // return static_cast<float>(interval.lower * 0.5 + interval.upper * 0.5);
+        return interval == IntervalValues::True;
     };
 
     std::vector<float> data;
@@ -111,4 +121,25 @@ std::vector<Mesh> Plot::prepareMeshes(const std::vector<Interval<bool> > &image)
     );
 
     return {{shader, vao, std::vector{texture}}};
+}
+
+void Plot::onCursorDrag(const double x, const double y)
+{
+    if (formula)
+    {
+        const auto windowWidth{window->getWidth()};
+        const auto windowHeight{window->getHeight()};
+
+        const auto deltaX{xRange.size() / windowWidth};
+        const auto deltaY{yRange.size() / windowHeight};
+
+        xRange = xRange + x * -deltaX;
+        yRange = yRange + y * deltaY;
+
+        computeEngine->processGraph({graph, formula, xRange, yRange, windowWidth, windowHeight});
+    }
+}
+
+void Plot::onWindowSizeChanged(const int width, const int height)
+{
 }

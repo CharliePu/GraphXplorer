@@ -15,6 +15,31 @@
 #include "../Render/Mesh.h"
 #include "../Core/Window.h"
 
+void Plot::prepareVertices() const
+{
+    std::array vertices = {
+        1.0f, 1.0f, 0.0f, // top right
+        1.0f, -1.0f, 0.0f, // bottom right
+        -1.0f, -1.0f, 0.0f, // bottom left
+        -1.0f, 1.0f, 0.0f // top left
+    };
+
+    std::array<unsigned int, 6> indices = {
+        0, 1, 3, // first Triangle
+        1, 2, 3 // second Triangle
+    };
+
+    staplegl::vertex_buffer vbo{vertices, staplegl::driver_draw_hint::STATIC_DRAW};
+    staplegl::index_buffer ebo{indices};
+
+    staplegl::vertex_buffer_layout const layout{{staplegl::shader_data_type::u_type::vec3, "aPos"}};
+
+    vbo.set_layout(layout);
+
+    vao->add_vertex_buffer(std::move(vbo));
+    vao->set_index_buffer(std::move(ebo));
+}
+
 Plot::Plot(const std::shared_ptr<ComputeEngine> &engine, const std::shared_ptr<Window> &window): graph{},
     formula{},
     computeEngine{engine},
@@ -42,36 +67,7 @@ Plot::Plot(const std::shared_ptr<ComputeEngine> &engine, const std::shared_ptr<W
         plotCompleteCallback(meshes);
     });
 
-    // computeEngine->setComputeCompleteCallback([this](const std::shared_ptr<Graph> &graph, const ComputeRequest &request) {
-    //     graphRasterizer->rasterize(graph, xRange, yRange);
-    // });
-    //
-    // graphRasterizer->setRasterizeCompleteCallback([this](const std::vector<Interval<bool> > &image) {
-    //     const auto meshes = prepareMeshes(image);
-    //     plotCompleteCallback(meshes);
-    // });
-
-    std::array vertices = {
-        1.0f, 1.0f, 0.0f, // top right
-        1.0f, -1.0f, 0.0f, // bottom right
-        -1.0f, -1.0f, 0.0f, // bottom left
-        -1.0f, 1.0f, 0.0f // top left
-    };
-
-    std::array<unsigned int, 6> indices = {
-        0, 1, 3, // first Triangle
-        1, 2, 3 // second Triangle
-    };
-
-    staplegl::vertex_buffer vbo{vertices, staplegl::driver_draw_hint::STATIC_DRAW};
-    staplegl::index_buffer ebo{indices};
-
-    staplegl::vertex_buffer_layout const layout{{staplegl::shader_data_type::u_type::vec3, "aPos"}};
-
-    vbo.set_layout(layout);
-
-    vao->add_vertex_buffer(std::move(vbo));
-    vao->set_index_buffer(std::move(ebo));
+    prepareVertices();
 }
 
 void Plot::setPlotCompleteCallback(const std::function<void(const std::vector<Mesh> &)> &callback)
@@ -96,8 +92,7 @@ void Plot::requestNewPlot(const std::string &input)
 std::vector<Mesh> Plot::prepareMeshes(const std::vector<Interval<bool> > &image)
 {
     auto getGradent = [](const Interval<bool> &interval) -> float {
-        // return static_cast<float>(interval.lower * 0.5 + interval.upper * 0.5);
-        return interval == IntervalValues::True;
+        return static_cast<float>(interval.lower * 0.5 + interval.upper * 0.5);
     };
 
     std::vector<float> data;
@@ -151,4 +146,14 @@ void Plot::onWindowSizeChanged(const int width, const int height)
     xRange = {xRangeMid - xRangeSize / 2.0, xRangeMid + xRangeSize / 2.0};
 
     computeEngine->processGraph({graph, formula, xRange, yRange, width, height});
+}
+
+Interval<double> Plot::getXRanges() const
+{
+    return xRange;
+}
+
+Interval<double> Plot::getYRanges() const
+{
+    return yRange;
 }

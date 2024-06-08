@@ -23,6 +23,8 @@ class ComputeEngine;
 class Plot: public UIComponent {
 
 public:
+    void prepareVertices() const;
+
     Plot(const std::shared_ptr<ComputeEngine> &engine, const std::shared_ptr<Window> &window);
 
     void setPlotCompleteCallback(const std::function<void(const std::vector<Mesh> &)> &callback);
@@ -36,6 +38,10 @@ public:
     void onCursorDrag(double x, double y) override;
 
     void onWindowSizeChanged(int width, int height) override;
+
+    Interval<double> getXRanges() const;
+
+    Interval<double> getYRanges() const;
 
 private:
     std::shared_ptr<Graph> graph;

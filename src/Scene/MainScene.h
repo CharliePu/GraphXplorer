@@ -7,6 +7,7 @@
 #include "Scene.h"
 
 
+class Grid;
 class ComputeEngine;
 class Renderer;
 class ConsoleInput;
@@ -25,6 +26,7 @@ public:
 private:
 
     std::shared_ptr<Plot> plot;
+    std::shared_ptr<Grid> grid;
     std::shared_ptr<ConsoleInput> cmd;
 };
 

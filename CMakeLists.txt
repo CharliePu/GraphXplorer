@@ -44,6 +44,7 @@ add_executable(GraphXplorer src/main.cpp
         src/Core/Window.cpp
         src/Core/Window.h
         src/UI/Grid.h
+        src/UI/Grid.cpp
 )
 
 target_include_directories(GraphXplorer PRIVATE ${CMAKE_SOURCE_DIR}/include)

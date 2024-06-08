@@ -9,11 +9,11 @@
 
 void ConsoleInput::inputFromConsole()
 {
-    // std::cout<<"Enter formula: ";
-    // std::getline(std::cin, line);
-    // inputCompleteCallback(line);
+    std::cout<<"Enter formula: ";
+    std::getline(std::cin, line);
+    inputCompleteCallback(line);
 
-    inputCompleteCallback("xx+5yy<25");
+    // inputCompleteCallback("xx+yy<25");
 }
 
 void ConsoleInput::setInputCompleteCallback(const std::function<void(std::string)> &callback)

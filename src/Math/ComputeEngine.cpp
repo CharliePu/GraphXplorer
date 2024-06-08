@@ -21,6 +21,45 @@ void ComputeEngine::setComputeCompleteCallback(const std::function<void(const Co
     computeCompleteCallback = callback;
 }
 
+std::pair<Interval<double>, Interval<double>> ComputeEngine::getRoundedRanges(const ComputeRequest &request)
+{
+    assert(request.graph);
+
+    Interval<double> xRange{}, yRange{};
+    if (request.graph->root)
+    {
+        xRange = {std::min(request.xRange.lower, request.graph->root->xRange.lower),
+    std::max(request.xRange.upper, request.graph->root->xRange.upper)};
+        yRange = {std::min(request.yRange.lower, request.graph->root->yRange.lower),
+        std::max(request.yRange.upper, request.graph->root->yRange.upper)};
+    }
+    else
+    {
+        xRange = request.xRange;
+        yRange = request.yRange;
+    }
+
+    const auto size = std::exp2(std::ceil(std::log2(std::max(
+        {
+            std::abs(xRange.lower),
+            std::abs(xRange.upper),
+            std::abs(yRange.lower),
+            std::abs(yRange.upper)
+        }))));
+
+    xRange = {
+        std::floor(xRange.lower / size) * size,
+        std::ceil(xRange.upper / size) * size
+    };
+
+    yRange = {
+        std::floor(yRange.lower / size) * size,
+        std::ceil(yRange.upper / size) * size
+    };
+
+    return {xRange, yRange};
+}
+
 bool ComputeEngine::isPowerOfTwo(double size)
 {
     return std::abs(std::log2(size) - std::floor(std::log2(size))) < std::numeric_limits<double>::epsilon();
@@ -87,7 +126,8 @@ std::unique_ptr<GraphNode> ComputeEngine::createNode(GraphNode *parent, Interval
 }
 
 
-void ComputeEngine::expandGraph(const std::shared_ptr<Graph> &graph, const Interval<double> targetXRange,
+void ComputeEngine::expandGraph(const std::shared_ptr<Graph> &graph,
+                                const Interval<double> targetXRange,
                                 const Interval<double> targetYRange)
 {
     assert(targetXRange.strictlyContains(getGraphXRange(graph)));
@@ -140,6 +180,61 @@ void ComputeEngine::subdivideNode(const std::unique_ptr<GraphNode> &curr)
     children[3] = createNode(curr.get(), {midX, xUpper}, {midY, yUpper});
 }
 
+void ComputeEngine::recursiveComputeNodes(const ComputeRequest &request, const std::shared_ptr<Graph> &graph)
+{
+    const auto rangePerPixel =
+            std::exp2(std::floor(std::log2(
+                std::min(request.xRange.size(), request.yRange.size()) / std::max(
+                    request.windowWidth, request.windowHeight))));
+
+    std::vector<std::unique_ptr<GraphNode> *> nodes;
+    std::queue<std::unique_ptr<GraphNode> *> nodeQueue;
+    nodeQueue.push(&graph->root);
+
+
+    while (!nodeQueue.empty())
+    {
+        auto curr = nodeQueue.front();
+        nodeQueue.pop();
+
+        if ((*curr)->xRange.size() <= rangePerPixel && (*curr)->yRange.size() <= rangePerPixel)
+        {
+            continue;
+        }
+
+        if (futuresMap.contains(curr))
+        {
+            futuresMap[curr].wait();
+            futuresMap.erase(curr);
+        }
+
+        if ((*curr)->solution != IntervalValues::Unknown)
+        {
+            continue;
+        }
+
+        if (nodeIsLeaf(*curr))
+        {
+            subdivideNode(*curr);
+        }
+
+        for (auto &child: (*curr)->children)
+        {
+            nodeQueue.push(&child);
+
+            if (child->solution == IntervalValues::Unknown)
+            {
+                futuresMap.emplace(&child, threadPool.addTask(computeTask, &child, request.formula));
+                nodes.push_back(&child);
+            }
+        }
+    }
+
+    // TODO: subpixel refinement
+    currentTask = std::make_shared<ComputeTask>(request, nodes);
+    glfw::postEmptyEvent();
+}
+
 void ComputeEngine::processGraph(const ComputeRequest &request)
 {
     if (!request.formula)
@@ -154,87 +249,33 @@ void ComputeEngine::processGraph(const ComputeRequest &request)
         currentTask.reset();
     }
 
-    // Round the x range and y range to the nearest power of two
-    auto toNearestPowerOfTwo = [](const double value) -> double {
-        return std::exp2(std::ceil(std::log2(value)));
-    };
 
-    const auto gridSize{
-        (std::max({
-            toNearestPowerOfTwo(std::abs(request.xRange.lower)),
-            toNearestPowerOfTwo(std::abs(request.xRange.upper)),
-            toNearestPowerOfTwo(std::abs(request.yRange.lower)),
-            toNearestPowerOfTwo(std::abs(request.yRange.upper))
-        }))
-    };
+    auto [xRange, yRange] = getRoundedRanges(request);
 
-    const Interval<double> roundedXRange{
-        std::floor(request.xRange.lower / gridSize) * gridSize,
-        std::ceil(request.xRange.upper / gridSize) * gridSize
-    };
-    const Interval<double> roundedYRange{
-        std::floor(request.yRange.lower / gridSize) * gridSize,
-        std::ceil(request.yRange.upper / gridSize) * gridSize
-    };
-
-    auto &graph = request.graph;
-
-    if (!graph->root)
+    // Skip if requested range is contained in graph
+    if (request.graph->root && request.graph->root->xRange.contains(xRange) && request.graph->root->yRange.contains(yRange))
     {
-        graph->root = createNode(nullptr, roundedXRange, roundedYRange);
-    }
-    else if (!graph->root->xRange.contains(request.xRange) || !graph->root->yRange.contains(request.yRange))
-    {
-        expandGraph(graph, roundedXRange, roundedYRange);
-        assert(graph->root->xRange.contains(request.xRange));
-        assert(graph->root->yRange.contains(request.yRange));
+        std::vector<std::unique_ptr<GraphNode> *> nodes;
+        currentTask = std::make_shared<ComputeTask>(request, nodes);
+        glfw::postEmptyEvent();
+        return;
     }
 
-    // Subdivide graph to pixel level
-    const auto rangePerPixel =
-            std::exp2(std::floor(std::log2(
-                std::min(request.xRange.size(), request.yRange.size()) / std::max(
-                    window->getWidth(), window->getHeight()))));
-
-    std::vector<std::unique_ptr<GraphNode> *> nodes;
-    std::queue<std::unique_ptr<GraphNode> *> nodeQueue;
-    nodeQueue.push(&graph->root);
-
-
-    while (!nodeQueue.empty())
+    // If the graph is empty, create a new root node
+    if (!request.graph->root)
     {
-        auto curr = nodeQueue.front();
-        nodeQueue.pop();
-
-        if ((*curr)->xRange.size() <= rangePerPixel && (*curr)->yRange.size() <= rangePerPixel)
-        {
-            break;
-        }
-
-        if (futuresMap.contains(curr))
-        {
-            futuresMap[curr].wait();
-            futuresMap.erase(curr);
-        }
-
-        if ((*curr)->solution == IntervalValues::Unknown && nodeIsLeaf(*curr))
-        {
-            subdivideNode(*curr);
-
-            for (auto &child: (*curr)->children)
-            {
-                nodeQueue.push(&child);
-
-                futuresMap.emplace(&child, threadPool.addTask(computeTask, &child, request.formula));
-                nodes.push_back(&child);
-            }
-        }
+        request.graph->root = createNode(nullptr, xRange, yRange);
     }
 
-    // TODO: subpixel refinement
+    // Expand the graph to contain the requested range when necessary
+    if (xRange.strictlyContains(request.graph->root->xRange) || yRange.strictlyContains(request.graph->root->yRange))
+    {
+        expandGraph(request.graph, xRange, yRange);
+        assert(request.graph->root->xRange.contains(request.xRange));
+        assert(request.graph->root->yRange.contains(request.yRange));
+    }
 
-    currentTask = std::make_shared<ComputeTask>(request, nodes);
-    glfw::postEmptyEvent();
+    recursiveComputeNodes(request, request.graph);
 }
 
 void ComputeEngine::pollAsyncStates()

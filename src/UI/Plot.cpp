@@ -20,8 +20,8 @@ Plot::Plot(const std::shared_ptr<ComputeEngine> &engine, const std::shared_ptr<W
     computeEngine{engine},
     graphRasterizer{std::make_shared<GraphRasterizer>(window)},
     window{window},
-    yRange{-10.0, 10.0},
     xRange{-10.0, 10.0},
+    yRange{-10.0, 10.0},
     vao{std::make_shared<staplegl::vertex_array>()},
     shader{
         new staplegl::shader_program{
@@ -142,4 +142,13 @@ void Plot::onCursorDrag(const double x, const double y)
 
 void Plot::onWindowSizeChanged(const int width, const int height)
 {
+    auto ratio = width / static_cast<double>(height);
+
+    double xRangeSize = yRange.size() * ratio;
+
+    double xRangeMid = (xRange.lower + xRange.upper) / 2.0;
+
+    xRange = {xRangeMid - xRangeSize / 2.0, xRangeMid + xRangeSize / 2.0};
+
+    computeEngine->processGraph({graph, formula, xRange, yRange, width, height});
 }

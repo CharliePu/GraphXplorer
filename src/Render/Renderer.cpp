@@ -16,7 +16,7 @@ Renderer::Renderer(const GLADloadproc &gladLoader)
         throw std::runtime_error("Failed to initialize GLAD");
     }
 
-    glClearColor(0,0,0,1);
+    glClearColor(0,0.1,0.2,1);
 }
 
 void Renderer::clear()

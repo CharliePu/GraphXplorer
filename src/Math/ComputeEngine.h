@@ -42,13 +42,14 @@ public:
 
     void setComputeCompleteCallback(const std::function<void(const ComputeRequest &)> &callback);
 
+
     void processGraph(const ComputeRequest &request);
 
     void pollAsyncStates();
 
 private:
-
-    static void expandGraph(const std::shared_ptr<Graph> &graph, Interval<double> targetXRange, Interval<double> targetYRange);
+    static void expandGraph(const std::shared_ptr<Graph> &graph, Interval<double> targetXRange,
+                            Interval<double> targetYRange);
 
     static void computeTask(const std::unique_ptr<GraphNode> *node, const std::shared_ptr<Formula> &formula);
 
@@ -58,16 +59,23 @@ private:
 
     static bool isPowerOfTwo(double size);
 
-    static bool nodesIntervalMatches(const std::unique_ptr<GraphNode> & curr, const std::unique_ptr<GraphNode> & root);
+    static bool nodesIntervalMatches(const std::unique_ptr<GraphNode> &curr, const std::unique_ptr<GraphNode> &root);
+
+    static std::pair<Interval<double>, Interval<double> > getRoundedRanges(const ComputeRequest &request);
 
     static bool nodeIsLeaf(const std::unique_ptr<GraphNode> &curr);
 
-    static std::unique_ptr<GraphNode> * getMatchingChildNode(const std::unique_ptr<GraphNode> & parentNode, const std::unique_ptr<GraphNode> & nodeToMatch);
+    static std::unique_ptr<GraphNode> *getMatchingChildNode(const std::unique_ptr<GraphNode> &parentNode,
+                                                            const std::unique_ptr<GraphNode> &nodeToMatch);
 
-    static void expandGraphToPlaceNode(std::unique_ptr<GraphNode> &nodeToExpand, std::unique_ptr<GraphNode> &nodeToPlace);
+    static void expandGraphToPlaceNode(std::unique_ptr<GraphNode> &nodeToExpand,
+                                       std::unique_ptr<GraphNode> &nodeToPlace);
+
     static std::unique_ptr<GraphNode> createNode(GraphNode *parent, Interval<double> xRange, Interval<double> yRange);
 
     static void subdivideNode(const std::unique_ptr<GraphNode> &curr);
+
+    void recursiveComputeNodes(const ComputeRequest &request, const std::shared_ptr<Graph> &graph);
 
     std::shared_ptr<Window> window;
 
@@ -75,7 +83,7 @@ private:
 
     ThreadPool threadPool;
 
-    std::unordered_map<std::unique_ptr<GraphNode> *, std::future<void>> futuresMap;
+    std::unordered_map<std::unique_ptr<GraphNode> *, std::future<void> > futuresMap;
 
     std::shared_ptr<ComputeTask> currentTask;
 };

@@ -18,3 +18,13 @@ void SceneManager::onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState 
 {
     currentScene->onKeyPressed(key, scancode, action, mods);
 }
+
+void SceneManager::onCursorDrag(double x, double y)
+{
+    currentScene->onCursorDrag(x, y);
+}
+
+void SceneManager::onWindowSizeChanged(int width, int height)
+{
+    currentScene->onWindowSizeChanged(width, height);
+}

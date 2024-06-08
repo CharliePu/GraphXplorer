@@ -12,41 +12,147 @@
 #include "Formula.h"
 #include "Graph.h"
 
-ComputeEngine::ComputeEngine(const std::shared_ptr<Window> &window) : window{window}, newTask{false}
+ComputeEngine::ComputeEngine(const std::shared_ptr<Window> &window) : window{window}
 {
 }
 
-void ComputeEngine::setComputeCompleteCallback(const std::function<void()> &callback)
+void ComputeEngine::setComputeCompleteCallback(const std::function<void(const ComputeRequest &)> &callback)
 {
     computeCompleteCallback = callback;
 }
 
-void ComputeEngine::expandGraph(const std::shared_ptr<Graph> &graph, const Interval<double> xRange,
-                                const Interval<double> yRange)
+bool ComputeEngine::isPowerOfTwo(double size)
 {
-    std::queue<GraphNode *> nodeQueue;
-    auto newRoot = std::make_unique<GraphNode>(nullptr, xRange, yRange);
-    auto curr = newRoot.get();
+    return std::abs(std::log2(size) - std::floor(std::log2(size))) < std::numeric_limits<double>::epsilon();
+}
 
-    while (!curr->matches(graph->getXRange(), graph->getYRange()))
+bool ComputeEngine::nodesIntervalMatches(const std::unique_ptr<GraphNode> &curr, const std::unique_ptr<GraphNode> &root)
+{
+    return curr->xRange == root->xRange && curr->yRange == root->yRange;
+}
+
+bool ComputeEngine::nodeIsLeaf(const std::unique_ptr<GraphNode> &curr)
+{
+    assert(curr);
+
+    return !curr->children[0] && !curr->children[1] && !curr->children[2] && !curr->children[3];
+}
+
+std::unique_ptr<GraphNode> *ComputeEngine::getMatchingChildNode(const std::unique_ptr<GraphNode> &parentNode,
+                                                                const std::unique_ptr<GraphNode> &nodeToMatch)
+{
+    assert(parentNode->xRange.contains(nodeToMatch->xRange));
+    assert(parentNode->yRange.contains(nodeToMatch->yRange));
+    assert(isPowerOfTwo(nodeToMatch->xRange.size()));
+    assert(isPowerOfTwo(nodeToMatch->yRange.size()));
+    assert(!nodeIsLeaf(parentNode));
+
+    const auto index1 = parentNode->children[0]->xRange.upper < nodeToMatch->xRange.upper;
+    const auto index2 = parentNode->children[0]->yRange.upper < nodeToMatch->yRange.upper;
+    const auto childIndex = index1 + 2 * index2;
+
+    return &parentNode->children[childIndex];
+}
+
+void ComputeEngine::expandGraphToPlaceNode(std::unique_ptr<GraphNode> &nodeToExpand,
+                                           std::unique_ptr<GraphNode> &nodeToPlace)
+{
+    auto curr = &nodeToExpand;
+
+    while (!nodesIntervalMatches(*curr, nodeToPlace))
     {
-        curr->subdivide();
-        curr = curr->findChild(graph->getXRange(), graph->getYRange());
+        if (nodeIsLeaf(*curr))
+        {
+            subdivideNode(*curr);
+        }
+        curr = getMatchingChildNode(*curr, nodeToPlace);
     }
 
-    auto childIdx = curr->parent->findChildIndex(graph->getXRange(), graph->getYRange());
-    curr->parent->children[childIdx] = std::move(graph->root);
+    *curr = std::move(nodeToPlace);
+}
+
+std::unique_ptr<GraphNode> ComputeEngine::createNode(GraphNode *parent, Interval<double> xRange,
+                                                     Interval<double> yRange)
+{
+    auto node = std::make_unique<GraphNode>();
+    node->parent = parent;
+    node->solution = IntervalValues::Unknown;
+    node->xRange = xRange;
+    node->yRange = yRange;
+    for (auto &child: node->children)
+    {
+        child = nullptr;
+    }
+    return node;
+}
+
+
+void ComputeEngine::expandGraph(const std::shared_ptr<Graph> &graph, const Interval<double> targetXRange,
+                                const Interval<double> targetYRange)
+{
+    assert(targetXRange.strictlyContains(getGraphXRange(graph)));
+    assert(targetYRange.strictlyContains(getGraphYRange(graph)));
+    assert(isPowerOfTwo(targetXRange.size()));
+    assert(isPowerOfTwo(targetYRange.size()));
+    assert(isPowerOfTwo(getGraphXRange(graph).size()));
+    assert(isPowerOfTwo(getGraphYRange(graph).size()));
+
+    auto newRoot = createNode(nullptr, targetXRange, targetYRange);
+    auto &oldRoot = graph->root;
+
+    // If old root is not computed yet, just replace it with the new root
+    if (nodeIsLeaf(oldRoot))
+    {
+        graph->root = std::move(newRoot);
+        return;
+    }
+
+    if (oldRoot->xRange.crossesZero() || oldRoot->yRange.crossesZero())
+    {
+        for (auto &child: oldRoot->children)
+        {
+            expandGraphToPlaceNode(newRoot, child);
+        }
+    }
+    else
+    {
+        expandGraphToPlaceNode(newRoot, oldRoot);
+    }
+
     graph->root = std::move(newRoot);
 }
 
-void ComputeEngine::run(const std::shared_ptr<Graph> &graph, const ComputeRequest &request)
+void ComputeEngine::subdivideNode(const std::unique_ptr<GraphNode> &curr)
+{
+    assert(nodeIsLeaf(curr));
+
+    const auto &[xLower, xUpper] = curr->xRange;
+    const auto &[yLower, yUpper] = curr->yRange;
+
+    const auto midX = (xLower + xUpper) / 2.0;
+    const auto midY = (yLower + yUpper) / 2.0;
+
+    auto &children = curr->children;
+
+    children[0] = createNode(curr.get(), {xLower, midX}, {yLower, midY});
+    children[1] = createNode(curr.get(), {midX, xUpper}, {yLower, midY});
+    children[2] = createNode(curr.get(), {xLower, midX}, {midY, yUpper});
+    children[3] = createNode(curr.get(), {midX, xUpper}, {midY, yUpper});
+}
+
+void ComputeEngine::processGraph(const ComputeRequest &request)
 {
     if (!request.formula)
     {
         throw std::invalid_argument("Formula must not be null");
     }
 
-    newTask = true;
+    // Threads will still be running for previous task
+    // However, the corresponding callback will not be called
+    if (currentTask)
+    {
+        currentTask.reset();
+    }
 
     // Round the x range and y range to the nearest power of two
     auto toNearestPowerOfTwo = [](const double value) -> double {
@@ -62,26 +168,26 @@ void ComputeEngine::run(const std::shared_ptr<Graph> &graph, const ComputeReques
         }))
     };
 
-    const Interval<double> xRange{
+    const Interval<double> roundedXRange{
         std::floor(request.xRange.lower / gridSize) * gridSize,
         std::ceil(request.xRange.upper / gridSize) * gridSize
     };
-    const Interval<double> yRange{
+    const Interval<double> roundedYRange{
         std::floor(request.yRange.lower / gridSize) * gridSize,
         std::ceil(request.yRange.upper / gridSize) * gridSize
     };
 
+    auto &graph = request.graph;
 
-    if (graph->empty())
+    if (!graph->root)
     {
-        graph->root = std::make_unique<GraphNode>(nullptr, xRange, yRange);
+        graph->root = createNode(nullptr, roundedXRange, roundedYRange);
     }
-    else
+    else if (!graph->root->xRange.contains(request.xRange) || !graph->root->yRange.contains(request.yRange))
     {
-        if (xRange.strictlyContains(graph->getXRange()) && yRange.strictlyContains(graph->getYRange()))
-        {
-            expandGraph(graph, xRange, yRange);
-        }
+        expandGraph(graph, roundedXRange, roundedYRange);
+        assert(graph->root->xRange.contains(request.xRange));
+        assert(graph->root->yRange.contains(request.yRange));
     }
 
     // Subdivide graph to pixel level
@@ -90,8 +196,9 @@ void ComputeEngine::run(const std::shared_ptr<Graph> &graph, const ComputeReques
                 std::min(request.xRange.size(), request.yRange.size()) / std::max(
                     window->getWidth(), window->getHeight()))));
 
-    std::queue<GraphNode *> nodeQueue;
-    nodeQueue.push(graph->root.get());
+    std::vector<std::unique_ptr<GraphNode> *> nodes;
+    std::queue<std::unique_ptr<GraphNode> *> nodeQueue;
+    nodeQueue.push(&graph->root);
 
 
     while (!nodeQueue.empty())
@@ -99,82 +206,78 @@ void ComputeEngine::run(const std::shared_ptr<Graph> &graph, const ComputeReques
         auto curr = nodeQueue.front();
         nodeQueue.pop();
 
-        if (curr->xRange.size() <= rangePerPixel && curr->yRange.size() <= rangePerPixel)
+        if ((*curr)->xRange.size() <= rangePerPixel && (*curr)->yRange.size() <= rangePerPixel)
         {
             break;
         }
 
-        if (futures.contains(curr))
+        if (futuresMap.contains(curr))
         {
-            futures[curr].wait();
-            // std::cout<<"x=["<<curr->xRange.lower<<", "<<curr->xRange.upper<<"] y=["<<curr->yRange.lower<<", "<<curr->yRange.upper<<"] => ";
-            // if (curr->solution == IntervalValues::True)
-            // {
-            //     std::cout<<"True"<<std::endl;
-            // } else if (curr->solution == IntervalValues::False)
-            // {
-            //     std::cout<<"False"<<std::endl;
-            // } else
-            // {
-            //     std::cout<<"Unknown"<<std::endl;
-            // }
-
-            futures.erase(curr);
+            futuresMap[curr].wait();
+            futuresMap.erase(curr);
         }
 
-        if (curr->solution == IntervalValues::Unknown && curr->isLeaf())
+        if ((*curr)->solution == IntervalValues::Unknown && nodeIsLeaf(*curr))
         {
-            curr->subdivide();
+            subdivideNode(*curr);
 
-            for (const auto &child: curr->children)
+            for (auto &child: (*curr)->children)
             {
-                nodeQueue.push(child.get());
+                nodeQueue.push(&child);
 
-                futures.emplace(child.get(), threadPool.addTask(computeTask, child.get(), request.formula));
+                futuresMap.emplace(&child, threadPool.addTask(computeTask, &child, request.formula));
+                nodes.push_back(&child);
             }
         }
     }
 
     // TODO: subpixel refinement
 
+    currentTask = std::make_shared<ComputeTask>(request, nodes);
     glfw::postEmptyEvent();
 }
 
 void ComputeEngine::pollAsyncStates()
 {
-    for (auto it = futures.begin(); it != futures.end();)
+    if (!currentTask)
     {
-        if (it->second.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+        return;
+    }
+
+    bool taskCompleted{true};
+
+    for (const auto &node: currentTask->nodes)
+    {
+        if (auto futureResult = futuresMap.find(node);
+            futureResult == futuresMap.end() || futureResult->second.wait_for(std::chrono::seconds(0)) ==
+            std::future_status::ready)
         {
-            it = futures.erase(it);
+            futuresMap.erase(node);
         }
         else
         {
-            ++it;
+            taskCompleted = false;
+            break;
         }
     }
 
-    if (newTask)
+    if (taskCompleted)
     {
-        if (futures.empty())
-        {
-            computeCompleteCallback();
-            newTask = false;
-        }
-        else
-        {
-            glfw::postEmptyEvent();
-        }
+        computeCompleteCallback(currentTask->request);
+        currentTask.reset();
+    }
+    else
+    {
+        glfw::postEmptyEvent();
     }
 }
 
-// TODO: problem: if graph is deleted, threads will access deleted nodes
-void ComputeEngine::computeTask(GraphNode *node, const std::shared_ptr<Formula> &formula)
+void ComputeEngine::computeTask(const std::unique_ptr<GraphNode> *node, const std::shared_ptr<Formula> &formula)
 {
     auto postfixExpr = formula->getPostfixExpression();
 
-    const auto x = ComputeInterval{node->xRange};
-    const auto y = ComputeInterval{node->yRange};
+    const auto x = ComputeInterval{(*node)->xRange};
+    const auto y = ComputeInterval{(*node)->yRange};
 
     std::stack<ComputeInterval> valueStack;
 
@@ -237,5 +340,19 @@ void ComputeEngine::computeTask(GraphNode *node, const std::shared_ptr<Formula> 
         }
     }
 
-    node->solution = result;
+    (*node)->solution = result;
+}
+
+Interval<double> &ComputeEngine::getGraphXRange(const std::shared_ptr<Graph> &graph)
+{
+    assert(graph->root);
+
+    return graph->root->xRange;
+}
+
+Interval<double> &ComputeEngine::getGraphYRange(const std::shared_ptr<Graph> &graph)
+{
+    assert(graph->root);
+
+    return graph->root->yRange;
 }

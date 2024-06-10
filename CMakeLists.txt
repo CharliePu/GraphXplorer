@@ -62,3 +62,18 @@ add_executable(GraphXplorerTests
         src/Math/Formula.cpp
         test/TestComputeEngine.cpp)
 target_link_libraries(GraphXplorerTests PRIVATE Catch2::Catch2WithMain)
+
+
+
+# Copy fonts and shaders to the build directory
+file(GLOB SHADER_FILES "${CMAKE_SOURCE_DIR}/shader/*")
+file(GLOB FONT_FILES "${CMAKE_SOURCE_DIR}/font/*")
+
+# Use generator expressions to handle different configurations and generators
+add_custom_command(
+        TARGET GraphXplorer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:GraphXplorer>/shader
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/shader $<TARGET_FILE_DIR:GraphXplorer>/shader
+        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:GraphXplorer>/font
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/font $<TARGET_FILE_DIR:GraphXplorer>/font
+)

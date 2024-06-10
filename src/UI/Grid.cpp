@@ -16,11 +16,11 @@ Grid::Grid(const std::shared_ptr<Window> &window): window{window},
                                                            "grid_shader",
                                                            {
                                                                std::pair{
-                                                                   staplegl::shader_type::vertex, "../shader/grid.vert"
+                                                                   staplegl::shader_type::vertex, "./shader/grid.vert"
                                                                },
                                                                std::pair{
                                                                    staplegl::shader_type::fragment,
-                                                                   "../shader/grid.frag"
+                                                                   "./shader/grid.frag"
                                                                }
                                                            }
                                                        }

@@ -5,7 +5,7 @@
 #include "Plot.h"
 
 #include <glad/glad.h>
-#include <bits/ranges_algo.h>
+#include <algorithm>
 #include <staplegl/staplegl.hpp>
 
 #include "../Math/Formula.h"
@@ -14,6 +14,8 @@
 #include "../Render/GraphRasterizer.h"
 #include "../Render/Mesh.h"
 #include "../Core/Window.h"
+
+
 
 void Plot::prepareVertices() const
 {
@@ -52,8 +54,8 @@ Plot::Plot(const std::shared_ptr<ComputeEngine> &engine, const std::shared_ptr<W
         new staplegl::shader_program{
             "plot_shader",
             {
-                std::pair{staplegl::shader_type::vertex, "../shader/plot.vert"},
-                std::pair{staplegl::shader_type::fragment, "../shader/plot.frag"}
+                std::pair{staplegl::shader_type::vertex, "./shader/plot.vert"},
+                std::pair{staplegl::shader_type::fragment, "./shader/plot.frag"}
             }
         }
     }

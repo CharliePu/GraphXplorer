@@ -13,7 +13,7 @@
 
 struct GraphNode;
 class Window;
-class Mesh;
+struct Mesh;
 struct Graph;
 
 class GraphRasterizer {

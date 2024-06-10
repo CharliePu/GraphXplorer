@@ -16,21 +16,30 @@ class Window;
 struct Mesh;
 struct Graph;
 
+template <class T>
+struct pairHash {
+    std::size_t operator () (const std::pair<T, T> &pair) const {
+        return std::hash<T>()(pair.first) ^ std::hash<T>()(pair.second);
+    }
+};
+
 class GraphRasterizer {
 public:
     explicit GraphRasterizer(const std::shared_ptr<Window> &window);
 
 
-    Interval<bool> evaluateGraph(const std::shared_ptr<Graph> & graph, Interval<double> xRange, Interval<double> yRange);
+    static int evaluateGraph(const std::unique_ptr<GraphNode>& node, Interval<double> xRange, Interval<double> yRange);
 
     void rasterize(const std::shared_ptr<Graph> &graph, const Interval<double> &xRange, const Interval<double> &yRange, int windowWidth, int
                    windowHeight);
-    void setRasterizeCompleteCallback(const std::function<void(const std::vector<Interval<bool>> &)> &callback);
+    void setRasterizeCompleteCallback(const std::function<void(const std::vector<int> &)> &callback);
 private:
     static bool nodeIsLeaf(const std::unique_ptr<GraphNode> &curr);
 
-    std::function<void(const std::vector<Interval<bool>> &)> rasterizeCompleteCallback;
+    std::function<void(const std::vector<int> &)> rasterizeCompleteCallback;
     std::shared_ptr<Window> window;
+
+    std::unordered_map<double, int> cache;
 };
 
 

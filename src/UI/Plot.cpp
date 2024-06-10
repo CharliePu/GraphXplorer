@@ -64,7 +64,7 @@ Plot::Plot(const std::shared_ptr<ComputeEngine> &engine, const std::shared_ptr<W
         graphRasterizer->rasterize(result.graph, result.xRange, result.yRange, result.windowWidth, result.windowHeight);
     });
 
-    graphRasterizer->setRasterizeCompleteCallback([this](const std::vector<Interval<bool> > &image) {
+    graphRasterizer->setRasterizeCompleteCallback([this](const std::vector<int> &image) {
         const auto meshes = prepareMeshes(image);
         plotCompleteCallback(meshes);
     });
@@ -91,10 +91,10 @@ void Plot::requestNewPlot(const std::string &input)
     computeEngine->processGraph({graph, formula, xRange, yRange, window->getWidth(), window->getHeight()});
 }
 
-std::vector<Mesh> Plot::prepareMeshes(const std::vector<Interval<bool> > &image) const
+std::vector<Mesh> Plot::prepareMeshes(const std::vector<int> &image) const
 {
-    auto getGradent = [](const Interval<bool> &interval) -> float {
-        return static_cast<float>(interval.lower * 0.5 + interval.upper * 0.5);
+    auto getGradent = [](const int value) -> float {
+        return static_cast<float>(value > 0);
     };
 
     std::vector<float> data;

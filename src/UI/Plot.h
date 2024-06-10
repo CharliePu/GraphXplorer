@@ -33,7 +33,7 @@ public:
 
     void requestNewPlot(const std::string & input);
 
-    std::vector<Mesh> prepareMeshes(const std::vector<Interval<bool>> & image) const;
+    std::vector<Mesh> prepareMeshes(const std::vector<int> & image) const;
 
     void onCursorDrag(double x, double y) override;
 

@@ -20,7 +20,7 @@ public:
     ~ThreadPool();
 
     template<class F, class... Args>
-    auto addTask(F &&f, Args &&... args) -> std::future<typename std::invoke_result<F, Args...>::type>;
+    auto addTask(F &&f, Args &&... args) -> std::future<std::invoke_result_t<F, Args...> >;
 
 private:
     std::vector<std::thread> threads;

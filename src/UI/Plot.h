@@ -17,7 +17,7 @@ namespace staplegl
 
 class GraphRasterizer;
 class Formula;
-class Graph;
+struct Graph;
 class ComputeEngine;
 
 class Plot: public UIComponent {

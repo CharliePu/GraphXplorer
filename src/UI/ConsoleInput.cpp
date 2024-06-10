@@ -13,7 +13,7 @@ void ConsoleInput::inputFromConsole()
     // std::getline(std::cin, line);
     // inputCompleteCallback(line);
 
-    inputCompleteCallback("xx+yy<25");
+    inputCompleteCallback("x+yy<25");
 }
 
 void ConsoleInput::setInputCompleteCallback(const std::function<void(std::string)> &callback)

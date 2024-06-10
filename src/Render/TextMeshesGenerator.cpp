@@ -50,11 +50,11 @@ std::vector<Mesh> TextMeshesGenerator::generateTextMesh(const std::string &text,
             "grid_shader",
             {
                 std::pair{
-                    staplegl::shader_type::vertex, "../shader/text.vert"
+                    staplegl::shader_type::vertex, "./shader/text.vert"
                 },
                 std::pair{
                     staplegl::shader_type::fragment,
-                    "../shader/text.frag"
+                    "./shader/text.frag"
                 }
             }
         }
@@ -118,7 +118,7 @@ TextMeshesGenerator::TextMeshesGenerator(): ft{},
         throw std::runtime_error("Could not init FreeType Library");
     }
 
-    loadFont("../font/FiraCode-Regular.ttf", 48);
+    loadFont("./font/FiraCode-Regular.ttf", 48);
 }
 
 TextMeshesGenerator::~TextMeshesGenerator()

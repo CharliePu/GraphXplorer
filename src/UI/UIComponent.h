@@ -8,7 +8,7 @@
 #include <memory>
 #include "../Core/Input.h"
 
-class Mesh;
+struct Mesh;
 
 class UIComponent: public UserInputHandler {
 public:

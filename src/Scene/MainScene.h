@@ -7,6 +7,7 @@
 #include "Scene.h"
 
 
+class AxisLabels;
 class Grid;
 class ComputeEngine;
 class Renderer;
@@ -27,6 +28,7 @@ private:
 
     std::shared_ptr<Plot> plot;
     std::shared_ptr<Grid> grid;
+    std::shared_ptr<AxisLabels> axisLabels;
     std::shared_ptr<ConsoleInput> cmd;
 };
 

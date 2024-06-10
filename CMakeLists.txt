@@ -5,6 +5,7 @@ find_package(Catch2 3 REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
+find_package(Freetype REQUIRED)
 
 set(CMAKE_CXX_STANDARD 26)
 
@@ -45,11 +46,15 @@ add_executable(GraphXplorer src/main.cpp
         src/Core/Window.h
         src/UI/Grid.h
         src/UI/Grid.cpp
+        src/UI/AxisLabels.cpp
+        src/UI/AxisLabels.h
+        src/Render/TextMeshesGenerator.cpp
+        src/Render/TextMeshesGenerator.h
 )
 
 target_include_directories(GraphXplorer PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
-target_link_libraries(GraphXplorer PRIVATE glfw glad::glad glm::glm)
+target_link_libraries(GraphXplorer PRIVATE glfw glad::glad glm::glm Freetype::Freetype)
 
 # Unit testing
 add_executable(GraphXplorerTests

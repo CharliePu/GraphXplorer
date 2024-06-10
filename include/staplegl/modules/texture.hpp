@@ -120,7 +120,8 @@ public:
      * @param samples the number of samples to use for the texture, defaults to 1.
      * @param generate_mipmap whether to generate mipmaps for the texture, defaults to false.
      */
-    texture_2d(std::span<const float> data, resolution res,
+    template<typename T>
+    texture_2d(std::span<const T> data, resolution res,
         texture_color color, texture_filter filters,
         tex_samples samples = tex_samples::MSAA_X1,
         bool generate_mipmap = false) noexcept;
@@ -288,7 +289,8 @@ private:
     texture_antialias m_antialias {};
 };
 
-inline texture_2d::texture_2d(std::span<const float> data, resolution res,
+template<typename T>
+inline texture_2d::texture_2d(std::span<const T> data, resolution res,
     texture_color color, texture_filter filter, tex_samples samples, bool generate_mipmap) noexcept
     : m_color { color }
     , m_filter { filter }

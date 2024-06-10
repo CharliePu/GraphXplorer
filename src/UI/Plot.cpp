@@ -45,8 +45,8 @@ Plot::Plot(const std::shared_ptr<ComputeEngine> &engine, const std::shared_ptr<W
     computeEngine{engine},
     graphRasterizer{std::make_shared<GraphRasterizer>(window)},
     window{window},
-    xRange{-10.0, 10.0},
-    yRange{-10.0, 10.0},
+    xRange{-20.0, 20.0},
+    yRange{-20.0, 20.0},
     vao{std::make_shared<staplegl::vertex_array>()},
     shader{
         new staplegl::shader_program{
@@ -89,7 +89,7 @@ void Plot::requestNewPlot(const std::string &input)
     computeEngine->processGraph({graph, formula, xRange, yRange, window->getWidth(), window->getHeight()});
 }
 
-std::vector<Mesh> Plot::prepareMeshes(const std::vector<Interval<bool> > &image)
+std::vector<Mesh> Plot::prepareMeshes(const std::vector<Interval<bool> > &image) const
 {
     auto getGradent = [](const Interval<bool> &interval) -> float {
         return static_cast<float>(interval.lower * 0.5 + interval.upper * 0.5);

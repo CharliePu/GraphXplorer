@@ -16,28 +16,29 @@ GraphRasterizer::GraphRasterizer(const std::shared_ptr<Window> &window):
 {
 }
 
-Interval<bool> GraphRasterizer::evaluateGraph(const std::shared_ptr<Graph> &graph, Interval<double> xRange,
-    Interval<double> yRange)
+int GraphRasterizer::evaluateGraph(const std::unique_ptr<GraphNode> &node, const Interval<double> xRange, const Interval<double> yRange)
 {
-    std::queue<std::unique_ptr<GraphNode> *> nodeQueue;
-    nodeQueue.push(&graph->root);
-
-    while (!nodeQueue.empty())
+    if (nodeIsLeaf(node))
     {
-        auto curr = nodeQueue.front();
-        nodeQueue.pop();
-
-        if (nodeIsLeaf(*curr))
+        if (node->solution == IntervalValues::True)
         {
-            return (*curr)->solution;
+            return 1;
         }
-
-        for (auto &child: (*curr)->children)
+        else if (node->solution == IntervalValues::False)
         {
-            if (child->xRange.contains(xRange) && child->yRange.contains(yRange))
-            {
-                nodeQueue.push(&child);
-            }
+            return 0;
+        }
+        else
+        {
+            return 2;
+        }
+    }
+
+    for (auto& child : node->children)
+    {
+        if (child->xRange.contains(xRange) && child->yRange.contains(yRange))
+        {
+            return evaluateGraph(child, xRange, yRange);
         }
     }
 
@@ -47,7 +48,8 @@ Interval<bool> GraphRasterizer::evaluateGraph(const std::shared_ptr<Graph> &grap
 void GraphRasterizer::rasterize(const std::shared_ptr<Graph> &graph, const Interval<double> &xRange,
                                 const Interval<double> &yRange, const int windowWidth, const int windowHeight)
 {
-    std::vector<Interval<bool>> image;
+    std::vector<int> image;
+    image.reserve(windowWidth * windowHeight);
 
     const auto deltaX = xRange.size() / windowWidth;
     const auto deltaY = yRange.size() / windowHeight;
@@ -61,7 +63,7 @@ void GraphRasterizer::rasterize(const std::shared_ptr<Graph> &graph, const Inter
 
             // TODO: replace with {x, x+deltax} and {y, y+deltay}
             // This requires changes in evaluate to add sampling
-            auto result = evaluateGraph(graph, {x, x},
+            auto result = evaluateGraph(graph->root, {x, x},
                                         {y, y});
 
             image.push_back(result);
@@ -71,7 +73,7 @@ void GraphRasterizer::rasterize(const std::shared_ptr<Graph> &graph, const Inter
     rasterizeCompleteCallback(image);
 }
 
-void GraphRasterizer::setRasterizeCompleteCallback(const std::function<void(const std::vector<Interval<bool>> &)> &callback)
+void GraphRasterizer::setRasterizeCompleteCallback(const std::function<void(const std::vector<int> &)> &callback)
 {
     rasterizeCompleteCallback = callback;
 }

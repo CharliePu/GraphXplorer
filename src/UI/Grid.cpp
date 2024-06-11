@@ -83,5 +83,5 @@ void Grid::setUpdatePositionCallback(const std::function<void(const std::vector<
 
 int Grid::getDepth() const
 {
-    return 5;
+    return 3;
 }

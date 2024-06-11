@@ -65,3 +65,10 @@ void Application::onCursorDrag(double x, double y)
     sceneManager->onCursorDrag(x, y);
 }
 
+void Application::onTextEntered(unsigned int codepoint)
+{
+    window->onTextEntered(codepoint);
+    renderer->onTextEntered(codepoint);
+    sceneManager->onTextEntered(codepoint);
+}
+

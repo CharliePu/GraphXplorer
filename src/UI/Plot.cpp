@@ -89,7 +89,7 @@ void Plot::setPlotRangeChangedCallback(
 
 int Plot::getDepth() const
 {
-    return 10;
+    return 2;
 }
 
 void Plot::requestNewPlot(const std::string &input)

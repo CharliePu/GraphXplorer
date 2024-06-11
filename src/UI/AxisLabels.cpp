@@ -21,7 +21,7 @@ AxisLabels::AxisLabels(const std::shared_ptr<Window> &window): window(window)
 
 int AxisLabels::getDepth() const
 {
-    return 20;
+    return 4;
 }
 
 void AxisLabels::updateLabels(Interval<double> xRange, Interval<double> yRange)

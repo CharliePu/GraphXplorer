@@ -77,3 +77,11 @@ add_custom_command(
         COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:GraphXplorer>/font
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/font $<TARGET_FILE_DIR:GraphXplorer>/font
 )
+
+add_custom_target(copy_shaders_and_fonts
+        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:GraphXplorer>/shader
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/shader $<TARGET_FILE_DIR:GraphXplorer>/shader
+        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:GraphXplorer>/font
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/font $<TARGET_FILE_DIR:GraphXplorer>/font
+        COMMENT "Copying shaders and fonts..."
+)

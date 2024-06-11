@@ -8,6 +8,7 @@
 #include <cassert>
 #include <limits>
 #include <ostream>
+#include <algorithm>
 
 template<typename T>
 struct Interval
@@ -48,25 +49,121 @@ std::ostream& operator<<(std::ostream &os, const Interval<T> &interval)
     return os;
 }
 
-Interval<bool> operator>(const ComputeInterval &lhs, const ComputeInterval &rhs);
+inline Interval<bool> operator>(const ComputeInterval &lhs, const ComputeInterval &rhs)
+{
+    const bool candidates[] = {
+        lhs.value.lower > rhs.value.lower,
+        lhs.value.lower > rhs.value.upper,
+        lhs.value.upper > rhs.value.lower,
+        lhs.value.upper > rhs.value.upper
+    };
 
-Interval<bool> operator<(const ComputeInterval &lhs, const ComputeInterval &rhs);
+    return Interval<bool>{
+        candidates[0] && candidates[1] && candidates[2] && candidates[3],
+        candidates[0] || candidates[1] || candidates[2] || candidates[3]
+    };
+}
 
-Interval<bool> operator>=(const ComputeInterval &lhs, const ComputeInterval &rhs);
+inline Interval<bool> operator<(const ComputeInterval &lhs, const ComputeInterval &rhs)
+{
+    const bool candidates[] = {
+        lhs.value.lower < rhs.value.lower,
+        lhs.value.lower < rhs.value.upper,
+        lhs.value.upper < rhs.value.lower,
+        lhs.value.upper < rhs.value.upper
+    };
 
-Interval<bool> operator<=(const ComputeInterval &lhs, const ComputeInterval &rhs);
+    return Interval<bool>{
+        candidates[0] && candidates[1] && candidates[2] && candidates[3],
+        candidates[0] || candidates[1] || candidates[2] || candidates[3]
+    };
+}
 
-Interval<bool> operator==(const ComputeInterval &lhs, const ComputeInterval &rhs);
+inline Interval<bool> operator>=(const ComputeInterval &lhs, const ComputeInterval &rhs)
+{
+    const bool candidates[] = {
+        lhs.value.lower >= rhs.value.lower,
+        lhs.value.lower >= rhs.value.upper,
+        lhs.value.upper >= rhs.value.lower,
+        lhs.value.upper >= rhs.value.upper
+    };
 
-Interval<bool> operator!(const Interval<bool> &interval);
+    return Interval<bool>{
+        candidates[0] && candidates[1] && candidates[2] && candidates[3],
+        candidates[0] || candidates[1] || candidates[2] || candidates[3]
+    };
+}
 
-ComputeInterval operator+(const ComputeInterval &lhs, const ComputeInterval &rhs);
 
-ComputeInterval operator-(const ComputeInterval &lhs, const ComputeInterval &rhs);
+inline Interval<bool> operator<=(const ComputeInterval &lhs, const ComputeInterval &rhs)
+{
+    const bool candidates[] = {
+        lhs.value.lower <= rhs.value.lower,
+        lhs.value.lower <= rhs.value.upper,
+        lhs.value.upper <= rhs.value.lower,
+        lhs.value.upper <= rhs.value.upper
+    };
 
-ComputeInterval operator*(const ComputeInterval &lhs, const ComputeInterval &rhs);
+        return Interval<bool>{
+            candidates[0] && candidates[1] && candidates[2] && candidates[3],
+            candidates[0] || candidates[1] || candidates[2] || candidates[3]
+        };
+}
 
-ComputeInterval operator/(const ComputeInterval &lhs, const ComputeInterval &rhs);
+inline Interval<bool> operator==(const ComputeInterval &lhs, const ComputeInterval &rhs)
+{
+    return {lhs.value.lower == rhs.value.lower, lhs.value.upper == rhs.value.upper};
+}
+
+inline Interval<bool> operator!(const Interval<bool> &interval)
+{
+    return {!interval.upper, !interval.lower};
+}
+
+inline ComputeInterval operator+(const ComputeInterval &lhs, const ComputeInterval &rhs)
+{
+    return {{lhs.value.lower + rhs.value.lower, lhs.value.upper + rhs.value.upper}};
+}
+
+inline ComputeInterval operator-(const ComputeInterval &lhs, const ComputeInterval &rhs)
+{
+    return {{lhs.value.lower - rhs.value.lower, lhs.value.upper - rhs.value.upper}};
+}
+
+inline ComputeInterval operator*(const ComputeInterval &lhs, const ComputeInterval &rhs)
+{
+    decltype(lhs.value.lower) candidates[] = {
+        lhs.value.lower * rhs.value.lower,
+        lhs.value.lower * rhs.value.upper,
+        lhs.value.upper * rhs.value.lower,
+        lhs.value.upper * rhs.value.upper
+    };
+    return {
+            {
+                *std::ranges::min_element(candidates),
+                *std::ranges::max_element(candidates)
+            }
+    };
+}
+
+inline ComputeInterval operator/(const ComputeInterval &lhs, const ComputeInterval &rhs)
+{
+    decltype(lhs.value.lower) candidates[] = {
+        lhs.value.lower / rhs.value.lower,
+        lhs.value.lower / rhs.value.upper,
+        lhs.value.upper / rhs.value.lower,
+        lhs.value.upper / rhs.value.upper
+    };
+
+    // TODO: handle division by zero
+
+    return {
+            {
+                *std::ranges::min_element(candidates),
+                *std::ranges::max_element(candidates)
+            }
+    };
+}
 
 
 template<typename T>

@@ -443,14 +443,12 @@ inline auto shader_program::create_program() const -> std::uint32_t
     glGetProgramiv(program, GL_LINK_STATUS, &link_success);
 
     if (!link_success) [[unlikely]] {
-#ifdef STAPLEGL_DEBUG
         int max_length {};
         glGetProgramiv(program, GL_INFO_LOG_LENGTH, &max_length);
         std::vector<char> error_log(max_length);
         glGetProgramInfoLog(program, max_length, &max_length, &error_log[0]);
         std::fprintf(stderr, STAPLEGL_LINEINFO ", failed to link shader program: %s\n",
             error_log.data());
-#endif // STAPLEGL_DEBUG
         glDeleteProgram(program);
         return 0;
     }
@@ -466,14 +464,12 @@ inline auto shader_program::create_program() const -> std::uint32_t
     int success = 0;
     glGetProgramiv(program, GL_VALIDATE_STATUS, &success);
     if (!success) [[unlikely]] {
-#ifdef STAPLEGL_DEBUG
         int max_length {};
         glGetProgramiv(program, GL_INFO_LOG_LENGTH, &max_length);
         std::string error_log(max_length, '\0');
         glGetProgramInfoLog(program, max_length, &max_length, &error_log[0]);
         std::fprintf(stderr, STAPLEGL_LINEINFO ", failed to validate shader program: %s\n",
             error_log.data());
-#endif // STAPLEGL_DEBUG
         glDeleteProgram(program);
         return 0;
     }
@@ -497,7 +493,6 @@ inline auto shader_program::compile(shader_type shader_type, std::string_view so
     glGetShaderiv(id, GL_COMPILE_STATUS, &comp_ok);
 
     if (comp_ok == GL_FALSE) [[unlikely]] {
-#ifdef STAPLEGL_DEBUG
         int max_length {};
         glGetShaderiv(id, GL_INFO_LOG_LENGTH, &max_length);
         std::string error_log(max_length, '\0');
@@ -507,7 +502,6 @@ inline auto shader_program::compile(shader_type shader_type, std::string_view so
         std::string shader_type_str = shader_type_to_string(static_cast<staplegl::shader_type>(type_id));
         std::fprintf(stderr, STAPLEGL_LINEINFO ", failed to compile %s shader: \n%s\n",
             shader_type_str.data(), error_log.data());
-#endif // STAPLEGL_DEBUG
         glDeleteShader(id);
         return 0;
     }
@@ -532,10 +526,8 @@ inline auto shader_program::parse_shaders(std::string_view source) const -> std:
         // With C++23 we could drastically simplify this thanks to std::optional's monadic operations.
         if (!shader_type.has_value()) [[unlikely]] {
 
-#ifdef STAPLEGL_DEBUG
             std::fprintf(stderr, STAPLEGL_LINEINFO ", invalid shader type \"%s\"\n",
                 type.data());
-#endif // STAPLEGL_DEBUG
             return {};
         }
 
@@ -556,12 +548,10 @@ inline auto shader_program::uniform_location(std::string_view name) -> int
         return m_uniform_cache[name];
     } else {
         const int location { glGetUniformLocation(m_id, name.data()) };
-#ifdef STAPLEGL_DEBUG
         if (location == -1) {
             std::fprintf(stderr, STAPLEGL_LINEINFO ", uniform \"%s\" not found in shader program \"%s\"\n",
                 name.data(), m_name.data());
         }
-#endif // STAPLEGL_DEBUG
 
         m_uniform_cache[name] = location;
         return location;
@@ -575,14 +565,12 @@ inline auto shader_program::is_valid(std::uint32_t id) -> bool
 
     if (link_ok == GL_FALSE) [[unlikely]] {
 
-#ifdef STAPLEGL_DEBUG
         int max_length {};
         glGetProgramiv(id, GL_INFO_LOG_LENGTH, &max_length);
         std::string error_log(max_length, '\0');
         glGetProgramInfoLog(id, max_length, &max_length, &error_log[0]);
         std::fprintf(stderr, STAPLEGL_LINEINFO ", failed to link shader program: %s\n",
             error_log.data());
-#endif // STAPLEGL_DEBUG
 
         glDeleteProgram(id);
         return false;
@@ -593,14 +581,12 @@ inline auto shader_program::is_valid(std::uint32_t id) -> bool
     int success = 0;
     glGetProgramiv(id, GL_VALIDATE_STATUS, &success);
     if (!success) [[unlikely]] {
-#ifdef STAPLEGL_DEBUG
         int max_length {};
         glGetProgramiv(id, GL_INFO_LOG_LENGTH, &max_length);
         std::string error_log(max_length, '\0');
         glGetProgramInfoLog(id, max_length, &max_length, &error_log[0]);
         std::fprintf(stderr, STAPLEGL_LINEINFO ", failed to validate shader program: %s\n",
             error_log.data());
-#endif // STAPLEGL_DEBUG
         glDeleteProgram(id);
         return false;
     }
@@ -622,10 +608,8 @@ inline constexpr auto shader_program::to_gl_type(shader_type shader_type) -> std
     case shader_type::geometry:
         return GL_GEOMETRY_SHADER;
     default:
-#ifdef STAPLEGL_DEBUG
         std::fprintf(stderr, STAPLEGL_LINEINFO ", invalid shader type enum %d, \n",
             static_cast<int>(shader_type));
-#endif // STAPLEGL_DEBUG
         std::terminate();
     }
 }

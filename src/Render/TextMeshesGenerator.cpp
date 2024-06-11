@@ -45,21 +45,6 @@ std::vector<Mesh> TextMeshesGenerator::generateTextMesh(const std::string &text,
         x -= textWidth;
     }
 
-    std::shared_ptr<staplegl::shader_program> shader{
-        new staplegl::shader_program{
-            "grid_shader",
-            {
-                std::pair{
-                    staplegl::shader_type::vertex, "./shader/text.vert"
-                },
-                std::pair{
-                    staplegl::shader_type::fragment,
-                    "./shader/text.frag"
-                }
-            }
-        }
-    };
-
     for (const char &c: text)
     {
         auto result = characterMap.find(c);
@@ -111,7 +96,20 @@ std::vector<Mesh> TextMeshesGenerator::generateTextMesh(const std::string &text,
 }
 
 TextMeshesGenerator::TextMeshesGenerator(): ft{},
-                                            face{}
+                                            face{}, shader{
+                                                new staplegl::shader_program{
+                                                    "text_shader",
+                                                    {
+                                                        std::pair{
+                                                            staplegl::shader_type::vertex, "./shader/text.vert"
+                                                        },
+                                                        std::pair{
+                                                            staplegl::shader_type::fragment,
+                                                            "./shader/text.frag"
+                                                        }
+                                                    }
+                                                }
+                                            }
 {
     if (FT_Init_FreeType(&ft))
     {

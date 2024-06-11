@@ -22,9 +22,12 @@ MainScene::MainScene(const std::shared_ptr<ComputeEngine> &engine, const std::sh
         plot->requestNewPlot(input);
     });
 
+    plot->setPlotRangeChangedCallback([this, renderer](const Interval<double> &xRange, const Interval<double> &yRange) {
+        grid->updatePosition(xRange, yRange);
+        axisLabels->updateLabels(xRange, yRange);
+    });
+
     plot->setPlotCompleteCallback([this, renderer](const std::vector<Mesh> &meshes) {
-        grid->updatePosition(plot->getXRanges(), plot->getYRanges());
-        axisLabels->updateLabels(plot->getXRanges(), plot->getYRanges());
         renderer->updateMeshes(plot, meshes);
     });
 
@@ -37,6 +40,10 @@ MainScene::MainScene(const std::shared_ptr<ComputeEngine> &engine, const std::sh
     {
         renderer->updateMeshes(axisLabels, meshes);
     });
+
+    plot->requestNewPlot("xx+yy<49");
+    grid->updatePosition(plot->getXRanges(), plot->getYRanges());
+    axisLabels->updateLabels(plot->getXRanges(), plot->getYRanges());
 }
 
 void MainScene::onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action, glfw::ModifierKeyBit mods)

@@ -9,27 +9,12 @@
 #include "../Render/Mesh.h"
 #include "../Core/Window.h"
 
-Grid::Grid(const std::shared_ptr<Window> &window): window{window},
-                                                   vao{std::make_shared<staplegl::vertex_array>()},
-                                                   shader{
-                                                       new staplegl::shader_program{
-                                                           "grid_shader",
-                                                           {
-                                                               std::pair{
-                                                                   staplegl::shader_type::vertex, "./shader/grid.vert"
-                                                               },
-                                                               std::pair{
-                                                                   staplegl::shader_type::fragment,
-                                                                   "./shader/grid.frag"
-                                                               }
-                                                           }
-                                                       }
-                                                   }
+Grid::Grid(const std::shared_ptr<Window> &window): window{window}, mesh{}
 {
-    prepareVertices();
+    prepareMesh();
 }
 
-void Grid::prepareVertices() const
+void Grid::prepareMesh()
 {
     std::array vertices = {
         1.0f, 1.0f, 0.0f, // top right
@@ -50,79 +35,45 @@ void Grid::prepareVertices() const
 
     vbo.set_layout(layout);
 
-    vao->add_vertex_buffer(std::move(vbo));
-    vao->set_index_buffer(std::move(ebo));
-}
 
-// TODO: calculate grid lines in terms of pixels rather than range values to improve display precision
-void Grid::updatePosition(Interval<double> xInterval, Interval<double> yInterval)
-{
-    auto positiveModulo = [](double a, double b) -> double {
-        return std::fmod(std::fmod(a, b) + b, b);
+    auto vao{std::make_shared<staplegl::vertex_array>()};
+
+    std::shared_ptr<staplegl::shader_program> shader{
+        new staplegl::shader_program{
+            "grid_shader",
+            {
+                std::pair{
+                    staplegl::shader_type::vertex, "./shader/grid.vert"
+                },
+                std::pair{
+                    staplegl::shader_type::fragment,
+                    "./shader/grid.frag"
+                }
+            }
+        }
     };
 
-    std::vector<float> data;
+    vao->bind();
+    vao->add_vertex_buffer(std::move(vbo));
+    vao->set_index_buffer(std::move(ebo));
 
-    const auto width = window->getWidth();
-    const auto height = window->getHeight();
+    mesh = {shader, vao, std::vector<std::shared_ptr<staplegl::texture_2d> >{}};
+}
 
-    constexpr auto axisLineWidth{2.0}, majorLineWidth{2.0}, minorLineWidth{1.0};
-
+void Grid::updatePosition(Interval<double> xInterval, Interval<double> yInterval)
+{
     const auto xMajorGrid{std::pow(10.0, std::floor(std::log10(xInterval.size())))};
     const auto yMajorGrid{std::pow(10.0, std::floor(std::log10(yInterval.size())))};
     const auto xMinorGrid{xMajorGrid / 5.0};
     const auto yMinorGrid{yMajorGrid / 5.0};
 
-    for (auto j = 0; j < height; ++j)
-    {
-        const auto y = yInterval.lower + j * yInterval.size() / height;
-        for (auto i = 0; i < width; ++i)
-        {
-            if (const auto x = xInterval.lower + i * xInterval.size() / width;
-                std::abs(x) < axisLineWidth / width * xInterval.size() || std::abs(y) < axisLineWidth / height *
-                yInterval.size())
-            {
-                data.push_back(1.0f);
-            }
-            else if (positiveModulo(x, xMajorGrid) < majorLineWidth / width * xInterval.size() ||
-                     positiveModulo(y, yMajorGrid) < majorLineWidth / height * yInterval.size())
-            {
-                data.push_back(0.8f);
-            }
-            else if (positiveModulo(x, xMinorGrid) < minorLineWidth / width * xInterval.size() ||
-                     positiveModulo(y, yMinorGrid) < minorLineWidth / height * yInterval.size())
-            {
-                data.push_back(0.5f);
-            }
-            else
-            {
-                data.push_back(0.0f);
-            }
-        }
-    }
+    mesh.shader->bind();
+    mesh.shader->upload_uniform2f("xRange", xInterval.lower, xInterval.upper);
+    mesh.shader->upload_uniform2f("yRange", yInterval.lower, yInterval.upper);
+    mesh.shader->upload_uniform2f("grid1", xMajorGrid, yMajorGrid);
+    mesh.shader->upload_uniform2f("grid2", xMinorGrid, yMinorGrid);
 
-    updatePositionCallback(prepareMeshes(data));
-}
-
-std::vector<Mesh> Grid::prepareMeshes(const std::vector<float> &data)
-{
-    const auto textureData = std::span<const float>{data};
-    const auto textureResolution = staplegl::resolution{window->getWidth(), window->getHeight()};
-    constexpr auto textureColor = staplegl::texture_color{
-        GL_RED, GL_RED, GL_FLOAT
-    };
-    constexpr auto textureFilter = staplegl::texture_filter{
-        GL_NEAREST, GL_NEAREST
-    };
-
-    auto texture = std::make_shared<staplegl::texture_2d>(
-        textureData,
-        textureResolution,
-        textureColor,
-        textureFilter
-    );
-
-    return {{shader, vao, std::vector{texture}}};
+    updatePositionCallback({mesh});
 }
 
 void Grid::setUpdatePositionCallback(const std::function<void(const std::vector<Mesh> &)> &callback)

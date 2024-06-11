@@ -9,11 +9,9 @@
 
 void ConsoleInput::inputFromConsole()
 {
-    // std::cout<<"Enter formula: ";
-    // std::getline(std::cin, line);
-    // inputCompleteCallback(line);
-
-    inputCompleteCallback("x+yy<25");
+    std::cout<<"Enter formula: ";
+    std::getline(std::cin, line);
+    inputCompleteCallback(line);
 }
 
 void ConsoleInput::setInputCompleteCallback(const std::function<void(std::string)> &callback)
@@ -23,7 +21,7 @@ void ConsoleInput::setInputCompleteCallback(const std::function<void(std::string
 
 void ConsoleInput::onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action, glfw::ModifierKeyBit mods)
 {
-    if (key == glfw::KeyCode::I && action == glfw::KeyState::Press)
+    if (key == glfw::KeyCode::C && action == glfw::KeyState::Press)
     {
         inputFromConsole();
     }

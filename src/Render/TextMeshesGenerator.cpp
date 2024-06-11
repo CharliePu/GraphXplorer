@@ -21,6 +21,11 @@ struct FontCharacter
 std::vector<Mesh> TextMeshesGenerator::generateTextMesh(const std::string &text, double x, double y, double scale,
                                                         TextAlign align, double aspectRatio)
 {
+    if (text.empty())
+    {
+        return {};
+    }
+
     std::vector<Mesh> meshes;
 
     // Calculate the width of the text

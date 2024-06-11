@@ -7,6 +7,7 @@
 #include "Scene.h"
 
 
+class InputBox;
 class AxisLabels;
 class Grid;
 class ComputeEngine;
@@ -24,12 +25,15 @@ public:
 
     void onWindowSizeChanged(int width, int height) override;
 
+    void onTextEntered(unsigned int codepoint) override;
+
 private:
 
     std::shared_ptr<Plot> plot;
     std::shared_ptr<Grid> grid;
     std::shared_ptr<AxisLabels> axisLabels;
     std::shared_ptr<ConsoleInput> cmd;
+    std::shared_ptr<InputBox> inputBox;
 };
 
 

@@ -31,6 +31,8 @@ public:
 
     void onCursorDrag(double x, double y) override;
 
+    void onTextEntered(unsigned int codepoint) override;
+
 private:
     std::string name;
 

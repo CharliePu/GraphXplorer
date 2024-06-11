@@ -18,6 +18,10 @@ void UserInputHandler::onWindowSizeChanged(int width, int height)
 {
 }
 
+void UserInputHandler::onTextEntered(unsigned int codepoint)
+{
+}
+
 Input::Input(const std::shared_ptr<Window> &window):
 mouseButtonState{glfw::MouseButtonState::Release}, window{window}
 {
@@ -39,6 +43,10 @@ mouseButtonState{glfw::MouseButtonState::Release}, window{window}
     glfwWindow->mouseButtonEvent.setCallback([this](glfw::Window &window, glfw::MouseButton button,
                                                     glfw::MouseButtonState action, glfw::ModifierKeyBit mods) {
         mouseButtonCallback(window, button, action, mods);
+    });
+
+    glfwWindow->charEvent.setCallback([this](glfw::Window &window, unsigned int codepoint) {
+        textCallback(window, codepoint);
     });
 }
 
@@ -75,4 +83,9 @@ void Input::mouseButtonCallback(glfw::Window &window, glfw::MouseButton button, 
 {
     if (button == glfw::MouseButton::Left)
         mouseButtonState = action;
+}
+
+void Input::textCallback(glfw::Window &window, unsigned int codepoint)
+{
+    inputHandler->onTextEntered(codepoint);
 }

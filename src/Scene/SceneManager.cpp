@@ -28,3 +28,8 @@ void SceneManager::onWindowSizeChanged(int width, int height)
 {
     currentScene->onWindowSizeChanged(width, height);
 }
+
+void SceneManager::onTextEntered(unsigned int codepoint)
+{
+    currentScene->onTextEntered(codepoint);
+}

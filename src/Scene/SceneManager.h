@@ -22,6 +22,8 @@ public:
 
     void onWindowSizeChanged(int width, int height) override;
 
+    void onTextEntered(unsigned int codepoint) override;
+
 private:
     std::shared_ptr<MainScene> mainScene;
     std::shared_ptr<Scene> currentScene;

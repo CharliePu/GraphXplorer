@@ -50,6 +50,8 @@ add_executable(GraphXplorer src/main.cpp
         src/UI/AxisLabels.h
         src/Render/TextMeshesGenerator.cpp
         src/Render/TextMeshesGenerator.h
+        src/UI/InputBox.cpp
+        src/UI/InputBox.h
 )
 
 target_include_directories(GraphXplorer PRIVATE ${CMAKE_SOURCE_DIR}/include)

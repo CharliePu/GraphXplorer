@@ -58,14 +58,18 @@ Plot::Plot(const std::shared_ptr<ComputeEngine> &engine, const std::shared_ptr<W
                 std::pair{staplegl::shader_type::fragment, "./shader/plot.frag"}
             }
         }
-    }
+    },
+    model{1.0}
 {
     computeEngine->setComputeCompleteCallback([this](const ComputeRequest &result) {
         graphRasterizer->rasterize(result.graph, result.xRange, result.yRange, result.windowWidth, result.windowHeight);
     });
 
     graphRasterizer->setRasterizeCompleteCallback([this](const std::vector<int> &image) {
+        // Reset temporary transformation
+        model = glm::mat4{1.0};
         const auto meshes = prepareMeshes(image);
+
         plotCompleteCallback(meshes);
     });
 
@@ -75,6 +79,12 @@ Plot::Plot(const std::shared_ptr<ComputeEngine> &engine, const std::shared_ptr<W
 void Plot::setPlotCompleteCallback(const std::function<void(const std::vector<Mesh> &)> &callback)
 {
     plotCompleteCallback = callback;
+}
+
+void Plot::setPlotRangeChangedCallback(
+    const std::function<void(const Interval<double> &, const Interval<double> &)> &callback)
+{
+    plotRangeChangedCallback = callback;
 }
 
 int Plot::getDepth() const
@@ -91,7 +101,7 @@ void Plot::requestNewPlot(const std::string &input)
     computeEngine->processGraph({graph, formula, xRange, yRange, window->getWidth(), window->getHeight()});
 }
 
-std::vector<Mesh> Plot::prepareMeshes(const std::vector<int> &image) const
+std::vector<Mesh> Plot::prepareMeshes(const std::vector<int> &image)
 {
     auto getGradent = [](const int value) -> float {
         return static_cast<float>(value > 0);
@@ -117,22 +127,36 @@ std::vector<Mesh> Plot::prepareMeshes(const std::vector<int> &image) const
         textureFilter
     );
 
-    return {{shader, vao, std::vector{texture}}};
+    shader->bind();
+    shader->upload_uniform_mat4f("transform", std::span<float, 16>{glm::value_ptr(model), 16});
+
+    plotMesh = {shader, vao, std::vector{texture}};
+
+    return {plotMesh};
 }
 
 void Plot::onCursorDrag(const double x, const double y)
 {
+    const auto windowWidth{window->getWidth()};
+    const auto windowHeight{window->getHeight()};
+
+    const auto deltaX{xRange.size() / windowWidth};
+    const auto deltaY{yRange.size() / windowHeight};
+
+    xRange = xRange + x * -deltaX;
+    yRange = yRange + y * deltaY;
+
+    plotRangeChangedCallback(xRange, yRange);
+
+    // Temporarily offset the old graph
+    // Once the new graph is ready, the transformation will be reset
+    model = glm::translate(model, glm::vec3{x * deltaX / xRange.size() * 2.0, y * -deltaY / xRange.size() * 2.0, 0.0f});
+    plotMesh.shader->bind();
+    plotMesh.shader->upload_uniform_mat4f("transform", std::span<float, 16>{glm::value_ptr(model), 16});
+    plotCompleteCallback({plotMesh});
+
     if (formula)
     {
-        const auto windowWidth{window->getWidth()};
-        const auto windowHeight{window->getHeight()};
-
-        const auto deltaX{xRange.size() / windowWidth};
-        const auto deltaY{yRange.size() / windowHeight};
-
-        xRange = xRange + x * -deltaX;
-        yRange = yRange + y * deltaY;
-
         computeEngine->processGraph({graph, formula, xRange, yRange, windowWidth, windowHeight});
     }
 }

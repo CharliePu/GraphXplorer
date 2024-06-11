@@ -5,9 +5,14 @@
 #ifndef PLOT_H
 #define PLOT_H
 
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
+
 #include "UIComponent.h"
 #include "../Core/Input.h"
 #include "../Math/Interval.h"
+#include "../Render/Mesh.h"
 
 namespace staplegl
 {
@@ -29,11 +34,13 @@ public:
 
     void setPlotCompleteCallback(const std::function<void(const std::vector<Mesh> &)> &callback);
 
+    void setPlotRangeChangedCallback(const std::function<void(const Interval<double> &, const Interval<double> &)> &callback);
+
     int getDepth() const override;
 
     void requestNewPlot(const std::string & input);
 
-    std::vector<Mesh> prepareMeshes(const std::vector<int> & image) const;
+    std::vector<Mesh> prepareMeshes(const std::vector<int> & image);
 
     void onCursorDrag(double x, double y) override;
 
@@ -51,11 +58,17 @@ private:
     std::shared_ptr<Window> window;
 
     std::function<void(const std::vector<Mesh> &)> plotCompleteCallback;
+    std::function<void(const Interval<double> &, const Interval<double> &)> plotRangeChangedCallback;
 
     Interval<double> xRange, yRange;
+    Interval<double> actualXRange, actualYRange;
 
     std::shared_ptr<staplegl::vertex_array> vao;
     std::shared_ptr<staplegl::shader_program> shader;
+
+    Mesh plotMesh;
+
+    glm::mat4 model;
 };
 
 #endif //PLOT_H

@@ -5,11 +5,14 @@
 #ifndef TEXTMESHESGENERATOR_H
 #define TEXTMESHESGENERATOR_H
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include <freetype/freetype.h>
 #include <glad/glad.h>
+
+#include "../UI/Plot.h"
 
 #include FT_FREETYPE_H
 
@@ -55,6 +58,7 @@ private:
     FT_Library ft;
     FT_Face face;
     std::map<GLchar, FontCharacter> characterMap;
+    std::shared_ptr<staplegl::shader_program> shader;
 };
 
 

@@ -32,7 +32,7 @@ struct ComputeRequest
 struct ComputeTask
 {
     ComputeRequest request;
-    std::vector<std::unique_ptr<GraphNode> *> nodes;
+    std::future<void> future;
 };
 
 class ComputeEngine
@@ -42,14 +42,13 @@ public:
 
     void setComputeCompleteCallback(const std::function<void(const ComputeRequest &)> &callback);
 
-
-    void processGraph(const ComputeRequest &request);
+    void requestProcessGraph(const ComputeRequest &request);
 
     void pollAsyncStates();
 
 private:
-    static void expandGraph(const std::shared_ptr<Graph> &graph, Interval<double> targetXRange,
-                            Interval<double> targetYRange);
+    static void expandGraph(const std::shared_ptr<Graph> &graph, const Interval<double> &targetXRange,
+                            const Interval<double> &targetYRange);
 
     static void computeTask(const std::unique_ptr<GraphNode> *node, const std::shared_ptr<Formula> &formula);
 
@@ -82,8 +81,6 @@ private:
     std::function<void(const ComputeRequest &)> computeCompleteCallback;
 
     ThreadPool threadPool;
-
-    std::unordered_map<std::unique_ptr<GraphNode> *, std::future<void> > futuresMap;
 
     std::shared_ptr<ComputeTask> currentTask;
 };

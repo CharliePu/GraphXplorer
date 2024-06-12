@@ -1,16 +1,8 @@
-//
-// Created by charl on 6/3/2024.
-//
-
 #include "ThreadPool.h"
 
-#include <future>
-#include <mutex>
-
-ThreadPool::ThreadPool():
-    threadsShouldStop{false}
+ThreadPool::ThreadPool(size_t numThreads) : threadsShouldStop(false)
 {
-    for (unsigned int i = 0; i < std::thread::hardware_concurrency(); ++i)
+    for (size_t i = 0; i < numThreads; ++i)
     {
         threads.emplace_back(&ThreadPool::threadLoop, this);
     }
@@ -18,35 +10,54 @@ ThreadPool::ThreadPool():
 
 ThreadPool::~ThreadPool()
 {
-    threadsShouldStop = true;
+    {
+        std::scoped_lock lock(queueMutex);
+        threadsShouldStop = true;
+    }
     cv.notify_all();
-
     for (auto &thread : threads)
     {
-        thread.join();
+        if (thread.joinable())
+            thread.join();
     }
 }
 
 void ThreadPool::threadLoop()
 {
-    while (!threadsShouldStop)
+    while (true)
     {
-        std::function<void()> task;
-
+        TaskWrapper task;
         {
-            std::unique_lock lock{queueMutex};
-
-            cv.wait(lock, [this] { return !tasks.empty() || threadsShouldStop; });
-
-            if (threadsShouldStop)
-            {
+            std::unique_lock lock(queueMutex);
+            cv.wait(lock, [this] { return threadsShouldStop || !tasks.empty(); });
+            if (threadsShouldStop && tasks.empty())
                 return;
-            }
-
-            task = std::move(tasks.front());
+            task = tasks.top();
             tasks.pop();
         }
+        task.func();
+    }
+}
 
-        task();
+void ThreadPool::markAllTasksLowPriority()
+{
+    std::scoped_lock lock(queueMutex);
+    std::priority_queue<TaskWrapper> newTasks;
+    while (!tasks.empty())
+    {
+        TaskWrapper task = tasks.top();
+        tasks.pop();
+        task.priority = INT_MAX; // Set to lowest priority
+        newTasks.push(task);
+    }
+    std::swap(tasks, newTasks);
+}
+
+void ThreadPool::clearAllTasks()
+{
+    std::scoped_lock lock(queueMutex);
+    while (!tasks.empty())
+    {
+        tasks.pop();
     }
 }

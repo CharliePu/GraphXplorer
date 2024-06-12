@@ -33,7 +33,8 @@ namespace IntervalValues
 {
     static constexpr Interval True{true, true};
     static constexpr Interval False{false, false};
-    static constexpr Interval Unknown{false, true};
+    static constexpr Interval TrueAndFalse{false, true};
+    static constexpr Interval Unknown_s{true, false};
 };
 
 struct ComputeInterval

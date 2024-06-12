@@ -50,7 +50,7 @@ MainScene::MainScene(const std::shared_ptr<ComputeEngine> &engine, const std::sh
         renderer->updateMeshes(axisLabels, meshes);
     });
 
-    plot->requestNewPlot("xx+yy<49");
+    plot->requestNewPlot("xx+y<49");
     grid->updatePosition(plot->getXRanges(), plot->getYRanges());
     axisLabels->updateLabels(plot->getXRanges(), plot->getYRanges());
 }

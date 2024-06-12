@@ -115,7 +115,7 @@ std::unique_ptr<GraphNode> ComputeEngine::createNode(GraphNode *parent, Interval
 {
     auto node = std::make_unique<GraphNode>();
     node->parent = parent;
-    node->solution = IntervalValues::Unknown;
+    node->solution = IntervalValues::Unknown_s;
     node->xRange = xRange;
     node->yRange = yRange;
     for (auto &child: node->children)
@@ -127,8 +127,8 @@ std::unique_ptr<GraphNode> ComputeEngine::createNode(GraphNode *parent, Interval
 
 
 void ComputeEngine::expandGraph(const std::shared_ptr<Graph> &graph,
-                                const Interval<double> targetXRange,
-                                const Interval<double> targetYRange)
+                                const Interval<double> &targetXRange,
+                                const Interval<double> &targetYRange)
 {
     assert(targetXRange.strictlyContains(getGraphXRange(graph)));
     assert(targetYRange.strictlyContains(getGraphYRange(graph)));
@@ -182,15 +182,17 @@ void ComputeEngine::subdivideNode(const std::unique_ptr<GraphNode> &curr)
 
 void ComputeEngine::recursiveComputeNodes(const ComputeRequest &request, const std::shared_ptr<Graph> &graph)
 {
+
+    std::unordered_map<std::unique_ptr<GraphNode> *, std::future<void> > futuresMap;
+
     const auto rangePerPixel =
             std::exp2(std::floor(std::log2(
                 std::min(request.xRange.size(), request.yRange.size()) / std::max(
                     request.windowWidth, request.windowHeight))));
 
-    std::vector<std::unique_ptr<GraphNode> *> nodes;
     std::queue<std::unique_ptr<GraphNode> *> nodeQueue;
-    nodeQueue.push(&graph->root);
 
+    nodeQueue.push(&graph->root);
 
     while (!nodeQueue.empty())
     {
@@ -208,7 +210,7 @@ void ComputeEngine::recursiveComputeNodes(const ComputeRequest &request, const s
             futuresMap.erase(curr);
         }
 
-        if ((*curr)->solution != IntervalValues::Unknown)
+        if ((*curr)->solution == IntervalValues::True || (*curr)->solution == IntervalValues::False)
         {
             continue;
         }
@@ -222,20 +224,25 @@ void ComputeEngine::recursiveComputeNodes(const ComputeRequest &request, const s
         {
             nodeQueue.push(&child);
 
-            if (child->solution == IntervalValues::Unknown)
+            if (child->solution == IntervalValues::Unknown_s)
             {
                 futuresMap.emplace(&child, threadPool.addTask(computeTask, &child, request.formula));
-                nodes.push_back(&child);
             }
         }
     }
 
     // TODO: subpixel refinement
-    currentTask = std::make_shared<ComputeTask>(request, nodes);
+
+    // wait for rest of the nodes to finish
+    for (auto & it : futuresMap)
+    {
+        it.second.wait();
+    }
+
     glfw::postEmptyEvent();
 }
 
-void ComputeEngine::processGraph(const ComputeRequest &request)
+void ComputeEngine::requestProcessGraph(const ComputeRequest &request)
 {
     if (!request.formula)
     {
@@ -243,20 +250,23 @@ void ComputeEngine::processGraph(const ComputeRequest &request)
     }
 
     // Threads will still be running for previous task
-    // However, the corresponding callback will not be called
+    // However, the outdated tasks will be rescheduled with lower priority
     if (currentTask)
     {
         currentTask.reset();
+        threadPool.markAllTasksLowPriority();
     }
-
 
     auto [xRange, yRange] = getRoundedRanges(request);
 
     // Skip if requested range is contained in graph
     if (request.graph->root && request.graph->root->xRange.contains(xRange) && request.graph->root->yRange.contains(yRange))
     {
-        std::vector<std::unique_ptr<GraphNode> *> nodes;
-        currentTask = std::make_shared<ComputeTask>(request, nodes);
+        std::promise<void> promise;
+        promise.set_value();
+        std::future<void> future = promise.get_future();
+
+        currentTask = std::make_shared<ComputeTask>(request, std::move(future));
         glfw::postEmptyEvent();
         return;
     }
@@ -275,56 +285,43 @@ void ComputeEngine::processGraph(const ComputeRequest &request)
         assert(request.graph->root->yRange.contains(request.yRange));
     }
 
-    recursiveComputeNodes(request, request.graph);
+    auto future = threadPool.addTask(&ComputeEngine::recursiveComputeNodes, this, request, request.graph);
+    currentTask = std::make_shared<ComputeTask>(request, std::move(future));
 }
 
 void ComputeEngine::pollAsyncStates()
 {
-    if (!currentTask)
+    if (currentTask)
     {
-        return;
-    }
-
-    bool taskCompleted{true};
-
-    for (const auto &node: currentTask->nodes)
-    {
-        if (auto futureResult = futuresMap.find(node);
-            futureResult == futuresMap.end() || futureResult->second.wait_for(std::chrono::seconds(0)) ==
-            std::future_status::ready)
+        if (currentTask->future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
         {
-            futuresMap.erase(node);
+            computeCompleteCallback(currentTask->request);
+            currentTask.reset();
         }
         else
         {
-            taskCompleted = false;
-            break;
+            glfw::postEmptyEvent();
         }
-    }
-
-    if (taskCompleted)
-    {
-        computeCompleteCallback(currentTask->request);
-        currentTask.reset();
-    }
-    else
-    {
-        glfw::postEmptyEvent();
     }
 }
 
 void ComputeEngine::computeTask(const std::unique_ptr<GraphNode> *node, const std::shared_ptr<Formula> &formula)
 {
-    auto postfixExpr = formula->getPostfixExpression();
+    if ((*node)->solution != IntervalValues::Unknown_s)
+    {
+        return;
+    }
+
+    const auto &postfixExpr = formula->getPostfixExpression();
 
     const auto x = ComputeInterval{(*node)->xRange};
     const auto y = ComputeInterval{(*node)->yRange};
 
     std::stack<ComputeInterval> valueStack;
 
-    Interval<bool> result = IntervalValues::Unknown;
+    Interval<bool> result = IntervalValues::Unknown_s;
 
-    for (auto &[value, type]: postfixExpr)
+    for (const auto &[value, type]: postfixExpr)
     {
         if (type == Variable)
         {

@@ -98,7 +98,7 @@ void Plot::requestNewPlot(const std::string &input)
 
     graph = std::make_shared<Graph>();
 
-    computeEngine->processGraph({graph, formula, xRange, yRange, window->getWidth(), window->getHeight()});
+    computeEngine->requestProcessGraph({graph, formula, xRange, yRange, window->getWidth(), window->getHeight()});
 }
 
 std::vector<Mesh> Plot::prepareMeshes(const std::vector<int> &image)
@@ -157,7 +157,7 @@ void Plot::onCursorDrag(const double x, const double y)
 
     if (formula)
     {
-        computeEngine->processGraph({graph, formula, xRange, yRange, windowWidth, windowHeight});
+        computeEngine->requestProcessGraph({graph, formula, xRange, yRange, windowWidth, windowHeight});
     }
 }
 
@@ -171,7 +171,7 @@ void Plot::onWindowSizeChanged(const int width, const int height)
 
     xRange = {xRangeMid - xRangeSize / 2.0, xRangeMid + xRangeSize / 2.0};
 
-    computeEngine->processGraph({graph, formula, xRange, yRange, width, height});
+    computeEngine->requestProcessGraph({graph, formula, xRange, yRange, width, height});
 }
 
 Interval<double> Plot::getXRanges() const

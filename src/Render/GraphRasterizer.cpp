@@ -4,6 +4,7 @@
 
 #include "GraphRasterizer.h"
 
+#include <iostream>
 #include <queue>
 
 #include "Mesh.h"

@@ -22,7 +22,7 @@ struct Token {
 class Formula {
 public:
     explicit Formula(const std::string &formulaStr);
-    [[nodiscard]] std::vector<Token> getPostfixExpression() const;
+    [[nodiscard]] const std::vector<Token> &getPostfixExpression() const;
     [[nodiscard]] std::string getFormula() const;
 
     static std::vector<Token> tokenize(const std::string &formulaStr);
@@ -33,6 +33,16 @@ private:
     std::vector<Token> postfixExpression;
 };
 
+
+inline const std::vector<Token> &Formula::getPostfixExpression() const
+{
+    return postfixExpression;
+}
+
+inline std::string Formula::getFormula() const
+{
+    return formula;
+}
 
 
 #endif //FORMULA_H

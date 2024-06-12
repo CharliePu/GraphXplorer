@@ -13,16 +13,6 @@ Formula::Formula(const std::string &formulaStr):
 {
 }
 
-std::vector<Token> Formula::getPostfixExpression() const
-{
-    return postfixExpression;
-}
-
-std::string Formula::getFormula() const
-{
-    return formula;
-}
-
 std::vector<Token> Formula::tokenize(const std::string &formulaStr)
 {
     if (formulaStr.empty())

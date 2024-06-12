@@ -16,7 +16,8 @@ GraphRasterizer::GraphRasterizer(const std::shared_ptr<Window> &window):
 {
 }
 
-int GraphRasterizer::evaluateGraph(const std::unique_ptr<GraphNode> &node, const Interval<double> xRange, const Interval<double> yRange)
+int GraphRasterizer::evaluateGraph(const std::unique_ptr<GraphNode> &node, const Interval<double> &xRange,
+                                   const Interval<double> &yRange)
 {
     if (nodeIsLeaf(node))
     {
@@ -34,7 +35,7 @@ int GraphRasterizer::evaluateGraph(const std::unique_ptr<GraphNode> &node, const
         }
     }
 
-    for (auto& child : node->children)
+    for (const auto& child : node->children)
     {
         if (child->xRange.contains(xRange) && child->yRange.contains(yRange))
         {

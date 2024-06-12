@@ -6,6 +6,7 @@
 
 #include <future>
 #include <iostream>
+#include <string>
 
 void ConsoleInput::inputFromConsole()
 {

@@ -28,7 +28,7 @@ public:
     explicit GraphRasterizer(const std::shared_ptr<Window> &window);
 
 
-    static int evaluateGraph(const std::unique_ptr<GraphNode>& node, Interval<double> xRange, Interval<double> yRange);
+    static int evaluateGraph(const std::unique_ptr<GraphNode>& node, const Interval<double> &xRange, const Interval<double> &yRange);
 
     void rasterize(const std::shared_ptr<Graph> &graph, const Interval<double> &xRange, const Interval<double> &yRange, int windowWidth, int
                    windowHeight);

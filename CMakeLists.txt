@@ -32,14 +32,14 @@ add_executable(GraphXplorer src/main.cpp
         src/UI/ConsoleInput.h
         src/Math/Formula.cpp
         src/Math/Formula.h
-        src/Math/ComputeEngine.cpp
-        src/Math/ComputeEngine.h
+        src/Math/GraphProcessor.cpp
+        src/Math/GraphProcessor.h
         src/Math/Graph.cpp
         src/Math/Graph.h
         src/Math/Interval.cpp
         src/Math/Interval.h
-        src/Render/GraphRasterizer.cpp
-        src/Render/GraphRasterizer.h
+        src/Math/GraphRasterizer.cpp
+        src/Math/GraphRasterizer.h
         src/Util/ThreadPool.cpp
         src/Util/ThreadPool.h
         src/Core/Window.cpp

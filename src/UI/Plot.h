@@ -23,14 +23,14 @@ namespace staplegl
 class GraphRasterizer;
 class Formula;
 struct Graph;
-class ComputeEngine;
+class GraphProcessor;
 
 class Plot: public UIComponent {
 
 public:
     void prepareVertices() const;
 
-    Plot(const std::shared_ptr<ComputeEngine> &engine, const std::shared_ptr<Window> &window);
+    Plot(const std::shared_ptr<GraphProcessor> &processor, const std::shared_ptr<GraphRasterizer> &rasterizer, const std::shared_ptr<Window> &window);
 
     void setPlotCompleteCallback(const std::function<void(const std::vector<Mesh> &)> &callback);
 
@@ -53,7 +53,7 @@ public:
 private:
     std::shared_ptr<Graph> graph;
     std::shared_ptr<Formula> formula;
-    std::shared_ptr<ComputeEngine> computeEngine;
+    std::shared_ptr<GraphProcessor> computeEngine;
     std::shared_ptr<GraphRasterizer> graphRasterizer;
     std::shared_ptr<Window> window;
 
@@ -61,7 +61,6 @@ private:
     std::function<void(const Interval<double> &, const Interval<double> &)> plotRangeChangedCallback;
 
     Interval<double> xRange, yRange;
-    Interval<double> actualXRange, actualYRange;
 
     std::shared_ptr<staplegl::vertex_array> vao;
     std::shared_ptr<staplegl::shader_program> shader;

@@ -7,14 +7,18 @@
 #include "../Core/Input.h"
 
 
-class ComputeEngine;
+class GraphRasterizer;
+class GraphProcessor;
 class MainScene;
 class Renderer;
 class Scene;
 
 class SceneManager : public UserInputHandler {
 public:
-    SceneManager(const std::shared_ptr<ComputeEngine> &engine, const std::shared_ptr<Renderer> &renderer, const std::shared_ptr<Window> &window);
+    SceneManager(const std::shared_ptr<GraphProcessor> &processor,
+                           const std::shared_ptr<GraphRasterizer> &rasterizer,
+                           const std::shared_ptr<Renderer> &renderer,
+                           const std::shared_ptr<Window> &window);
 
     void onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action, glfw::ModifierKeyBit mods) override;
 

@@ -5,11 +5,13 @@
 #include "SceneManager.h"
 
 #include "MainScene.h"
+#include "../Math/GraphRasterizer.h"
 
-SceneManager::SceneManager(const std::shared_ptr<ComputeEngine> &engine,
+SceneManager::SceneManager(const std::shared_ptr<GraphProcessor> &processor,
+                           const std::shared_ptr<GraphRasterizer> &rasterizer,
                            const std::shared_ptr<Renderer> &renderer,
                            const std::shared_ptr<Window> &window)
-    : mainScene{std::make_shared<MainScene>(engine, renderer, window)},
+    : mainScene{std::make_shared<MainScene>(processor, rasterizer, renderer, window)},
       currentScene{mainScene}
 {
 }

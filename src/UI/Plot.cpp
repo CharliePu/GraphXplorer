@@ -10,11 +10,10 @@
 
 #include "../Math/Formula.h"
 #include "../Math/Graph.h"
-#include "../Math/ComputeEngine.h"
-#include "../Render/GraphRasterizer.h"
+#include "../Math/GraphProcessor.h"
+#include "../Math/GraphRasterizer.h"
 #include "../Render/Mesh.h"
 #include "../Core/Window.h"
-
 
 
 void Plot::prepareVertices() const
@@ -42,27 +41,32 @@ void Plot::prepareVertices() const
     vao->set_index_buffer(std::move(ebo));
 }
 
-Plot::Plot(const std::shared_ptr<ComputeEngine> &engine, const std::shared_ptr<Window> &window): graph{},
-    formula{},
-    computeEngine{engine},
-    graphRasterizer{std::make_shared<GraphRasterizer>(window)},
-    window{window},
-    xRange{-20.0, 20.0},
-    yRange{-20.0, 20.0},
-    vao{std::make_shared<staplegl::vertex_array>()},
-    shader{
-        new staplegl::shader_program{
-            "plot_shader",
-            {
-                std::pair{staplegl::shader_type::vertex, "./shader/plot.vert"},
-                std::pair{staplegl::shader_type::fragment, "./shader/plot.frag"}
-            }
-        }
-    },
-    model{1.0}
+Plot::Plot(const std::shared_ptr<GraphProcessor> &processor, const std::shared_ptr<GraphRasterizer> &rasterizer,
+           const std::shared_ptr<Window> &window): graph{},
+                                                   formula{},
+                                                   computeEngine{processor},
+                                                   graphRasterizer{rasterizer},
+                                                   window{window},
+                                                   xRange{-20.0, 20.0},
+                                                   yRange{-20.0, 20.0},
+                                                   vao{std::make_shared<staplegl::vertex_array>()},
+                                                   shader{
+                                                       new staplegl::shader_program{
+                                                           "plot_shader",
+                                                           {
+                                                               std::pair{
+                                                                   staplegl::shader_type::vertex, "./shader/plot.vert"
+                                                               },
+                                                               std::pair{
+                                                                   staplegl::shader_type::fragment, "./shader/plot.frag"
+                                                               }
+                                                           }
+                                                       }
+                                                   },
+                                                   model{1.0}
 {
     computeEngine->setComputeCompleteCallback([this](const ComputeRequest &result) {
-        graphRasterizer->rasterize(result.graph, result.xRange, result.yRange, result.windowWidth, result.windowHeight);
+        graphRasterizer->rasterizeTemp(result.graph, result.xRange, result.yRange, result.windowWidth, result.windowHeight);
     });
 
     graphRasterizer->setRasterizeCompleteCallback([this](const std::vector<int> &image) {
@@ -151,9 +155,13 @@ void Plot::onCursorDrag(const double x, const double y)
     // Temporarily offset the old graph
     // Once the new graph is ready, the transformation will be reset
     model = glm::translate(model, glm::vec3{x * deltaX / xRange.size() * 2.0, y * -deltaY / xRange.size() * 2.0, 0.0f});
-    plotMesh.shader->bind();
-    plotMesh.shader->upload_uniform_mat4f("transform", std::span<float, 16>{glm::value_ptr(model), 16});
-    plotCompleteCallback({plotMesh});
+    // TODO: make plotMesh a pointer and check if it is nullptr
+    if (plotMesh.shader != nullptr)
+    {
+        plotMesh.shader->bind();
+        plotMesh.shader->upload_uniform_mat4f("transform", std::span<float, 16>{glm::value_ptr(model), 16});
+        plotCompleteCallback({plotMesh});
+    }
 
     if (formula)
     {

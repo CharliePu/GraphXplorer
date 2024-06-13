@@ -35,10 +35,10 @@ struct ComputeTask
     std::future<void> future;
 };
 
-class ComputeEngine
+class GraphProcessor
 {
 public:
-    explicit ComputeEngine(const std::shared_ptr<Window> &window);
+    GraphProcessor(const std::shared_ptr<Window> &window, const std::shared_ptr<ThreadPool> &threadPool);
 
     void setComputeCompleteCallback(const std::function<void(const ComputeRequest &)> &callback);
 
@@ -78,9 +78,9 @@ private:
 
     std::shared_ptr<Window> window;
 
-    std::function<void(const ComputeRequest &)> computeCompleteCallback;
+    std::shared_ptr<ThreadPool> threadPool;
 
-    ThreadPool threadPool;
+    std::function<void(const ComputeRequest &)> computeCompleteCallback;
 
     std::shared_ptr<ComputeTask> currentTask;
 };

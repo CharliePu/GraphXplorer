@@ -2,7 +2,7 @@
 // Created by charl on 6/3/2024.
 //
 
-#include "ComputeEngine.h"
+#include "GraphProcessor.h"
 
 #include <cmath>
 #include <iostream>
@@ -12,16 +12,17 @@
 #include "Formula.h"
 #include "Graph.h"
 
-ComputeEngine::ComputeEngine(const std::shared_ptr<Window> &window) : window{window}
+GraphProcessor::GraphProcessor(const std::shared_ptr<Window> &window, const std::shared_ptr<ThreadPool> &threadPool):
+    window{window}, threadPool{threadPool}
 {
 }
 
-void ComputeEngine::setComputeCompleteCallback(const std::function<void(const ComputeRequest &)> &callback)
+void GraphProcessor::setComputeCompleteCallback(const std::function<void(const ComputeRequest &)> &callback)
 {
     computeCompleteCallback = callback;
 }
 
-std::pair<Interval<double>, Interval<double>> ComputeEngine::getRoundedRanges(const ComputeRequest &request)
+std::pair<Interval<double>, Interval<double>> GraphProcessor::getRoundedRanges(const ComputeRequest &request)
 {
     assert(request.graph);
 
@@ -60,24 +61,24 @@ std::pair<Interval<double>, Interval<double>> ComputeEngine::getRoundedRanges(co
     return {xRange, yRange};
 }
 
-bool ComputeEngine::isPowerOfTwo(double size)
+bool GraphProcessor::isPowerOfTwo(double size)
 {
     return std::abs(std::log2(size) - std::floor(std::log2(size))) < std::numeric_limits<double>::epsilon();
 }
 
-bool ComputeEngine::nodesIntervalMatches(const std::unique_ptr<GraphNode> &curr, const std::unique_ptr<GraphNode> &root)
+bool GraphProcessor::nodesIntervalMatches(const std::unique_ptr<GraphNode> &curr, const std::unique_ptr<GraphNode> &root)
 {
     return curr->xRange == root->xRange && curr->yRange == root->yRange;
 }
 
-bool ComputeEngine::nodeIsLeaf(const std::unique_ptr<GraphNode> &curr)
+bool GraphProcessor::nodeIsLeaf(const std::unique_ptr<GraphNode> &curr)
 {
     assert(curr);
 
     return !curr->children[0] && !curr->children[1] && !curr->children[2] && !curr->children[3];
 }
 
-std::unique_ptr<GraphNode> *ComputeEngine::getMatchingChildNode(const std::unique_ptr<GraphNode> &parentNode,
+std::unique_ptr<GraphNode> *GraphProcessor::getMatchingChildNode(const std::unique_ptr<GraphNode> &parentNode,
                                                                 const std::unique_ptr<GraphNode> &nodeToMatch)
 {
     assert(parentNode->xRange.contains(nodeToMatch->xRange));
@@ -93,7 +94,7 @@ std::unique_ptr<GraphNode> *ComputeEngine::getMatchingChildNode(const std::uniqu
     return &parentNode->children[childIndex];
 }
 
-void ComputeEngine::expandGraphToPlaceNode(std::unique_ptr<GraphNode> &nodeToExpand,
+void GraphProcessor::expandGraphToPlaceNode(std::unique_ptr<GraphNode> &nodeToExpand,
                                            std::unique_ptr<GraphNode> &nodeToPlace)
 {
     auto curr = &nodeToExpand;
@@ -110,7 +111,7 @@ void ComputeEngine::expandGraphToPlaceNode(std::unique_ptr<GraphNode> &nodeToExp
     *curr = std::move(nodeToPlace);
 }
 
-std::unique_ptr<GraphNode> ComputeEngine::createNode(GraphNode *parent, Interval<double> xRange,
+std::unique_ptr<GraphNode> GraphProcessor::createNode(GraphNode *parent, Interval<double> xRange,
                                                      Interval<double> yRange)
 {
     auto node = std::make_unique<GraphNode>();
@@ -126,7 +127,7 @@ std::unique_ptr<GraphNode> ComputeEngine::createNode(GraphNode *parent, Interval
 }
 
 
-void ComputeEngine::expandGraph(const std::shared_ptr<Graph> &graph,
+void GraphProcessor::expandGraph(const std::shared_ptr<Graph> &graph,
                                 const Interval<double> &targetXRange,
                                 const Interval<double> &targetYRange)
 {
@@ -162,7 +163,7 @@ void ComputeEngine::expandGraph(const std::shared_ptr<Graph> &graph,
     graph->root = std::move(newRoot);
 }
 
-void ComputeEngine::subdivideNode(const std::unique_ptr<GraphNode> &curr)
+void GraphProcessor::subdivideNode(const std::unique_ptr<GraphNode> &curr)
 {
     assert(nodeIsLeaf(curr));
 
@@ -180,7 +181,7 @@ void ComputeEngine::subdivideNode(const std::unique_ptr<GraphNode> &curr)
     children[3] = createNode(curr.get(), {midX, xUpper}, {midY, yUpper});
 }
 
-void ComputeEngine::recursiveComputeNodes(const ComputeRequest &request, const std::shared_ptr<Graph> &graph)
+void GraphProcessor::recursiveComputeNodes(const ComputeRequest &request, const std::shared_ptr<Graph> &graph)
 {
 
     std::unordered_map<std::unique_ptr<GraphNode> *, std::future<void> > futuresMap;
@@ -226,7 +227,7 @@ void ComputeEngine::recursiveComputeNodes(const ComputeRequest &request, const s
 
             if (child->solution == IntervalValues::Unknown_s)
             {
-                futuresMap.emplace(&child, threadPool.addTask(computeTask, &child, request.formula));
+                futuresMap.emplace(&child, threadPool->addTask(computeTask, &child, request.formula));
             }
         }
     }
@@ -242,7 +243,7 @@ void ComputeEngine::recursiveComputeNodes(const ComputeRequest &request, const s
     glfw::postEmptyEvent();
 }
 
-void ComputeEngine::requestProcessGraph(const ComputeRequest &request)
+void GraphProcessor::requestProcessGraph(const ComputeRequest &request)
 {
     if (!request.formula)
     {
@@ -254,7 +255,7 @@ void ComputeEngine::requestProcessGraph(const ComputeRequest &request)
     if (currentTask)
     {
         currentTask.reset();
-        threadPool.markAllTasksLowPriority();
+        threadPool->markAllTasksLowPriority();
     }
 
     auto [xRange, yRange] = getRoundedRanges(request);
@@ -266,6 +267,7 @@ void ComputeEngine::requestProcessGraph(const ComputeRequest &request)
         promise.set_value();
         std::future<void> future = promise.get_future();
 
+        // std::cerr<<"Start of recursive compute(fake)!\n"<<std::endl;
         currentTask = std::make_shared<ComputeTask>(request, std::move(future));
         glfw::postEmptyEvent();
         return;
@@ -285,16 +287,19 @@ void ComputeEngine::requestProcessGraph(const ComputeRequest &request)
         assert(request.graph->root->yRange.contains(request.yRange));
     }
 
-    auto future = threadPool.addTask(&ComputeEngine::recursiveComputeNodes, this, request, request.graph);
+    // std::cerr<<"Start of recursive compute!\n"<<std::endl;
+
+    auto future = threadPool->addTask(&GraphProcessor::recursiveComputeNodes, this, request, request.graph);
     currentTask = std::make_shared<ComputeTask>(request, std::move(future));
 }
 
-void ComputeEngine::pollAsyncStates()
+void GraphProcessor::pollAsyncStates()
 {
     if (currentTask)
     {
         if (currentTask->future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
         {
+            // std::cerr<<"End of recursive compute!\n"<<std::endl;
             computeCompleteCallback(currentTask->request);
             currentTask.reset();
         }
@@ -305,7 +310,7 @@ void ComputeEngine::pollAsyncStates()
     }
 }
 
-void ComputeEngine::computeTask(const std::unique_ptr<GraphNode> *node, const std::shared_ptr<Formula> &formula)
+void GraphProcessor::computeTask(const std::unique_ptr<GraphNode> *node, const std::shared_ptr<Formula> &formula)
 {
     if ((*node)->solution != IntervalValues::Unknown_s)
     {
@@ -381,14 +386,14 @@ void ComputeEngine::computeTask(const std::unique_ptr<GraphNode> *node, const st
     (*node)->solution = result;
 }
 
-Interval<double> &ComputeEngine::getGraphXRange(const std::shared_ptr<Graph> &graph)
+Interval<double> &GraphProcessor::getGraphXRange(const std::shared_ptr<Graph> &graph)
 {
     assert(graph->root);
 
     return graph->root->xRange;
 }
 
-Interval<double> &ComputeEngine::getGraphYRange(const std::shared_ptr<Graph> &graph)
+Interval<double> &GraphProcessor::getGraphYRange(const std::shared_ptr<Graph> &graph)
 {
     assert(graph->root);
 

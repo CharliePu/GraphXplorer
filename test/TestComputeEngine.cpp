@@ -3,7 +3,7 @@
 //
 #define CATCH_CONFIG_MAIN
 #include <catch.hpp>
-#include "../src/Math/ComputeEngine.h"
+#include "../src/Math/GraphProcessor.h"
 
 
 TEST_CASE("Expand Graph", "[expandGraph]") {

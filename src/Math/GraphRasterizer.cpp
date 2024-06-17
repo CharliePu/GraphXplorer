@@ -4,13 +4,10 @@
 
 #include "GraphRasterizer.h"
 
-#include <iostream>
-#include <queue>
-
 #include "../Render/Mesh.h"
-#include "Graph.h"
+#include "../Graph/Graph.h"
+#include "../Graph/GraphOperations.h"
 #include "../Core/Window.h"
-#include "GraphProcessor.h"
 #include "../Util/ThreadPool.h"
 
 GraphRasterizer::GraphRasterizer(const std::shared_ptr<Window> &window,
@@ -49,13 +46,6 @@ int GraphRasterizer::evaluateGraph(const std::unique_ptr<GraphNode> &node, const
     throw std::invalid_argument("Failed to evaluate graph");
 }
 
-void GraphRasterizer::requestRasterize(const std::shared_ptr<Graph> &graph, const Interval<double> &xRange,
-                                const Interval<double> &yRange, const int windowWidth, const int windowHeight)
-{
-    // std::cerr<<"Start of rasterize!\n"<<std::endl;
-    taskFuture = threadPool->addTask(GraphRasterizer::rasterize, this, graph, xRange, yRange, windowWidth, windowHeight);
-}
-
 std::vector<int> GraphRasterizer::rasterize(const std::shared_ptr<Graph> &graph, const Interval<double> &xRange,
                                             const Interval<double> &yRange, const int windowWidth,
                                             const int windowHeight)
@@ -83,38 +73,4 @@ std::vector<int> GraphRasterizer::rasterize(const std::shared_ptr<Graph> &graph,
     }
 
     return image;
-}
-
-void GraphRasterizer::pollAsyncStates()
-{
-    if (taskFuture.valid())
-    {
-        if (taskFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
-        {
-            rasterizeCompleteCallback(taskFuture.get());
-            // std::cerr<<"End of rasterize!\n"<<std::endl;
-        }
-        else
-        {
-            glfw::postEmptyEvent();
-        }
-    }
-}
-
-void GraphRasterizer::setRasterizeCompleteCallback(const std::function<void(const std::vector<int> &)> &callback)
-{
-    rasterizeCompleteCallback = callback;
-}
-
-// TODO: remove this function
-void GraphRasterizer::rasterizeTemp(const std::shared_ptr<Graph> &graph, Interval<double> interval,
-    Interval<double> yRange, int windowWidth, int windowHeight)
-{
-    auto image = rasterize(graph, interval, yRange, windowWidth, windowHeight);
-    rasterizeCompleteCallback(image);
-}
-
-bool GraphRasterizer::nodeIsLeaf(const std::unique_ptr<GraphNode> &curr)
-{
-    return !curr->children[0] && !curr->children[1] && !curr->children[2] && !curr->children[3];
 }

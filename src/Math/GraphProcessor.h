@@ -2,8 +2,8 @@
 // Created by charl on 6/3/2024.
 //
 
-#ifndef COMPUTEENGINE_H
-#define COMPUTEENGINE_H
+#ifndef GRAPHPROCESSOR_H
+#define GRAPHPROCESSOR_H
 #include <functional>
 #include <memory>
 #include <unordered_set>
@@ -19,71 +19,34 @@ class Window;
 class Formula;
 struct Graph;
 
-struct ComputeRequest
-{
-    std::shared_ptr<Graph> graph;
-    std::shared_ptr<Formula> formula;
-    Interval<double> xRange;
-    Interval<double> yRange;
-    int windowWidth;
-    int windowHeight;
-};
-
-struct ComputeTask
-{
-    ComputeRequest request;
-    std::future<void> future;
-};
-
 class GraphProcessor
 {
 public:
     GraphProcessor(const std::shared_ptr<Window> &window, const std::shared_ptr<ThreadPool> &threadPool);
 
-    void setComputeCompleteCallback(const std::function<void(const ComputeRequest &)> &callback);
-
-    void requestProcessGraph(const ComputeRequest &request);
-
-    void pollAsyncStates();
+    void process(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula, const Interval<double> &xRange,
+                 const Interval<double> &yRange, int windowWidth, int windowHeight);
 
 private:
-    static void expandGraph(const std::shared_ptr<Graph> &graph, const Interval<double> &targetXRange,
-                            const Interval<double> &targetYRange);
-
     static void computeTask(const std::unique_ptr<GraphNode> *node, const std::shared_ptr<Formula> &formula);
 
-    static Interval<double> &getGraphXRange(const std::shared_ptr<Graph> &graph);
+    static void expandGraph(const std::shared_ptr<Graph> &graph, const Interval<double> &targetXRange,
+                        const Interval<double> &targetYRange);
 
-    static Interval<double> &getGraphYRange(const std::shared_ptr<Graph> &graph);
 
-    static bool isPowerOfTwo(double size);
-
-    static bool nodesIntervalMatches(const std::unique_ptr<GraphNode> &curr, const std::unique_ptr<GraphNode> &root);
-
-    static std::pair<Interval<double>, Interval<double> > getRoundedRanges(const ComputeRequest &request);
-
-    static bool nodeIsLeaf(const std::unique_ptr<GraphNode> &curr);
-
-    static std::unique_ptr<GraphNode> *getMatchingChildNode(const std::unique_ptr<GraphNode> &parentNode,
-                                                            const std::unique_ptr<GraphNode> &nodeToMatch);
+    static std::pair<Interval<double>, Interval<double> > getRoundedRanges(const std::shared_ptr<Graph> &graph, const Interval<double> &xRange, const
+                                                                           Interval<double> &yRange);
 
     static void expandGraphToPlaceNode(std::unique_ptr<GraphNode> &nodeToExpand,
                                        std::unique_ptr<GraphNode> &nodeToPlace);
 
-    static std::unique_ptr<GraphNode> createNode(GraphNode *parent, Interval<double> xRange, Interval<double> yRange);
-
-    static void subdivideNode(const std::unique_ptr<GraphNode> &curr);
-
-    void recursiveComputeNodes(const ComputeRequest &request, const std::shared_ptr<Graph> &graph);
+    void recursiveComputeNodes(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula, const Interval<double> &xRange, const
+                               Interval<double> &yRange, int windowWidth, int windowHeight);
 
     std::shared_ptr<Window> window;
 
     std::shared_ptr<ThreadPool> threadPool;
-
-    std::function<void(const ComputeRequest &)> computeCompleteCallback;
-
-    std::shared_ptr<ComputeTask> currentTask;
 };
 
 
-#endif //COMPUTEENGINE_H
+#endif //GRAPHPROCESSOR_H

@@ -12,7 +12,7 @@
 
 #include <utility>
 
-#include "../Math/GraphProcessor.h"
+#include "../Math/ComputeEngine.h"
 #include "../Math/GraphRasterizer.h"
 #include "../Util/ThreadPool.h"
 
@@ -22,9 +22,8 @@ Application::Application(const int width, const int height, const std::string &n
     renderer{std::make_shared<Renderer>(reinterpret_cast<GLADloadproc>(glfw::getProcAddress))},
     input{std::make_shared<Input>(window)},
     threadPool{std::make_shared<ThreadPool>()},
-    graphProcessor{std::make_shared<GraphProcessor>(window, threadPool)},
-    graphRasterizer{std::make_shared<GraphRasterizer>(window, threadPool)},
-    sceneManager{std::make_shared<SceneManager>(graphProcessor, graphRasterizer, renderer, window)}
+    computeEngine{std::make_shared<ComputeEngine>(window, threadPool)},
+    sceneManager{std::make_shared<SceneManager>(computeEngine, renderer, window)}
 {
 }
 
@@ -34,8 +33,7 @@ void Application::run()
 
     while (!window->shouldClose())
     {
-        graphProcessor->pollAsyncStates();
-        graphRasterizer->pollAsyncStates();
+        computeEngine->pollAsyncStates();
 
         renderer->clear();
         renderer->draw();

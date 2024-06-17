@@ -34,8 +34,7 @@ add_executable(GraphXplorer src/main.cpp
         src/Math/Formula.h
         src/Math/GraphProcessor.cpp
         src/Math/GraphProcessor.h
-        src/Math/Graph.cpp
-        src/Math/Graph.h
+        src/Graph/Graph.h
         src/Math/Interval.cpp
         src/Math/Interval.h
         src/Math/GraphRasterizer.cpp
@@ -52,6 +51,9 @@ add_executable(GraphXplorer src/main.cpp
         src/Render/TextMeshesGenerator.h
         src/UI/InputBox.cpp
         src/UI/InputBox.h
+        src/Graph/GraphOperations.h
+        src/Math/ComputeEngine.cpp
+        src/Math/ComputeEngine.h
 )
 
 target_include_directories(GraphXplorer PRIVATE ${CMAKE_SOURCE_DIR}/include)

@@ -20,6 +20,8 @@ public:
 
     void setUpdateStateCallback(const std::function<void(const std::vector<Mesh> &)> &callback);
 
+    void updateMeshes();
+
     void showInputBox();
 
     void hideInputBox();
@@ -41,6 +43,10 @@ private:
 
     Mesh boxMesh;
     std::vector<Mesh> textMeshes;
+
+    std::vector<Mesh> drawMeshes;
+
+    bool isVisible;
 
     std::string line;
     std::function<void(std::string)> inputCompleteCallback;

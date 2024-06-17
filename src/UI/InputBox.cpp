@@ -10,7 +10,7 @@
 #include "../Render/TextMeshesGenerator.h"
 #include "staplegl/staplegl.hpp"
 
-InputBox::InputBox(const std::shared_ptr<Window> &window): isInputing{false}, window{window}
+InputBox::InputBox(const std::shared_ptr<Window> &window): isInputing{false}, window{window}, isVisible{false}
 {
     prepareMesh();
 }
@@ -61,17 +61,34 @@ void InputBox::setUpdateStateCallback(const std::function<void(const std::vector
     updateStateCallback = callback;
 }
 
+void InputBox::updateMeshes()
+{
+    drawMeshes.clear();
+    drawMeshes.push_back(boxMesh);
+    drawMeshes.insert(drawMeshes.end(), textMeshes.begin(), textMeshes.end());
+
+    if (isVisible)
+    {
+        updateStateCallback(drawMeshes);
+    }
+    else
+    {
+        updateStateCallback({});
+    }
+}
+
 void InputBox::showInputBox()
 {
-    std::vector<Mesh> meshes{boxMesh};
-    meshes.insert(meshes.end(), textMeshes.begin(), textMeshes.end());
+    isVisible = true;
 
-    updateStateCallback(meshes);
+    updateMeshes();
 }
 
 void InputBox::hideInputBox()
 {
-    updateStateCallback({});
+    isVisible = false;
+
+    updateMeshes();
 }
 
 void InputBox::updateTextDisplay()
@@ -83,10 +100,7 @@ void InputBox::updateTextDisplay()
     textMeshes = textGenerator.generateTextMesh(line, -0.95, -0.95, 0.003, TextAlign::LEFT,
                                                 static_cast<double>(window->getWidth()) / window->getHeight());
 
-    std::vector<Mesh> meshes{boxMesh};
-    meshes.insert(meshes.end(), textMeshes.begin(), textMeshes.end());
-
-    updateStateCallback(meshes);
+    updateMeshes();
 }
 
 void InputBox::onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action, glfw::ModifierKeyBit mods)

@@ -42,6 +42,8 @@ private:
     Mesh boxMesh;
     std::vector<Mesh> textMeshes;
 
+    std::vector<Mesh> drawMeshes;
+
     std::string line;
     std::function<void(std::string)> inputCompleteCallback;
     std::function<void(const std::vector<Mesh> &)> updateStateCallback;

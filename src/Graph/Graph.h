@@ -7,7 +7,7 @@
 #include <array>
 #include <memory>
 
-#include "Interval.h"
+#include "../Math/Interval.h"
 
 struct GraphNode
 {

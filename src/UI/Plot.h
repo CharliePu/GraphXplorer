@@ -14,23 +14,23 @@
 #include "../Math/Interval.h"
 #include "../Render/Mesh.h"
 
+class ComputeEngine;
+
 namespace staplegl
 {
     class shader_program;
     class vertex_array;
 }
 
-class GraphRasterizer;
 class Formula;
 struct Graph;
-class GraphProcessor;
 
 class Plot: public UIComponent {
 
 public:
     void prepareVertices() const;
 
-    Plot(const std::shared_ptr<GraphProcessor> &processor, const std::shared_ptr<GraphRasterizer> &rasterizer, const std::shared_ptr<Window> &window);
+    Plot(const std::shared_ptr<ComputeEngine> &engine, const std::shared_ptr<Window> &window);
 
     void setPlotCompleteCallback(const std::function<void(const std::vector<Mesh> &)> &callback);
 
@@ -41,6 +41,8 @@ public:
     void requestNewPlot(const std::string & input);
 
     std::vector<Mesh> prepareMeshes(const std::vector<int> & image);
+
+    void updateModelMat();
 
     void onCursorDrag(double x, double y) override;
 
@@ -53,14 +55,13 @@ public:
 private:
     std::shared_ptr<Graph> graph;
     std::shared_ptr<Formula> formula;
-    std::shared_ptr<GraphProcessor> computeEngine;
-    std::shared_ptr<GraphRasterizer> graphRasterizer;
+    std::shared_ptr<ComputeEngine> computeEngine;
     std::shared_ptr<Window> window;
 
     std::function<void(const std::vector<Mesh> &)> plotCompleteCallback;
     std::function<void(const Interval<double> &, const Interval<double> &)> plotRangeChangedCallback;
 
-    Interval<double> xRange, yRange;
+    Interval<double> viewXRange, viewYRange, plotXRange, plotYRange;
 
     std::shared_ptr<staplegl::vertex_array> vao;
     std::shared_ptr<staplegl::shader_program> shader;

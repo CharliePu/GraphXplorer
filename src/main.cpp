@@ -2,7 +2,6 @@
 #include <iostream>
 
 #include "Core/Application.h"
-#include "Math/Graph.h"
 
 int main()
 {

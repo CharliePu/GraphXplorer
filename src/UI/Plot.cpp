@@ -9,9 +9,8 @@
 #include <staplegl/staplegl.hpp>
 
 #include "../Math/Formula.h"
-#include "../Math/Graph.h"
-#include "../Math/GraphProcessor.h"
-#include "../Math/GraphRasterizer.h"
+#include "../Graph/Graph.h"
+#include "../Math/ComputeEngine.h"
 #include "../Render/Mesh.h"
 #include "../Core/Window.h"
 
@@ -41,14 +40,15 @@ void Plot::prepareVertices() const
     vao->set_index_buffer(std::move(ebo));
 }
 
-Plot::Plot(const std::shared_ptr<GraphProcessor> &processor, const std::shared_ptr<GraphRasterizer> &rasterizer,
+Plot::Plot(const std::shared_ptr<ComputeEngine> &engine,
            const std::shared_ptr<Window> &window): graph{},
                                                    formula{},
-                                                   computeEngine{processor},
-                                                   graphRasterizer{rasterizer},
+                                                   computeEngine{engine},
                                                    window{window},
-                                                   xRange{-20.0, 20.0},
-                                                   yRange{-20.0, 20.0},
+                                                   viewXRange{-20.0, 20.0},
+                                                   viewYRange{-20.0, 20.0},
+                                                   plotXRange{-20.0, 20.0},
+                                                   plotYRange{-20.0, 20.0},
                                                    vao{std::make_shared<staplegl::vertex_array>()},
                                                    shader{
                                                        new staplegl::shader_program{
@@ -65,17 +65,16 @@ Plot::Plot(const std::shared_ptr<GraphProcessor> &processor, const std::shared_p
                                                    },
                                                    model{1.0}
 {
-    computeEngine->setComputeCompleteCallback([this](const ComputeRequest &result) {
-        graphRasterizer->rasterizeTemp(result.graph, result.xRange, result.yRange, result.windowWidth, result.windowHeight);
-    });
+    computeEngine->setComputeCompleteCallback(
+        [this](const std::vector<int> &image, Interval<double> xRange, Interval<double> yRange) {
+            plotXRange = xRange;
+            plotYRange = yRange;
+            updateModelMat();
 
-    graphRasterizer->setRasterizeCompleteCallback([this](const std::vector<int> &image) {
-        // Reset temporary transformation
-        model = glm::mat4{1.0};
-        const auto meshes = prepareMeshes(image);
+            const auto meshes = prepareMeshes(image);
 
-        plotCompleteCallback(meshes);
-    });
+            plotCompleteCallback(meshes);
+        });
 
     prepareVertices();
 }
@@ -102,7 +101,7 @@ void Plot::requestNewPlot(const std::string &input)
 
     graph = std::make_shared<Graph>();
 
-    computeEngine->requestProcessGraph({graph, formula, xRange, yRange, window->getWidth(), window->getHeight()});
+    computeEngine->addTask({graph, formula, viewXRange, viewYRange, window->getWidth(), window->getHeight()});
 }
 
 std::vector<Mesh> Plot::prepareMeshes(const std::vector<int> &image)
@@ -139,22 +138,30 @@ std::vector<Mesh> Plot::prepareMeshes(const std::vector<int> &image)
     return {plotMesh};
 }
 
+void Plot::updateModelMat()
+{
+    const auto translate = glm::vec3{viewXRange.mid() - plotXRange.mid(), viewYRange.mid() - plotYRange.mid(), 0.0f};
+    const auto NDCtoViewMat = glm::scale(glm::mat4(1.0), glm::vec3{viewXRange.size() / 2.0, viewYRange.size() / 2.0, 1.0});
+    const auto translateMat = glm::translate(glm::mat4(1.0), -translate);
+    const auto ViewtoNDCMat = glm::scale(glm::mat4(1.0), glm::vec3{2.0 / viewXRange.size(), 2.0 / viewYRange.size(), 1.0});
+    model = ViewtoNDCMat * translateMat * NDCtoViewMat;
+}
+
 void Plot::onCursorDrag(const double x, const double y)
 {
     const auto windowWidth{window->getWidth()};
     const auto windowHeight{window->getHeight()};
 
-    const auto deltaX{xRange.size() / windowWidth};
-    const auto deltaY{yRange.size() / windowHeight};
+    const auto deltaX{viewXRange.size() / windowWidth};
+    const auto deltaY{viewYRange.size() / windowHeight};
 
-    xRange = xRange + x * -deltaX;
-    yRange = yRange + y * deltaY;
+    viewXRange = viewXRange + x * -deltaX;
+    viewYRange = viewYRange + y * deltaY;
 
-    plotRangeChangedCallback(xRange, yRange);
+    plotRangeChangedCallback(viewXRange, viewYRange);
 
-    // Temporarily offset the old graph
-    // Once the new graph is ready, the transformation will be reset
-    model = glm::translate(model, glm::vec3{x * deltaX / xRange.size() * 2.0, y * -deltaY / xRange.size() * 2.0, 0.0f});
+    updateModelMat();
+
     // TODO: make plotMesh a pointer and check if it is nullptr
     if (plotMesh.shader != nullptr)
     {
@@ -165,7 +172,7 @@ void Plot::onCursorDrag(const double x, const double y)
 
     if (formula)
     {
-        computeEngine->requestProcessGraph({graph, formula, xRange, yRange, windowWidth, windowHeight});
+        computeEngine->addTask({graph, formula, viewXRange, viewYRange, windowWidth, windowHeight});
     }
 }
 
@@ -173,21 +180,21 @@ void Plot::onWindowSizeChanged(const int width, const int height)
 {
     auto ratio = width / static_cast<double>(height);
 
-    double xRangeSize = yRange.size() * ratio;
+    double xRangeSize = viewYRange.size() * ratio;
 
-    double xRangeMid = (xRange.lower + xRange.upper) / 2.0;
+    double xRangeMid = (viewXRange.lower + viewXRange.upper) / 2.0;
 
-    xRange = {xRangeMid - xRangeSize / 2.0, xRangeMid + xRangeSize / 2.0};
+    viewXRange = {xRangeMid - xRangeSize / 2.0, xRangeMid + xRangeSize / 2.0};
 
-    computeEngine->requestProcessGraph({graph, formula, xRange, yRange, width, height});
+    computeEngine->addTask({graph, formula, viewXRange, viewYRange, width, height});
 }
 
 Interval<double> Plot::getXRanges() const
 {
-    return xRange;
+    return viewXRange;
 }
 
 Interval<double> Plot::getYRanges() const
 {
-    return yRange;
+    return viewYRange;
 }

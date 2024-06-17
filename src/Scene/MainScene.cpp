@@ -12,17 +12,16 @@
 #include "../UI/AxisLabels.h"
 #include "../UI/InputBox.h"
 
-MainScene::MainScene(const std::shared_ptr<GraphProcessor> &processor,
-                     const std::shared_ptr<GraphRasterizer> &rasterizer,
+MainScene::MainScene(const std::shared_ptr<ComputeEngine> &engine,
                      const std::shared_ptr<Renderer> &renderer,
                      const std::shared_ptr<Window> &window): plot(std::make_shared<Plot>(
-                                                                 processor, rasterizer, window)),
+                                                                 engine, window)),
                                                              grid(std::make_shared<Grid>(window)),
                                                              axisLabels(std::make_shared<AxisLabels>(window)),
                                                              cmd(std::make_shared<ConsoleInput>()),
                                                              inputBox(std::make_shared<InputBox>(window))
 {
-    cmd->setInputCompleteCallback([this, processor](const std::string &input) {
+    cmd->setInputCompleteCallback([this](const std::string &input) {
         plot->requestNewPlot(input);
     });
 
@@ -30,7 +29,7 @@ MainScene::MainScene(const std::shared_ptr<GraphProcessor> &processor,
         renderer->updateMeshes(inputBox, meshes);
     });
 
-    inputBox->setInputCompleteCallback([this, processor](const std::string &input) {
+    inputBox->setInputCompleteCallback([this](const std::string &input) {
         plot->requestNewPlot(input);
     });
 

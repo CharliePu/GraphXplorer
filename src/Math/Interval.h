@@ -26,6 +26,8 @@ struct Interval
 
     [[nodiscard]] bool crossesZero() const;
 
+    [[nodiscard]] T mid() const;
+
     Interval<double> operator+(double x) const;
 };
 
@@ -203,6 +205,12 @@ bool Interval<T>::crossesZero() const
 {
     assert(lower <= upper);
     return (lower < 0 && upper > 0);
+}
+
+template<typename T>
+T Interval<T>::mid() const
+{
+    return (lower + upper) / 2;
 }
 
 template<typename T>

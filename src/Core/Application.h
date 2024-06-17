@@ -13,6 +13,7 @@
 #include "Input.h"
 
 
+class ComputeEngine;
 class ThreadPool;
 class Window;
 class GraphRasterizer;
@@ -41,8 +42,7 @@ private:
     std::shared_ptr<Renderer> renderer;
     std::shared_ptr<Input> input;
     std::shared_ptr<ThreadPool> threadPool;
-    std::shared_ptr<GraphProcessor> graphProcessor;
-    std::shared_ptr<GraphRasterizer> graphRasterizer;
+    std::shared_ptr<ComputeEngine> computeEngine;
     std::shared_ptr<SceneManager> sceneManager;
 };
 

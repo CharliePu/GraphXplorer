@@ -115,12 +115,26 @@ inline Interval<bool> operator<=(const ComputeInterval &lhs, const ComputeInterv
 
 inline Interval<bool> operator==(const ComputeInterval &lhs, const ComputeInterval &rhs)
 {
-    return {lhs.value.lower == rhs.value.lower, lhs.value.upper == rhs.value.upper};
+    if (lhs.value.lower == rhs.value.lower && lhs.value.upper == rhs.value.upper)
+    {
+        if (lhs.value.lower == lhs.value.upper && rhs.value.lower == rhs.value.upper)
+        {
+            return IntervalValues::True;
+        }
+        else
+        {
+            return IntervalValues::Unknown_s;
+        }
+    }
+    else
+    {
+        return IntervalValues::False;
+    }
 }
 
-inline Interval<bool> operator!(const Interval<bool> &interval)
+inline Interval<bool> operator!=(const ComputeInterval &lhs, const ComputeInterval &rhs)
 {
-    return {!interval.upper, !interval.lower};
+    return {lhs.value.lower != rhs.value.lower, lhs.value.upper != rhs.value.upper};
 }
 
 inline ComputeInterval operator+(const ComputeInterval &lhs, const ComputeInterval &rhs)
@@ -166,6 +180,36 @@ inline ComputeInterval operator/(const ComputeInterval &lhs, const ComputeInterv
                 *std::ranges::max_element(candidates)
             }
     };
+}
+
+inline ComputeInterval pow(const ComputeInterval& base, const ComputeInterval& exp) {
+    // Case 1: Both bounds of base are positive
+    if (base.value.lower > 0) {
+        return {std::pow(base.value.lower, exp.value.lower), std::pow(base.value.upper, exp.value.upper)};
+    }
+
+    // Case 2: Both bounds of base are negative
+    if (base.value.upper < 0)
+    {
+        if (static_cast<int>(exp.value.lower) != exp.value.lower || static_cast<int>(exp.value.upper) != exp.value.upper) {
+            throw std::invalid_argument("Interval exponentiation not defined for non-integer exponents with negative bases.");
+        }
+
+        if (static_cast<int>(exp.value.lower) % 2 == 0 && static_cast<int>(exp.value.upper) % 2 == 0) {
+            return {std::pow(base.value.lower, exp.value.lower), std::pow(base.value.upper, exp.value.upper)};
+        }
+
+        if (static_cast<int>(exp.value.lower) % 2 != 0 && static_cast<int>(exp.value.upper) % 2 != 0) {
+            return {std::pow(base.value.upper, exp.value.lower), std::pow(base.value.lower, exp.value.upper)};
+        }
+
+        throw std::invalid_argument("Interval exponentiation not defined for mixed parity exponents.");
+    }
+
+    // Case 3: Base interval spans zero
+    const double min_pow = std::min({std::pow(base.value.lower, exp.value.lower), std::pow(base.value.lower, exp.value.upper), std::pow(base.value.upper, exp.value.lower), std::pow(base.value.upper, exp.value.upper)});
+    const double max_pow = std::max({std::pow(base.value.lower, exp.value.lower), std::pow(base.value.lower, exp.value.upper), std::pow(base.value.upper, exp.value.lower), std::pow(base.value.upper, exp.value.upper)});
+    return {min_pow, max_pow};
 }
 
 

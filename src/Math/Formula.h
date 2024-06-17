@@ -9,6 +9,8 @@
 
 enum TokenType {
     Operator,
+    Function,
+    Bracket,
     Value,
     Variable
 };
@@ -25,7 +27,7 @@ public:
     [[nodiscard]] const std::vector<Token> &getPostfixExpression() const;
     [[nodiscard]] std::string getFormula() const;
 
-    static std::vector<Token> tokenize(const std::string &formulaStr);
+    static std::vector<Token> tokenize(std::string formulaStr);
     static std::vector<Token> infixToPostfix(const std::vector<Token> &tokens);
 private:
 

@@ -277,6 +277,26 @@ void GraphProcessor::computeTask(const std::unique_ptr<GraphNode> *node, const s
                 result = operand1 < operand2;
                 break;
             }
+            else if (value == ">=")
+            {
+                result = operand1 >= operand2;
+                break;
+            }
+            else if (value == "<=")
+            {
+                result = operand1 <= operand2;
+                break;
+            }
+            else if (value == "=")
+            {
+                result = operand1 == operand2;
+                break;
+            }
+            else if (value == "!=")
+            {
+                result = operand1 != operand2;
+                break;
+            }
             else
             {
                 throw std::runtime_error("Invalid operator");

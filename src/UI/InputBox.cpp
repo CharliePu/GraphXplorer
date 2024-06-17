@@ -63,10 +63,11 @@ void InputBox::setUpdateStateCallback(const std::function<void(const std::vector
 
 void InputBox::showInputBox()
 {
-    std::vector<Mesh> meshes{boxMesh};
-    meshes.insert(meshes.end(), textMeshes.begin(), textMeshes.end());
+    drawMeshes.clear();
+    drawMeshes.push_back(boxMesh);
+    drawMeshes.insert(drawMeshes.end(), textMeshes.begin(), textMeshes.end());
 
-    updateStateCallback(meshes);
+    updateStateCallback(drawMeshes);
 }
 
 void InputBox::hideInputBox()
@@ -83,10 +84,7 @@ void InputBox::updateTextDisplay()
     textMeshes = textGenerator.generateTextMesh(line, -0.95, -0.95, 0.003, TextAlign::LEFT,
                                                 static_cast<double>(window->getWidth()) / window->getHeight());
 
-    std::vector<Mesh> meshes{boxMesh};
-    meshes.insert(meshes.end(), textMeshes.begin(), textMeshes.end());
-
-    updateStateCallback(meshes);
+    updateStateCallback(drawMeshes);
 }
 
 void InputBox::onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action, glfw::ModifierKeyBit mods)

@@ -31,7 +31,7 @@ int GraphRasterizer::evaluateGraph(const std::unique_ptr<GraphNode> &node, const
         }
         else
         {
-            return 2;
+            return -1;
         }
     }
 

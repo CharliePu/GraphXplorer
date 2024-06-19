@@ -30,7 +30,7 @@ public:
         int windowHeight;
     };
 
-    using ComputeCompleteCallBack = std::function<void(std::vector<int>, Interval<double>, Interval<double>)>;
+    using ComputeCompleteCallBack = std::function<void(std::vector<int>, Interval<double>, Interval<double>, int, int)>;
 
     ComputeEngine(const std::shared_ptr<Window> &window, const std::shared_ptr<ThreadPool> &threadPool);
 
@@ -49,6 +49,8 @@ private:
         std::vector<int> data;
         Interval<double> xRange;
         Interval<double> yRange;
+        int windowWidth;
+        int windowHeight;
     };
 
     std::shared_ptr<GraphProcessor> graphProcessor;

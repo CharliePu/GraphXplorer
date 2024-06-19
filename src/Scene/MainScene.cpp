@@ -90,3 +90,12 @@ void MainScene::onTextEntered(unsigned int codepoint)
     cmd->onTextEntered(codepoint);
     inputBox->onTextEntered(codepoint);
 }
+
+void MainScene::onMouseScrolled(double offset)
+{
+    plot->onMouseScrolled(offset);
+    grid->onMouseScrolled(offset);
+    axisLabels->onMouseScrolled(offset);
+    cmd->onMouseScrolled(offset);
+    inputBox->onMouseScrolled(offset);
+}

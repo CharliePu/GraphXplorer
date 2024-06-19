@@ -35,8 +35,10 @@ void AxisLabels::updateLabels(const Interval<double> newXRange, const Interval<d
 
     auto &textGenerator{TextMeshesGenerator::getInstance()};
 
-    const auto xMajorGrid{std::pow(10.0, std::floor(std::log10(newYRange.size())))};
-    const auto yMajorGrid{std::pow(10.0, std::floor(std::log10(newYRange.size())))};
+    const auto xLog = std::floor(std::log10(newXRange.size() / window->getAspectRatio()));
+    const auto yLog = std::floor(std::log10(newYRange.size()));
+    const auto xMajorGrid = std::pow(10.0, xLog);
+    const auto yMajorGrid = std::pow(10.0, yLog);
 
     const auto startX = newXRange.lower + std::fmod((xMajorGrid - std::fmod(newXRange.lower, xMajorGrid)), xMajorGrid);
     const auto startY = newYRange.lower + std::fmod((yMajorGrid - std::fmod(newYRange.lower, yMajorGrid)), yMajorGrid);

@@ -52,6 +52,8 @@ public:
 
     Interval<double> getYRanges() const;
 
+    void onMouseScrolled(double offset) override;
+
 private:
     std::shared_ptr<Graph> graph;
     std::shared_ptr<Formula> formula;

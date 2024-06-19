@@ -28,6 +28,8 @@ public:
 
     void onTextEntered(unsigned int codepoint) override;
 
+    void onMouseScrolled(double offset) override;
+
 private:
     std::shared_ptr<MainScene> mainScene;
     std::shared_ptr<Scene> currentScene;

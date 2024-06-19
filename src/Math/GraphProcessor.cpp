@@ -49,7 +49,6 @@ void GraphProcessor::process(const std::shared_ptr<Graph> &graph, const std::sha
         assert(graph->root->yRange.contains(yRange));
     }
 
-    // std::cerr<<"Start of recursive compute!\n"<<std::endl;
     recursiveComputeNodes(graph, formula, xRangeRounded, yRangeRounded, windowWidth, windowHeight);
 }
 
@@ -161,6 +160,8 @@ void GraphProcessor::recursiveComputeNodes(const std::shared_ptr<Graph> &graph, 
             std::exp2(std::floor(std::log2(
                 std::min(xRange.size(), yRange.size()) / std::max(
                     windowWidth, windowHeight))));
+
+    std::cout << xRange<<", "<<yRange<<" ("<<windowWidth<<"x"<<windowHeight<<"=>"<<rangePerPixel<<std::endl;
 
     std::queue<std::unique_ptr<GraphNode> *> nodeQueue;
 

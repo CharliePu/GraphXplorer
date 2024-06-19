@@ -35,6 +35,11 @@ int Window::getHeight() const
     return std::get<1>(window->getFramebufferSize());
 }
 
+double Window::getAspectRatio() const
+{
+    return static_cast<double>(getWidth()) / getHeight();
+}
+
 std::shared_ptr<glfw::Window> Window::getGlfwWindow()
 {
     return window;

@@ -35,6 +35,8 @@ public:
 
     void onTextEntered(unsigned int codepoint) override;
 
+    void onMouseScrolled(double offset) override;
+
 private:
     std::string name;
 

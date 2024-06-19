@@ -75,3 +75,10 @@ void Application::onTextEntered(unsigned int codepoint)
     sceneManager->onTextEntered(codepoint);
 }
 
+void Application::onMouseScrolled(double offset)
+{
+    window->onMouseScrolled(offset);
+    renderer->onMouseScrolled(offset);
+    sceneManager->onMouseScrolled(offset);
+}
+

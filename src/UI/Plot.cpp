@@ -140,11 +140,15 @@ std::vector<Mesh> Plot::prepareMeshes(const std::vector<int> &image, const int w
 
 void Plot::updateModelMat()
 {
+    const auto scale = glm::vec3{viewXRange.size() / plotXRange.size(), viewYRange.size() / plotYRange.size(), 1.0f};
+    const auto scaleMat = glm::scale(glm::mat4(1.0), glm::vec3{1.0} / scale);
     const auto translate = glm::vec3{viewXRange.mid() - plotXRange.mid(), viewYRange.mid() - plotYRange.mid(), 0.0f};
-    const auto NDCtoViewMat = glm::scale(glm::mat4(1.0), glm::vec3{viewXRange.size() / 2.0, viewYRange.size() / 2.0, 1.0});
     const auto translateMat = glm::translate(glm::mat4(1.0), -translate);
-    const auto ViewtoNDCMat = glm::scale(glm::mat4(1.0), glm::vec3{2.0 / viewXRange.size(), 2.0 / viewYRange.size(), 1.0});
-    model = ViewtoNDCMat * translateMat * NDCtoViewMat;
+
+    const auto NDCToPlotMat = glm::scale(glm::mat4(1.0), glm::vec3{viewXRange.size() / 2.0, viewYRange.size() / 2.0, 1.0});
+    const auto plotToViewMat = translateMat * scaleMat;
+    const auto viewToNDCMat = glm::scale(glm::mat4(1.0), glm::vec3{2.0 / viewXRange.size(), 2.0 / viewYRange.size(), 1.0});
+    model = viewToNDCMat * plotToViewMat * NDCToPlotMat;
 
     shader->bind();
     shader->upload_uniform_mat4f("transform", std::span<float, 16>{glm::value_ptr(model), 16});
@@ -193,7 +197,10 @@ void Plot::onWindowSizeChanged(const int width, const int height)
 
     updateModelMat();
 
-    computeEngine->addTask({graph, formula, viewXRange, viewYRange, width, height});
+    if (formula)
+    {
+        computeEngine->addTask({graph, formula, viewXRange, viewYRange, width, height});
+    }
 }
 
 Interval<double> Plot::getXRanges() const
@@ -204,4 +211,28 @@ Interval<double> Plot::getXRanges() const
 Interval<double> Plot::getYRanges() const
 {
     return viewYRange;
+}
+
+void Plot::onMouseScrolled(double offset)
+{
+    const auto windowWidth{window->getWidth()};
+    const auto windowHeight{window->getHeight()};
+
+    const auto xRangeMid = viewXRange.mid();
+    const auto yRangeMid = viewYRange.mid();
+
+    const auto xRangeSize = viewXRange.size() * (1.0 - offset * 0.1);
+    const auto yRangeSize = viewYRange.size() * (1.0 - offset * 0.1);
+
+    viewXRange = {xRangeMid - xRangeSize / 2.0, xRangeMid + xRangeSize / 2.0};
+    viewYRange = {yRangeMid - yRangeSize / 2.0, yRangeMid + yRangeSize / 2.0};
+
+    plotRangeChangedCallback(viewXRange, viewYRange);
+
+    updateModelMat();
+
+    if (formula)
+    {
+        computeEngine->addTask({graph, formula, viewXRange, viewYRange, windowWidth, windowHeight});
+    }
 }

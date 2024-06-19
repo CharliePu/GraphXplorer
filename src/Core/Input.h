@@ -19,6 +19,7 @@ public:
     virtual void onCursorDrag(double x, double y);
     virtual void onWindowSizeChanged(int width, int height);
     virtual void onTextEntered(unsigned int codepoint);
+    virtual void onMouseScrolled(double offset);
 };
 
 class Input {
@@ -32,6 +33,7 @@ private:
     void cursorPosCallback(glfw::Window &window, double x, double y);
     void mouseButtonCallback(glfw::Window &window, glfw::MouseButton button, glfw::MouseButtonState action, glfw::ModifierKeyBit mods);
     void textCallback(glfw::Window &window, unsigned int codepoint);
+    void scrollCallback(glfw::Window &window, double xOffset, double yOffset);
 
     glfw::MouseButtonState mouseButtonState;
     double mouseX{}, mouseY{};

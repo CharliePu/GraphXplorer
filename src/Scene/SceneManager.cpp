@@ -34,3 +34,8 @@ void SceneManager::onTextEntered(unsigned int codepoint)
 {
     currentScene->onTextEntered(codepoint);
 }
+
+void SceneManager::onMouseScrolled(double offset)
+{
+    currentScene->onMouseScrolled(offset);
+}

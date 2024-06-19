@@ -23,6 +23,7 @@ public:
 
     [[nodiscard]] int getHeight() const;
 
+    [[nodiscard]] double getAspectRatio() const;
 
     std::shared_ptr<glfw::Window> getGlfwWindow();
 

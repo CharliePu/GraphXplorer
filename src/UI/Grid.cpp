@@ -62,16 +62,19 @@ void Grid::prepareMesh()
 
 void Grid::updatePosition(Interval<double> xInterval, Interval<double> yInterval)
 {
-    const auto xMajorGrid{std::pow(10.0, std::floor(std::log10(xInterval.size())))};
-    const auto yMajorGrid{std::pow(10.0, std::floor(std::log10(yInterval.size())))};
-    const auto xMinorGrid{xMajorGrid / 5.0};
-    const auto yMinorGrid{yMajorGrid / 5.0};
+    // To keep the grid looks square-like, we use aspect ratio in calculation
+    const auto xLog = std::floor(std::log10(xInterval.size() / window->getAspectRatio()));
+    const auto yLog = std::floor(std::log10(yInterval.size()));
+    const auto xMajorGrid = std::pow(10.0, xLog);
+    const auto yMajorGrid = std::pow(10.0, yLog);
+    const auto xMinorGrid = std::pow(10.0, xLog - 1);
+    const auto yMinorGrid = std::pow(10.0, yLog - 1);
 
     mesh.shader->bind();
     mesh.shader->upload_uniform2f("xRange", xInterval.lower, xInterval.upper);
     mesh.shader->upload_uniform2f("yRange", yInterval.lower, yInterval.upper);
-    mesh.shader->upload_uniform2f("grid1", xMajorGrid, yMajorGrid);
-    mesh.shader->upload_uniform2f("grid2", xMinorGrid, yMinorGrid);
+    mesh.shader->upload_uniform2f("majorGrid", xMajorGrid, yMajorGrid);
+    mesh.shader->upload_uniform2f("minorGrid", xMinorGrid, yMinorGrid);
 
     updatePositionCallback({mesh});
 }

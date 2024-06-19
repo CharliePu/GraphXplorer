@@ -4,6 +4,8 @@
 
 #include "Input.h"
 
+#include <iostream>
+
 #include "Window.h"
 
 void UserInputHandler::onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action, glfw::ModifierKeyBit mods)

@@ -40,7 +40,7 @@ public:
 
     void requestNewPlot(const std::string & input);
 
-    std::vector<Mesh> prepareMeshes(const std::vector<int> & image);
+    std::vector<Mesh> prepareMeshes(const std::vector<int> &image, const int width, const int height);
 
     void updateModelMat();
 

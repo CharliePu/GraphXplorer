@@ -18,7 +18,8 @@ ComputeEngine::ComputeEngine(const std::shared_ptr<Window> &window,
                                                                                  std::make_shared<GraphRasterizer>(
                                                                                      window, threadPool)
                                                                              },
-                                                                             threadPool{threadPool}, currentTask{nullptr},
+                                                                             threadPool{threadPool},
+                                                                             currentTask{nullptr},
                                                                              running{true}, rasterizedData{nullptr}
 {
     future = threadPool->addTask(&ComputeEngine::processTasks, this);
@@ -48,7 +49,8 @@ void ComputeEngine::pollAsyncStates()
 {
     if (const auto data = rasterizedData.exchange(nullptr))
     {
-        computeCompleteCallback(std::move(data->data), data->xRange, data->yRange);
+        computeCompleteCallback(std::move(data->data), data->xRange, data->yRange, data->windowWidth,
+                                data->windowHeight);
     }
 }
 
@@ -64,6 +66,7 @@ void ComputeEngine::processTasks()
         auto data = graphRasterizer->rasterize(task->graph, task->xRange, task->yRange, task->windowWidth,
                                                task->windowHeight);
 
-        rasterizedData = std::make_shared<RasterizedData>(std::move(data), task->xRange, task->yRange);
+        rasterizedData = std::make_shared<RasterizedData>(std::move(data), task->xRange, task->yRange,
+                                                          task->windowWidth, task->windowHeight);
     }
 }

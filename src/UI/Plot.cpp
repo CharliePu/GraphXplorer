@@ -66,12 +66,12 @@ Plot::Plot(const std::shared_ptr<ComputeEngine> &engine,
                                                    model{1.0}
 {
     computeEngine->setComputeCompleteCallback(
-        [this](const std::vector<int> &image, Interval<double> xRange, Interval<double> yRange) {
+        [this](const std::vector<int> &image, Interval<double> xRange, Interval<double> yRange, int width, int height) {
             plotXRange = xRange;
             plotYRange = yRange;
             updateModelMat();
 
-            const auto meshes = prepareMeshes(image);
+            const auto meshes = prepareMeshes(image, width, height);
 
             plotCompleteCallback(meshes);
         });
@@ -104,7 +104,7 @@ void Plot::requestNewPlot(const std::string &input)
     computeEngine->addTask({graph, formula, viewXRange, viewYRange, window->getWidth(), window->getHeight()});
 }
 
-std::vector<Mesh> Plot::prepareMeshes(const std::vector<int> &image)
+std::vector<Mesh> Plot::prepareMeshes(const std::vector<int> &image, const int width, const int height)
 {
     auto getGradent = [](const int value) -> float {
         return static_cast<float>(value > 0);
@@ -115,7 +115,7 @@ std::vector<Mesh> Plot::prepareMeshes(const std::vector<int> &image)
     std::ranges::transform(image, std::back_inserter(data), getGradent);
 
     const auto textureData = std::span<const float>{data};
-    const auto textureResolution = staplegl::resolution{window->getWidth(), window->getHeight()};
+    const auto textureResolution = staplegl::resolution{width, height};
     constexpr auto textureColor = staplegl::texture_color{
         GL_RED, GL_RED, GL_FLOAT
     };
@@ -145,6 +145,9 @@ void Plot::updateModelMat()
     const auto translateMat = glm::translate(glm::mat4(1.0), -translate);
     const auto ViewtoNDCMat = glm::scale(glm::mat4(1.0), glm::vec3{2.0 / viewXRange.size(), 2.0 / viewYRange.size(), 1.0});
     model = ViewtoNDCMat * translateMat * NDCtoViewMat;
+
+    shader->bind();
+    shader->upload_uniform_mat4f("transform", std::span<float, 16>{glm::value_ptr(model), 16});
 }
 
 void Plot::onCursorDrag(const double x, const double y)
@@ -185,6 +188,10 @@ void Plot::onWindowSizeChanged(const int width, const int height)
     double xRangeMid = (viewXRange.lower + viewXRange.upper) / 2.0;
 
     viewXRange = {xRangeMid - xRangeSize / 2.0, xRangeMid + xRangeSize / 2.0};
+
+    plotRangeChangedCallback(viewXRange, viewYRange);
+
+    updateModelMat();
 
     computeEngine->addTask({graph, formula, viewXRange, viewYRange, width, height});
 }

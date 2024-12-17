@@ -1,50 +1,69 @@
 #version 330 core
 
 in vec2 TexCoords;
-
 out vec4 FragColor;
 
 uniform vec2 xRange;
 uniform vec2 yRange;
 uniform vec2 majorGrid;
 uniform vec2 minorGrid;
+uniform vec2 viewportSize;
 
 bool equal(float a, float b, float tolerance) {
-    return abs(a - b) <= tolerance;
+    // Use fwidth for anti-aliasing and dynamic line thickness
+    float delta = fwidth(a);
+    return abs(a - b) <= (tolerance * delta);
 }
 
 void main() {
-    float xAxis = (0 - yRange.x) / (yRange.y - yRange.x);
-    float yAxis = (0 - xRange.x) / (xRange.y - xRange.x);
+    float aspectRatio = viewportSize.x / viewportSize.y;
 
-    float xMajorGridOffset = xRange.x / (xRange.y - xRange.x);
-    float xMajorGridStride = majorGrid.x / (xRange.y - xRange.x);
+    // Transform coordinates to pixel space for better precision
+    vec2 pixelCoords = TexCoords * viewportSize;
 
-    float yMajorGridOffset = yRange.x / (yRange.y - yRange.x);
-    float yMajorGridStride = majorGrid.y / (yRange.y - yRange.x);
+    float xAxis = (0.0 - yRange.x) / (yRange.y - yRange.x) * viewportSize.y;
+    float yAxis = (0.0 - xRange.x) / (xRange.y - xRange.x) * viewportSize.x;
 
-    float xMinorGridOffset = xRange.x / (xRange.y - xRange.x);
-    float xMinorGridStride = minorGrid.x / (xRange.y - xRange.x);
+    float xMajorGridSpacing = (majorGrid.x / (xRange.y - xRange.x)) * viewportSize.x;
+    float yMajorGridSpacing = (majorGrid.y / (yRange.y - yRange.x)) * viewportSize.y;
 
-    float yMinorGridOffset = yRange.x / (yRange.y - yRange.x);
-    float yMinorGridStride = minorGrid.y / (yRange.y - yRange.x);
+    float xMinorGridSpacing = (minorGrid.x / (xRange.y - xRange.x)) * viewportSize.x;
+    float yMinorGridSpacing = (minorGrid.y / (yRange.y - yRange.x)) * viewportSize.y;
 
     float zoomLevelY = 1.0 - (yRange.y - yRange.x) / (majorGrid.y * 10.0);
 
-    if (equal(TexCoords.x, yAxis, 0.002) || equal(TexCoords.y, xAxis, 0.002))
-    {
-        FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+    // Use smoothstep for anti-aliased lines
+    float lineWidth = 1.0;
+    float axisWidth = 2.0;
+
+    // Check for axes (using pixel-space calculations)
+    float xAxisDist = abs(pixelCoords.y - xAxis);
+    float yAxisDist = abs(pixelCoords.x - yAxis);
+
+    if (xAxisDist < axisWidth || yAxisDist < axisWidth) {
+        FragColor = vec4(1.0, 1.0, 1.0, 1.0 - smoothstep(0.0, axisWidth, min(xAxisDist, yAxisDist)));
+        return;
     }
-    else if (equal(mod(TexCoords.x + xMajorGridOffset, xMajorGridStride), 0.0, 0.001) || equal(mod(TexCoords.y + yMajorGridOffset, yMajorGridStride), 0.0, 0.001))
-    {
+
+    // Major grid lines
+    float xMajor = mod(pixelCoords.x + xRange.x * viewportSize.x / (xRange.y - xRange.x), xMajorGridSpacing);
+    float yMajor = mod(pixelCoords.y + yRange.x * viewportSize.y / (yRange.y - yRange.x), yMajorGridSpacing);
+
+    if (xMajor < lineWidth || yMajor < lineWidth ||
+    xMajor > xMajorGridSpacing - lineWidth || yMajor > yMajorGridSpacing - lineWidth) {
         FragColor = vec4(1.0, 1.0, 1.0, 0.8);
+        return;
     }
-    else if (equal(mod(TexCoords.x + xMinorGridOffset , xMinorGridStride), 0.0, 0.001)|| equal(mod(TexCoords.y + yMinorGridOffset, yMinorGridStride), 0.0, 0.001))
-    {
-        FragColor = vec4(1.0, 1.0, 1.0, 0.8 * zoomLevelY);
+
+    // Minor grid lines
+    float xMinor = mod(pixelCoords.x + xRange.x * viewportSize.x / (xRange.y - xRange.x), xMinorGridSpacing);
+    float yMinor = mod(pixelCoords.y + yRange.x * viewportSize.y / (yRange.y - yRange.x), yMinorGridSpacing);
+
+    if (xMinor < lineWidth || yMinor < lineWidth ||
+    xMinor > xMinorGridSpacing - lineWidth || yMinor > yMinorGridSpacing - lineWidth) {
+        FragColor = vec4(1.0, 1.0, 1.0, 0.5 * zoomLevelY);
+        return;
     }
-    else
-    {
-        discard;
-    }
+
+    discard;
 }

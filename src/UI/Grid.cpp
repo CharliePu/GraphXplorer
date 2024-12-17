@@ -60,7 +60,7 @@ void Grid::prepareMesh()
     mesh = {shader, vao, std::vector<std::shared_ptr<staplegl::texture_2d> >{}};
 }
 
-void Grid::updatePosition(Interval<double> xInterval, Interval<double> yInterval)
+void Grid::updatePosition(Interval xInterval, Interval yInterval)
 {
     // To keep the grid looks square-like, we use aspect ratio in calculation
     const auto xLog = std::floor(std::log10(xInterval.size() / window->getAspectRatio()));
@@ -75,7 +75,7 @@ void Grid::updatePosition(Interval<double> xInterval, Interval<double> yInterval
     mesh.shader->upload_uniform2f("yRange", yInterval.lower, yInterval.upper);
     mesh.shader->upload_uniform2f("majorGrid", xMajorGrid, yMajorGrid);
     mesh.shader->upload_uniform2f("minorGrid", xMinorGrid, yMinorGrid);
-
+    mesh.shader->upload_uniform2f("viewportSize", window->getWidth(), window->getHeight());
     updatePositionCallback({mesh});
 }
 

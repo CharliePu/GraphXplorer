@@ -4,6 +4,8 @@
 
 #include "Application.h"
 
+#include <iostream>
+
 #include "Window.h"
 #include "../Render/Renderer.h"
 #include "../Scene/SceneManager.h"

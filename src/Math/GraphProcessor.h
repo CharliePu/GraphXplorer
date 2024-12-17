@@ -24,24 +24,24 @@ class GraphProcessor
 public:
     GraphProcessor(const std::shared_ptr<Window> &window, const std::shared_ptr<ThreadPool> &threadPool);
 
-    void process(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula, const Interval<double> &xRange,
-                 const Interval<double> &yRange, int windowWidth, int windowHeight);
+    void process(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula, const Interval &xRange,
+                 const Interval &yRange, int windowWidth, int windowHeight);
 
 private:
     static void computeTask(const std::unique_ptr<GraphNode> *node, const std::shared_ptr<Formula> &formula);
 
-    static void expandGraph(const std::shared_ptr<Graph> &graph, const Interval<double> &targetXRange,
-                        const Interval<double> &targetYRange);
+    static void expandGraph(const std::shared_ptr<Graph> &graph, const Interval &targetXRange,
+                        const Interval &targetYRange);
 
 
-    static std::pair<Interval<double>, Interval<double> > getRoundedRanges(const std::shared_ptr<Graph> &graph, const Interval<double> &xRange, const
-                                                                           Interval<double> &yRange);
+    static std::pair<Interval, Interval > getRoundedRanges(const std::shared_ptr<Graph> &graph, const Interval &xRange, const
+                                                                           Interval &yRange);
 
     static void expandGraphToPlaceNode(std::unique_ptr<GraphNode> &nodeToExpand,
                                        std::unique_ptr<GraphNode> &nodeToPlace);
 
-    void recursiveComputeNodes(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula, const Interval<double> &xRange, const
-                               Interval<double> &yRange, int windowWidth, int windowHeight);
+    void recursiveComputeNodes(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula, const Interval &xRange, const
+                               Interval &yRange, int windowWidth, int windowHeight);
 
     std::shared_ptr<Window> window;
 

@@ -13,6 +13,11 @@
 #include "Input.h"
 
 
+namespace glfw
+{
+    class KeyCode;
+}
+
 class ComputeEngine;
 class ThreadPool;
 class Window;

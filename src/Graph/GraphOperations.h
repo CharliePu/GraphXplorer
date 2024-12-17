@@ -10,13 +10,13 @@
 #include "./Graph.h"
 #include "../Math/Interval.h"
 
-inline Interval<double> &getGraphXRange(const std::shared_ptr<Graph> &graph)
+inline Interval &getGraphXRange(const std::shared_ptr<Graph> &graph)
 {
     assert(graph->root);
     return graph->root->xRange;
 }
 
-inline Interval<double> &getGraphYRange(const std::shared_ptr<Graph> &graph)
+inline Interval &getGraphYRange(const std::shared_ptr<Graph> &graph)
 {
     assert(graph->root);
     return graph->root->yRange;
@@ -24,7 +24,7 @@ inline Interval<double> &getGraphYRange(const std::shared_ptr<Graph> &graph)
 
 inline bool nodesIntervalMatches(const std::unique_ptr<GraphNode> &curr, const std::unique_ptr<GraphNode> &root)
 {
-    return curr->xRange == root->xRange && curr->yRange == root->yRange;
+    return sameInterval(curr->xRange, root->xRange) && sameInterval(curr->yRange, root->yRange);
 }
 
 inline bool nodeIsLeaf(const std::unique_ptr<GraphNode> &curr)
@@ -54,11 +54,11 @@ inline std::unique_ptr<GraphNode> *getMatchingChildNode(const std::unique_ptr<Gr
     return &parentNode->children[childIndex];
 }
 
-inline std::unique_ptr<GraphNode> createNode(GraphNode *parent, Interval<double> xRange, Interval<double> yRange)
+inline std::unique_ptr<GraphNode> createNode(GraphNode *parent, Interval xRange, Interval yRange)
 {
     auto node = std::make_unique<GraphNode>();
     node->parent = parent;
-    node->solution = IntervalValues::Unknown_s;
+    node->solution = {-1, -1};
     node->xRange = xRange;
     node->yRange = yRange;
     for (auto &child: node->children)

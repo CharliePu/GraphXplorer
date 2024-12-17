@@ -14,7 +14,7 @@ public:
 
     int getDepth() const override;
 
-    void updateLabels(Interval<double> newXRange, Interval<double> newYRange);
+    void updateLabels(Interval newXRange, Interval newYRange);
 
     void setUpdateLabelsCallback(const std::function<void(const std::vector<Mesh> &)>& callback);
 
@@ -25,7 +25,7 @@ private:
 
     std::shared_ptr<Window> window;
 
-    Interval<double> xRange, yRange;
+    Interval xRange, yRange;
 };
 
 

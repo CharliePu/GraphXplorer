@@ -33,7 +33,7 @@ MainScene::MainScene(const std::shared_ptr<ComputeEngine> &engine,
         plot->requestNewPlot(input);
     });
 
-    plot->setPlotRangeChangedCallback([this, renderer](const Interval<double> &xRange, const Interval<double> &yRange) {
+    plot->setPlotRangeChangedCallback([this, renderer](const Interval &xRange, const Interval &yRange) {
         grid->updatePosition(xRange, yRange);
         axisLabels->updateLabels(xRange, yRange);
     });
@@ -50,7 +50,7 @@ MainScene::MainScene(const std::shared_ptr<ComputeEngine> &engine,
         renderer->updateMeshes(axisLabels, meshes);
     });
 
-    plot->requestNewPlot("xx+y<49");
+    plot->requestNewPlot("x^2+y^2<4^2");
     grid->updatePosition(plot->getXRanges(), plot->getYRanges());
     axisLabels->updateLabels(plot->getXRanges(), plot->getYRanges());
 }

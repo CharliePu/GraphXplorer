@@ -4,6 +4,8 @@
 
 #include "GraphRasterizer.h"
 
+#include <stack>
+
 #include "../Render/Mesh.h"
 #include "../Graph/Graph.h"
 #include "../Graph/GraphOperations.h"
@@ -16,39 +18,56 @@ GraphRasterizer::GraphRasterizer(const std::shared_ptr<Window> &window,
 {
 }
 
-int GraphRasterizer::evaluateGraph(const std::unique_ptr<GraphNode> &node, const Interval<double> &xRange,
-                                   const Interval<double> &yRange)
+int GraphRasterizer::evaluateGraph(const std::unique_ptr<GraphNode>& node, const Interval& xRange, const Interval& yRange, bool debug)
 {
-    if (nodeIsLeaf(node))
-    {
-        if (node->solution == IntervalValues::True)
-        {
-            return 1;
-        }
-        else if (node->solution == IntervalValues::False)
-        {
-            return 0;
-        }
-        else
-        {
-            return -1;
-        }
-    }
+    std::stack<const std::unique_ptr<GraphNode>*> nodeStack;
+    nodeStack.push(&node);
 
-    for (const auto &child: node->children)
+    while (!nodeStack.empty())
     {
-        if (child->xRange.contains(xRange) && child->yRange.contains(yRange))
+        const std::unique_ptr<GraphNode>& currentNode = *nodeStack.top();
+        nodeStack.pop();
+
+        if (nodeIsLeaf(currentNode))
         {
-            return evaluateGraph(child, xRange, yRange);
+            if (currentNode->solution.allTrue())
+            {
+                return 1;
+            }
+            else if (currentNode->solution.allFalse())
+            {
+                return 0;
+            }
+            else
+            {
+                return -1;
+            }
+        }
+
+        bool found = false;
+        for (const auto& child : currentNode->children)
+        {
+            if (child->xRange.contains(xRange) && child->yRange.contains(yRange))
+            {
+                nodeStack.push(&child);
+                found = true;
+                break;
+            }
+        }
+
+        if (!found)
+        {
+            throw std::invalid_argument("Failed to evaluate graph");
         }
     }
 
     throw std::invalid_argument("Failed to evaluate graph");
 }
 
-std::vector<int> GraphRasterizer::rasterize(const std::shared_ptr<Graph> &graph, const Interval<double> &xRange,
-                                            const Interval<double> &yRange, const int windowWidth,
-                                            const int windowHeight)
+
+std::vector<int> GraphRasterizer::rasterize(const std::shared_ptr<Graph> &graph, const Interval &xRange,
+                                            const Interval &yRange, const int windowWidth,
+                                            const int windowHeight, bool debug)
 {
     std::vector<int> image;
     image.reserve(windowWidth * windowHeight);
@@ -66,7 +85,7 @@ std::vector<int> GraphRasterizer::rasterize(const std::shared_ptr<Graph> &graph,
             // TODO: replace with {x, x+deltax} and {y, y+deltay}
             // This requires changes in evaluate to add sampling
             auto result = evaluateGraph(graph->root, {x, x},
-                                        {y, y});
+                                        {y, y}, debug);
 
             image.push_back(result);
         }

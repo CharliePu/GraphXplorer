@@ -8,7 +8,7 @@
 #include <algorithm>
 #include <staplegl/staplegl.hpp>
 
-#include "../Math/Formula.h"
+#include "../Formula/Formula.h"
 #include "../Graph/Graph.h"
 #include "../Math/ComputeEngine.h"
 #include "../Render/Mesh.h"
@@ -66,7 +66,7 @@ Plot::Plot(const std::shared_ptr<ComputeEngine> &engine,
                                                    model{1.0}
 {
     computeEngine->setComputeCompleteCallback(
-        [this](const std::vector<int> &image, Interval<double> xRange, Interval<double> yRange, int width, int height) {
+        [this](const std::vector<int> &image, Interval xRange, Interval yRange, int width, int height) {
             plotXRange = xRange;
             plotYRange = yRange;
             updateModelMat();
@@ -85,7 +85,7 @@ void Plot::setPlotCompleteCallback(const std::function<void(const std::vector<Me
 }
 
 void Plot::setPlotRangeChangedCallback(
-    const std::function<void(const Interval<double> &, const Interval<double> &)> &callback)
+    const std::function<void(const Interval &, const Interval &)> &callback)
 {
     plotRangeChangedCallback = callback;
 }
@@ -101,7 +101,7 @@ void Plot::requestNewPlot(const std::string &input)
 
     graph = std::make_shared<Graph>();
 
-    computeEngine->addTask({graph, formula, viewXRange, viewYRange, window->getWidth(), window->getHeight()});
+    computeEngine->addTask({graph, formula, viewXRange, viewYRange, window->getWidth(), window->getHeight(), debug});
 }
 
 std::vector<Mesh> Plot::prepareMeshes(const std::vector<int> &image, const int width, const int height)
@@ -162,8 +162,8 @@ void Plot::onCursorDrag(const double x, const double y)
     const auto deltaX{viewXRange.size() / windowWidth};
     const auto deltaY{viewYRange.size() / windowHeight};
 
-    viewXRange = viewXRange + x * -deltaX;
-    viewYRange = viewYRange + y * deltaY;
+    viewXRange = viewXRange + Interval{x * -deltaX};
+    viewYRange = viewYRange + Interval{y * deltaY};
 
     plotRangeChangedCallback(viewXRange, viewYRange);
 
@@ -179,7 +179,7 @@ void Plot::onCursorDrag(const double x, const double y)
 
     if (formula)
     {
-        computeEngine->addTask({graph, formula, viewXRange, viewYRange, windowWidth, windowHeight});
+        computeEngine->addTask({graph, formula, viewXRange, viewYRange, windowWidth, windowHeight, debug});
     }
 }
 
@@ -199,16 +199,16 @@ void Plot::onWindowSizeChanged(const int width, const int height)
 
     if (formula)
     {
-        computeEngine->addTask({graph, formula, viewXRange, viewYRange, width, height});
+        computeEngine->addTask({graph, formula, viewXRange, viewYRange, width, height, debug});
     }
 }
 
-Interval<double> Plot::getXRanges() const
+Interval Plot::getXRanges() const
 {
     return viewXRange;
 }
 
-Interval<double> Plot::getYRanges() const
+Interval Plot::getYRanges() const
 {
     return viewYRange;
 }
@@ -233,6 +233,18 @@ void Plot::onMouseScrolled(double offset)
 
     if (formula)
     {
-        computeEngine->addTask({graph, formula, viewXRange, viewYRange, windowWidth, windowHeight});
+        computeEngine->addTask({graph, formula, viewXRange, viewYRange, windowWidth, windowHeight, debug});
+    }
+}
+
+void Plot::onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action, glfw::ModifierKeyBit mods)
+{
+    if (key == glfw::KeyCode::D && action == glfw::KeyState::Press)
+    {
+        debug = !debug;
+        if (formula)
+        {
+            computeEngine->addTask({graph, formula, viewXRange, viewYRange, window->getWidth(), window->getHeight(), debug});
+        }
     }
 }

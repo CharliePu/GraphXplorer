@@ -24,13 +24,14 @@ public:
     {
         std::shared_ptr<Graph> graph;
         std::shared_ptr<Formula> formula;
-        Interval<double> xRange;
-        Interval<double> yRange;
+        Interval xRange;
+        Interval yRange;
         int windowWidth;
         int windowHeight;
+        bool debug;
     };
 
-    using ComputeCompleteCallBack = std::function<void(std::vector<int>, Interval<double>, Interval<double>, int, int)>;
+    using ComputeCompleteCallBack = std::function<void(std::vector<int>, Interval, Interval, int, int)>;
 
     ComputeEngine(const std::shared_ptr<Window> &window, const std::shared_ptr<ThreadPool> &threadPool);
 
@@ -47,8 +48,8 @@ private:
     struct RasterizedData
     {
         std::vector<int> data;
-        Interval<double> xRange;
-        Interval<double> yRange;
+        Interval xRange;
+        Interval yRange;
         int windowWidth;
         int windowHeight;
     };

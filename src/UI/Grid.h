@@ -18,7 +18,7 @@ public:
 
     void prepareMesh();
 
-    void updatePosition(Interval<double> xInterval, Interval<double> yInterval);
+    void updatePosition(Interval xInterval, Interval yInterval);
 
     void setUpdatePositionCallback(const std::function<void(const std::vector<Mesh> &)> &callback);
 

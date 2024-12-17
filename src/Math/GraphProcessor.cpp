@@ -9,7 +9,7 @@
 #include <stack>
 
 #include "../Core/Window.h"
-#include "Formula.h"
+#include "../Formula/Formula.h"
 #include "../Graph/Graph.h"
 #include "../Graph/GraphOperations.h"
 
@@ -19,7 +19,7 @@ GraphProcessor::GraphProcessor(const std::shared_ptr<Window> &window,
 }
 
 void GraphProcessor::process(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula,
-                             const Interval<double> &xRange, const Interval<double> &yRange, int windowWidth,
+                             const Interval &xRange, const Interval &yRange, int windowWidth,
                              int windowHeight)
 {
     if (!formula)
@@ -53,13 +53,13 @@ void GraphProcessor::process(const std::shared_ptr<Graph> &graph, const std::sha
 }
 
 
-std::pair<Interval<double>, Interval<double> > GraphProcessor::getRoundedRanges(
+std::pair<Interval, Interval > GraphProcessor::getRoundedRanges(
     const std::shared_ptr<Graph> &graph,
-    const Interval<double> &xRange, const Interval<double> &yRange)
+    const Interval &xRange, const Interval &yRange)
 {
     assert(graph);
 
-    Interval<double> xRangeUnion{}, yRangeUnion{};
+    Interval xRangeUnion{}, yRangeUnion{};
     if (graph->root)
     {
         xRangeUnion = {
@@ -85,12 +85,12 @@ std::pair<Interval<double>, Interval<double> > GraphProcessor::getRoundedRanges(
             std::abs(yRangeUnion.upper)
         }))));
 
-    Interval<double> xRangeRounded{
+    Interval xRangeRounded{
         std::floor(xRangeUnion.lower / size) * size,
         std::ceil(xRangeUnion.upper / size) * size
     };
 
-    Interval<double> yRangeRounded{
+    Interval yRangeRounded{
         std::floor(yRangeUnion.lower / size) * size,
         std::ceil(yRangeUnion.upper / size) * size
     };
@@ -116,8 +116,8 @@ void GraphProcessor::expandGraphToPlaceNode(std::unique_ptr<GraphNode> &nodeToEx
 }
 
 void GraphProcessor::expandGraph(const std::shared_ptr<Graph> &graph,
-                                 const Interval<double> &targetXRange,
-                                 const Interval<double> &targetYRange)
+                                 const Interval &targetXRange,
+                                 const Interval &targetYRange)
 {
     assert(targetXRange.strictlyContains(getGraphXRange(graph)) || targetYRange.strictlyContains(getGraphYRange(graph)));
     assert(isPowerOfTwo(targetXRange.size()));
@@ -135,7 +135,7 @@ void GraphProcessor::expandGraph(const std::shared_ptr<Graph> &graph,
         return;
     }
 
-    if (oldRoot->xRange.crossesZero() || oldRoot->yRange.crossesZero())
+    if (oldRoot->xRange.anyZero() || oldRoot->yRange.anyZero())
     {
         for (auto &child: oldRoot->children)
         {
@@ -151,7 +151,7 @@ void GraphProcessor::expandGraph(const std::shared_ptr<Graph> &graph,
 }
 
 void GraphProcessor::recursiveComputeNodes(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula,
-                                           const Interval<double> &xRange, const Interval<double> &yRange,
+                                           const Interval &xRange, const Interval &yRange,
                                            int windowWidth, int windowHeight)
 {
     std::unordered_map<std::unique_ptr<GraphNode> *, std::future<void> > futuresMap;
@@ -160,8 +160,6 @@ void GraphProcessor::recursiveComputeNodes(const std::shared_ptr<Graph> &graph, 
             std::exp2(std::floor(std::log2(
                 std::min(xRange.size(), yRange.size()) / std::max(
                     windowWidth, windowHeight))));
-
-    std::cout << xRange<<", "<<yRange<<" ("<<windowWidth<<"x"<<windowHeight<<"=>"<<rangePerPixel<<std::endl;
 
     std::queue<std::unique_ptr<GraphNode> *> nodeQueue;
 
@@ -182,7 +180,7 @@ void GraphProcessor::recursiveComputeNodes(const std::shared_ptr<Graph> &graph, 
             it->second.wait();
         }
 
-        if ((*curr)->solution == IntervalValues::True || (*curr)->solution == IntervalValues::False)
+        if ((*curr)->solution.allTrue() || (*curr)->solution.allFalse())
         {
             continue;
         }
@@ -196,7 +194,7 @@ void GraphProcessor::recursiveComputeNodes(const std::shared_ptr<Graph> &graph, 
         {
             nodeQueue.push(&child);
 
-            if (child->solution == IntervalValues::Unknown_s)
+            if (!child->solution.allTrue() && !child->solution.allFalse())
             {
                 futuresMap.emplace(&child, threadPool->addTask(computeTask, &child, formula));
             }
@@ -214,96 +212,10 @@ void GraphProcessor::recursiveComputeNodes(const std::shared_ptr<Graph> &graph, 
 
 void GraphProcessor::computeTask(const std::unique_ptr<GraphNode> *node, const std::shared_ptr<Formula> &formula)
 {
-    if ((*node)->solution != IntervalValues::Unknown_s)
+    if ((*node)->solution.allTrue() || (*node)->solution.allFalse())
     {
         return;
     }
 
-    const auto &postfixExpr = formula->getPostfixExpression();
-
-    const auto x = ComputeInterval{(*node)->xRange};
-    const auto y = ComputeInterval{(*node)->yRange};
-
-    std::stack<ComputeInterval> valueStack;
-
-    Interval<bool> result = IntervalValues::Unknown_s;
-
-    for (const auto &[value, type]: postfixExpr)
-    {
-        if (type == Variable)
-        {
-            if (value == "x")
-            {
-                valueStack.push(x);
-            }
-            else if (value == "y")
-            {
-                valueStack.push(y);
-            }
-        }
-        else if (type == Value)
-        {
-            valueStack.push({std::stod(value), std::stod(value)});
-        }
-        else
-        {
-            auto operand2 = valueStack.top();
-            valueStack.pop();
-            auto operand1 = valueStack.top();
-            valueStack.pop();
-
-            if (value == "+")
-            {
-                valueStack.push(operand1 + operand2);
-            }
-            else if (value == "-")
-            {
-                valueStack.push(operand1 - operand2);
-            }
-            else if (value == "*")
-            {
-                valueStack.push(operand1 * operand2);
-            }
-            else if (value == "/")
-            {
-                valueStack.push(operand1 / operand2);
-            }
-            else if (value == ">")
-            {
-                result = operand1 > operand2;
-                break;
-            }
-            else if (value == "<")
-            {
-                result = operand1 < operand2;
-                break;
-            }
-            else if (value == ">=")
-            {
-                result = operand1 >= operand2;
-                break;
-            }
-            else if (value == "<=")
-            {
-                result = operand1 <= operand2;
-                break;
-            }
-            else if (value == "=")
-            {
-                result = operand1 == operand2;
-                break;
-            }
-            else if (value == "!=")
-            {
-                result = operand1 != operand2;
-                break;
-            }
-            else
-            {
-                throw std::runtime_error("Invalid operator");
-            }
-        }
-    }
-
-    (*node)->solution = result;
+    (*node)->solution = formula->evaluate({{"x", (*node)->xRange}, {"y", (*node)->yRange}});
 }

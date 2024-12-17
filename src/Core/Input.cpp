@@ -28,6 +28,10 @@ void UserInputHandler::onMouseScrolled(double offset)
 {
 }
 
+void UserInputHandler::onWindowRefresh()
+{
+}
+
 Input::Input(const std::shared_ptr<Window> &window):
 mouseButtonState{glfw::MouseButtonState::Release}, window{window}
 {
@@ -103,4 +107,9 @@ void Input::textCallback(glfw::Window &window, unsigned int codepoint)
 void Input::scrollCallback(glfw::Window &window, double xOffset, double yOffset)
 {
     inputHandler->onMouseScrolled(yOffset);
+}
+
+void Input::windowRefreshCallback(glfw::Window &window)
+{
+    inputHandler->onWindowRefresh();
 }

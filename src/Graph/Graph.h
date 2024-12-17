@@ -13,9 +13,9 @@ struct GraphNode
 {
     GraphNode *parent;
     std::array<std::unique_ptr<GraphNode>, 4> children;
-    Interval<bool> solution;
-    Interval<double> xRange;
-    Interval<double> yRange;
+    Interval solution;
+    Interval xRange;
+    Interval yRange;
 };
 
 struct Graph

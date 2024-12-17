@@ -34,7 +34,7 @@ public:
 
     void setPlotCompleteCallback(const std::function<void(const std::vector<Mesh> &)> &callback);
 
-    void setPlotRangeChangedCallback(const std::function<void(const Interval<double> &, const Interval<double> &)> &callback);
+    void setPlotRangeChangedCallback(const std::function<void(const Interval &, const Interval &)> &callback);
 
     int getDepth() const override;
 
@@ -48,11 +48,13 @@ public:
 
     void onWindowSizeChanged(int width, int height) override;
 
-    Interval<double> getXRanges() const;
+    Interval getXRanges() const;
 
-    Interval<double> getYRanges() const;
+    Interval getYRanges() const;
 
     void onMouseScrolled(double offset) override;
+
+    void onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action, glfw::ModifierKeyBit mods) override;
 
 private:
     std::shared_ptr<Graph> graph;
@@ -61,9 +63,9 @@ private:
     std::shared_ptr<Window> window;
 
     std::function<void(const std::vector<Mesh> &)> plotCompleteCallback;
-    std::function<void(const Interval<double> &, const Interval<double> &)> plotRangeChangedCallback;
+    std::function<void(const Interval &, const Interval &)> plotRangeChangedCallback;
 
-    Interval<double> viewXRange, viewYRange, plotXRange, plotYRange;
+    Interval viewXRange, viewYRange, plotXRange, plotYRange;
 
     std::shared_ptr<staplegl::vertex_array> vao;
     std::shared_ptr<staplegl::shader_program> shader;
@@ -71,6 +73,8 @@ private:
     Mesh plotMesh;
 
     glm::mat4 model;
+
+    bool debug;
 };
 
 #endif //PLOT_H

@@ -24,12 +24,12 @@ int AxisLabels::getDepth() const
     return 4;
 }
 
-void AxisLabels::updateLabels(const Interval<double> newXRange, const Interval<double> newYRange)
+void AxisLabels::updateLabels(const Interval newXRange, const Interval newYRange)
 {
     xRange = newXRange;
     yRange = newYRange;
 
-    auto toNDC = [](double value, Interval<double> range) -> double {
+    auto toNDC = [](double value, Interval range) -> double {
         return ((value - range.lower) / range.size() - 0.5) * 2;
     };
 

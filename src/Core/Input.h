@@ -20,6 +20,7 @@ public:
     virtual void onWindowSizeChanged(int width, int height);
     virtual void onTextEntered(unsigned int codepoint);
     virtual void onMouseScrolled(double offset);
+    virtual void onWindowRefresh();
 };
 
 class Input {
@@ -34,6 +35,7 @@ private:
     void mouseButtonCallback(glfw::Window &window, glfw::MouseButton button, glfw::MouseButtonState action, glfw::ModifierKeyBit mods);
     void textCallback(glfw::Window &window, unsigned int codepoint);
     void scrollCallback(glfw::Window &window, double xOffset, double yOffset);
+    void windowRefreshCallback(glfw::Window &window);
 
     glfw::MouseButtonState mouseButtonState;
     double mouseX{}, mouseY{};

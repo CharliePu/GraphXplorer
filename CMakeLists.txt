@@ -6,10 +6,12 @@ find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(Freetype REQUIRED)
+find_package(Microsoft.GSL CONFIG REQUIRED)
 
-set(CMAKE_CXX_STANDARD 26)
+set(CMAKE_CXX_STANDARD 23)
 
-add_executable(GraphXplorer src/main.cpp
+
+add_library(GraphXplorerLib
         src/Core/Application.cpp
         src/Core/Application.h
         src/Core/Input.cpp
@@ -30,8 +32,8 @@ add_executable(GraphXplorer src/main.cpp
         src/Scene/MainScene.h
         src/UI/ConsoleInput.cpp
         src/UI/ConsoleInput.h
-        src/Math/Formula.cpp
-        src/Math/Formula.h
+        src/Formula/Formula.cpp
+        src/Formula/Formula.h
         src/Math/GraphProcessor.cpp
         src/Math/GraphProcessor.h
         src/Graph/Graph.h
@@ -54,18 +56,29 @@ add_executable(GraphXplorer src/main.cpp
         src/Graph/GraphOperations.h
         src/Math/ComputeEngine.cpp
         src/Math/ComputeEngine.h
+        src/Formula/Token.h
+        src/Formula/Tokenizer.cpp
+        src/Formula/Tokenizer.h
+        src/Formula/Parser.cpp
+        src/Formula/Parser.h
+        src/Formula/Evaluator.cpp
+        src/Formula/Evaluator.h
 )
 
-target_include_directories(GraphXplorer PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_include_directories(GraphXplorerLib PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
-target_link_libraries(GraphXplorer PRIVATE glfw glad::glad glm::glm Freetype::Freetype)
+target_link_libraries(GraphXplorerLib PRIVATE glfw glad::glad glm::glm Freetype::Freetype)
+
+
+add_executable(GraphXplorer src/main.cpp)
+
+target_include_directories(GraphXplorer PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(GraphXplorer PRIVATE glfw GraphXplorerLib)
+
+
 
 # Unit testing
-add_executable(GraphXplorerTests
-        test/TestFormula.cpp
-        src/Math/Formula.cpp
-        test/TestComputeEngine.cpp)
-target_link_libraries(GraphXplorerTests PRIVATE Catch2::Catch2WithMain)
+add_subdirectory(tests)
 
 
 

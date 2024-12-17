@@ -4,6 +4,7 @@
 
 #include "ComputeEngine.h"
 
+#include <iostream>
 #include <glfwpp/event.h>
 
 #include "GraphRasterizer.h"
@@ -64,7 +65,7 @@ void ComputeEngine::processTasks()
         graphProcessor->process(task->graph, task->formula, task->xRange, task->yRange, task->windowWidth,
                                 task->windowHeight);
         auto data = graphRasterizer->rasterize(task->graph, task->xRange, task->yRange, task->windowWidth,
-                                               task->windowHeight);
+                                               task->windowHeight, task->debug);
 
         rasterizedData = std::make_shared<RasterizedData>(std::move(data), task->xRange, task->yRange,
                                                           task->windowWidth, task->windowHeight);

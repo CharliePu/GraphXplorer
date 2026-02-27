@@ -17,5 +17,8 @@
   }, {
     "name" : "freetype",
     "version>=" : "2.13.2#1"
+  }, {
+    "name" : "ms-gsl",
+    "version>=" : "4.0.0"
   } ]
 }

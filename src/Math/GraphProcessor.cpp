@@ -4,14 +4,14 @@
 
 #include "GraphProcessor.h"
 
+#include <algorithm>
 #include <cmath>
-#include <iostream>
-#include <stack>
+#include <limits>
+#include <stdexcept>
 
 #include "../Core/Window.h"
 #include "../Formula/Formula.h"
 #include "../Graph/Graph.h"
-#include "../Graph/GraphOperations.h"
 
 GraphProcessor::GraphProcessor(const std::shared_ptr<Window> &window,
                                const std::shared_ptr<ThreadPool> &threadPool): window{window}, threadPool{threadPool}
@@ -19,203 +19,135 @@ GraphProcessor::GraphProcessor(const std::shared_ptr<Window> &window,
 }
 
 void GraphProcessor::process(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula,
-                             const Interval &xRange, const Interval &yRange, int windowWidth,
-                             int windowHeight)
+                             const Interval &xRange, const Interval &yRange, const int windowWidth,
+                             const int windowHeight)
 {
+    if (!graph)
+    {
+        throw std::invalid_argument("Graph must not be null");
+    }
+
     if (!formula)
     {
         throw std::invalid_argument("Formula must not be null");
     }
 
-    auto [xRangeRounded, yRangeRounded] = getRoundedRanges(graph, xRange, yRange);
+    const auto targetLevel = getTargetLevel(xRange, yRange, windowWidth, windowHeight);
 
-    // Skip if requested range is contained in graph
-    if (graph->root && graph->root->xRange.contains(xRangeRounded) && graph->root->yRange.contains(yRangeRounded))
+    auto rootLevel = getCoarsestViewportLevel(xRange, yRange);
+    rootLevel = std::max(rootLevel, targetLevel);
+
+    const auto [minChunkX, maxChunkX] = getChunkIndexBounds(xRange, rootLevel);
+    const auto [minChunkY, maxChunkY] = getChunkIndexBounds(yRange, rootLevel);
+
+    for (auto chunkY = minChunkY; chunkY <= maxChunkY; ++chunkY)
+    {
+        for (auto chunkX = minChunkX; chunkX <= maxChunkX; ++chunkX)
+        {
+            refineTile(graph, formula, chunkX, chunkY, rootLevel, targetLevel, xRange, yRange);
+        }
+    }
+}
+
+int GraphProcessor::getTargetLevel(const Interval &xRange, const Interval &yRange, const int windowWidth,
+                                   const int windowHeight)
+{
+    const auto minRangeSize = std::min(xRange.size(), yRange.size());
+    const auto maxWindowSize = std::max(windowWidth, windowHeight);
+
+    if (minRangeSize <= 0.0 || maxWindowSize <= 0)
+    {
+        return 0;
+    }
+
+    const auto rangePerPixel = minRangeSize / static_cast<double>(maxWindowSize);
+    const auto rangePerChunk = rangePerPixel * static_cast<double>(MIN_CHUNK_PIXELS);
+    return static_cast<int>(std::floor(std::log2(rangePerChunk)));
+}
+
+int GraphProcessor::getCoarsestViewportLevel(const Interval &xRange, const Interval &yRange)
+{
+    const auto maxRangeSize = std::max(xRange.size(), yRange.size());
+
+    if (maxRangeSize <= 0.0)
+    {
+        return 0;
+    }
+
+    return static_cast<int>(std::ceil(std::log2(maxRangeSize)));
+}
+
+std::pair<int64_t, int64_t> GraphProcessor::getChunkIndexBounds(const Interval &range, const int level)
+{
+    if (range.upper <= range.lower)
+    {
+        const auto chunkIndex = worldToChunkIndex(range.lower, level);
+        return {chunkIndex, chunkIndex};
+    }
+
+    const auto chunkSize = chunkSizeForLevel(level);
+    const auto minIndex = worldToChunkIndex(range.lower, level);
+    const auto scaledUpper = range.upper / chunkSize;
+    const auto upperInclusiveScaled = std::nextafter(scaledUpper, -std::numeric_limits<double>::infinity());
+    const auto maxIndex = static_cast<int64_t>(std::floor(upperInclusiveScaled));
+
+    return {minIndex, maxIndex};
+}
+
+bool GraphProcessor::intersects(const Interval &lhs, const Interval &rhs)
+{
+    return lhs.lower < rhs.upper && rhs.lower < lhs.upper;
+}
+
+Tile &GraphProcessor::getOrComputeTile(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula,
+                                       const int64_t chunkX, const int64_t chunkY, const int level)
+{
+    const TileKey key{chunkX, chunkY, level};
+
+    const auto [it, inserted] = graph->tiles.try_emplace(key, Tile{});
+    if (inserted)
+    {
+        const auto xTileRange = chunkIndexToRange(chunkX, level);
+        const auto yTileRange = chunkIndexToRange(chunkY, level);
+
+        it->second.solution = formula->evaluate({{"x", xTileRange}, {"y", yTileRange}});
+        graph->activeLevels.insert(level);
+    }
+
+    return it->second;
+}
+
+void GraphProcessor::refineTile(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula,
+                                const int64_t chunkX, const int64_t chunkY, const int level, const int targetLevel,
+                                const Interval &viewXRange, const Interval &viewYRange) const
+{
+    auto &tile = getOrComputeTile(graph, formula, chunkX, chunkY, level);
+
+    if (tile.solution.allTrue() || tile.solution.allFalse() || level <= targetLevel)
     {
         return;
     }
 
-    // If the graph is empty, create a new root node
-    if (!graph->root)
+    const auto childLevel = level - 1;
+    const auto firstChildX = chunkX * 2;
+    const auto firstChildY = chunkY * 2;
+
+    for (auto yOffset = int64_t{0}; yOffset < 2; ++yOffset)
     {
-        graph->root = createNode(nullptr, xRangeRounded, yRangeRounded);
-    }
-
-    // Expand the graph to contain the requested range when necessary
-    if (xRangeRounded.strictlyContains(graph->root->xRange) || yRangeRounded.strictlyContains(graph->root->yRange))
-    {
-        expandGraph(graph, xRangeRounded, yRangeRounded);
-        assert(graph->root->xRange.contains(xRange));
-        assert(graph->root->yRange.contains(yRange));
-    }
-
-    recursiveComputeNodes(graph, formula, xRangeRounded, yRangeRounded, windowWidth, windowHeight);
-}
-
-
-std::pair<Interval, Interval > GraphProcessor::getRoundedRanges(
-    const std::shared_ptr<Graph> &graph,
-    const Interval &xRange, const Interval &yRange)
-{
-    assert(graph);
-
-    Interval xRangeUnion{}, yRangeUnion{};
-    if (graph->root)
-    {
-        xRangeUnion = {
-            std::min(xRange.lower, graph->root->xRange.lower),
-            std::max(xRange.upper, graph->root->xRange.upper)
-        };
-        yRangeUnion = {
-            std::min(yRange.lower, graph->root->yRange.lower),
-            std::max(yRange.upper, graph->root->yRange.upper)
-        };
-    }
-    else
-    {
-        xRangeUnion = xRange;
-        yRangeUnion = yRange;
-    }
-
-    const auto size = std::exp2(std::ceil(std::log2(std::max(
+        for (auto xOffset = int64_t{0}; xOffset < 2; ++xOffset)
         {
-            std::abs(xRangeUnion.lower),
-            std::abs(xRangeUnion.upper),
-            std::abs(yRangeUnion.lower),
-            std::abs(yRangeUnion.upper)
-        }))));
+            const auto childX = firstChildX + xOffset;
+            const auto childY = firstChildY + yOffset;
 
-    Interval xRangeRounded{
-        std::floor(xRangeUnion.lower / size) * size,
-        std::ceil(xRangeUnion.upper / size) * size
-    };
+            const auto childXRange = chunkIndexToRange(childX, childLevel);
+            const auto childYRange = chunkIndexToRange(childY, childLevel);
 
-    Interval yRangeRounded{
-        std::floor(yRangeUnion.lower / size) * size,
-        std::ceil(yRangeUnion.upper / size) * size
-    };
-
-    return {xRangeRounded, yRangeRounded};
-}
-
-void GraphProcessor::expandGraphToPlaceNode(std::unique_ptr<GraphNode> &nodeToExpand,
-                                            std::unique_ptr<GraphNode> &nodeToPlace)
-{
-    auto curr = &nodeToExpand;
-
-    while (!nodesIntervalMatches(*curr, nodeToPlace))
-    {
-        if (nodeIsLeaf(*curr))
-        {
-            subdivideNode(*curr);
-        }
-        curr = getMatchingChildNode(*curr, nodeToPlace);
-    }
-
-    *curr = std::move(nodeToPlace);
-}
-
-void GraphProcessor::expandGraph(const std::shared_ptr<Graph> &graph,
-                                 const Interval &targetXRange,
-                                 const Interval &targetYRange)
-{
-    assert(targetXRange.strictlyContains(getGraphXRange(graph)) || targetYRange.strictlyContains(getGraphYRange(graph)));
-    assert(isPowerOfTwo(targetXRange.size()));
-    assert(isPowerOfTwo(targetYRange.size()));
-    assert(isPowerOfTwo(getGraphXRange(graph).size()));
-    assert(isPowerOfTwo(getGraphYRange(graph).size()));
-
-    auto newRoot = createNode(nullptr, targetXRange, targetYRange);
-    auto &oldRoot = graph->root;
-
-    // If old root is not computed yet, just replace it with the new root
-    if (nodeIsLeaf(oldRoot))
-    {
-        graph->root = std::move(newRoot);
-        return;
-    }
-
-    if (oldRoot->xRange.anyZero() || oldRoot->yRange.anyZero())
-    {
-        for (auto &child: oldRoot->children)
-        {
-            expandGraphToPlaceNode(newRoot, child);
-        }
-    }
-    else
-    {
-        expandGraphToPlaceNode(newRoot, oldRoot);
-    }
-
-    graph->root = std::move(newRoot);
-}
-
-void GraphProcessor::recursiveComputeNodes(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula,
-                                           const Interval &xRange, const Interval &yRange,
-                                           int windowWidth, int windowHeight)
-{
-    std::unordered_map<std::unique_ptr<GraphNode> *, std::future<void> > futuresMap;
-
-    const auto rangePerPixel =
-            std::exp2(std::floor(std::log2(
-                std::min(xRange.size(), yRange.size()) / std::max(
-                    windowWidth, windowHeight))));
-
-    std::queue<std::unique_ptr<GraphNode> *> nodeQueue;
-
-    nodeQueue.push(&graph->root);
-
-    while (!nodeQueue.empty())
-    {
-        auto curr = nodeQueue.front();
-        nodeQueue.pop();
-
-        if ((*curr)->xRange.size() <= rangePerPixel && (*curr)->yRange.size() <= rangePerPixel)
-        {
-            continue;
-        }
-
-        if (auto it = futuresMap.find(curr); it != futuresMap.end())
-        {
-            it->second.wait();
-        }
-
-        if ((*curr)->solution.allTrue() || (*curr)->solution.allFalse())
-        {
-            continue;
-        }
-
-        if (nodeIsLeaf(*curr))
-        {
-            subdivideNode(*curr);
-        }
-
-        for (auto &child: (*curr)->children)
-        {
-            nodeQueue.push(&child);
-
-            if (!child->solution.allTrue() && !child->solution.allFalse())
+            if (!intersects(childXRange, viewXRange) || !intersects(childYRange, viewYRange))
             {
-                futuresMap.emplace(&child, threadPool->addTask(computeTask, &child, formula));
+                continue;
             }
+
+            refineTile(graph, formula, childX, childY, childLevel, targetLevel, viewXRange, viewYRange);
         }
     }
-
-    // TODO: subpixel refinement
-
-    // wait for rest of the nodes to finish
-    for (auto &it: futuresMap)
-    {
-        it.second.wait();
-    }
-}
-
-void GraphProcessor::computeTask(const std::unique_ptr<GraphNode> *node, const std::shared_ptr<Formula> &formula)
-{
-    if ((*node)->solution.allTrue() || (*node)->solution.allFalse())
-    {
-        return;
-    }
-
-    (*node)->solution = formula->evaluate({{"x", (*node)->xRange}, {"y", (*node)->yRange}});
 }

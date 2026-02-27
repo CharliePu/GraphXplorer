@@ -4,20 +4,19 @@
 
 #ifndef GRAPHPROCESSOR_H
 #define GRAPHPROCESSOR_H
+
 #include <functional>
+#include <cstdint>
 #include <memory>
-#include <unordered_set>
+#include <utility>
 
 #include "Interval.h"
+#include "../Graph/Graph.h"
 #include "../Util/ThreadPool.h"
 
-
-class Plot;
-struct GraphNode;
 class Window;
 
 class Formula;
-struct Graph;
 
 class GraphProcessor
 {
@@ -28,20 +27,18 @@ public:
                  const Interval &yRange, int windowWidth, int windowHeight);
 
 private:
-    static void computeTask(const std::unique_ptr<GraphNode> *node, const std::shared_ptr<Formula> &formula);
+    static int getTargetLevel(const Interval &xRange, const Interval &yRange, int windowWidth, int windowHeight);
+    static int getCoarsestViewportLevel(const Interval &xRange, const Interval &yRange);
 
-    static void expandGraph(const std::shared_ptr<Graph> &graph, const Interval &targetXRange,
-                        const Interval &targetYRange);
+    static std::pair<int64_t, int64_t> getChunkIndexBounds(const Interval &range, int level);
+    static bool intersects(const Interval &lhs, const Interval &rhs);
 
+    static Tile &getOrComputeTile(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula,
+                                  int64_t chunkX, int64_t chunkY, int level);
 
-    static std::pair<Interval, Interval > getRoundedRanges(const std::shared_ptr<Graph> &graph, const Interval &xRange, const
-                                                                           Interval &yRange);
-
-    static void expandGraphToPlaceNode(std::unique_ptr<GraphNode> &nodeToExpand,
-                                       std::unique_ptr<GraphNode> &nodeToPlace);
-
-    void recursiveComputeNodes(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula, const Interval &xRange, const
-                               Interval &yRange, int windowWidth, int windowHeight);
+    void refineTile(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula,
+                    int64_t chunkX, int64_t chunkY, int level, int targetLevel,
+                    const Interval &viewXRange, const Interval &viewYRange) const;
 
     std::shared_ptr<Window> window;
 

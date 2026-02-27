@@ -27,3 +27,13 @@ Interval Formula::evaluate(const std::unordered_map<std::string, Interval> &vari
 {
     return intervalEvaluator.evaluateRPN(rpn, variables);
 }
+
+const std::string &Formula::getExpression() const
+{
+    return expressionStr;
+}
+
+const RPN &Formula::getRPN() const
+{
+    return rpn;
+}

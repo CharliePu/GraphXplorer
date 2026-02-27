@@ -39,8 +39,14 @@ add_library(GraphXplorerLib
         src/Graph/Graph.h
         src/Math/Interval.cpp
         src/Math/Interval.h
+        src/Math/ChunkRenderer.h
+        src/Math/CpuChunkRenderer.cpp
+        src/Math/CpuChunkRenderer.h
         src/Math/GraphRasterizer.cpp
         src/Math/GraphRasterizer.h
+        src/Math/OpenCLChunkRenderer.cpp
+        src/Math/OpenCLChunkRenderer.h
+        src/Math/RasterizedPlot.h
         src/Util/ThreadPool.cpp
         src/Util/ThreadPool.h
         src/Core/Window.cpp

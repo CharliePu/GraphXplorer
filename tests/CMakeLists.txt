@@ -1,6 +1,7 @@
 add_executable(GraphXplorerTests
         EvaluatorTests.cpp
         FormulaTests.cpp
+        GraphGenerationTests.cpp
         ParserTests.cpp
         TokenizerTests.cpp
 )

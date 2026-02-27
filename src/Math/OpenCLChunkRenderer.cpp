@@ -1,0 +1,990 @@
+//
+// Created by Codex on 2/27/2026.
+//
+
+#include "OpenCLChunkRenderer.h"
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <iostream>
+#include <span>
+#include <string>
+#include <vector>
+
+#include "../Formula/Formula.h"
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
+#if defined(_WIN32)
+namespace
+{
+    using cl_int = int32_t;
+    using cl_uint = uint32_t;
+    using cl_ulong = uint64_t;
+    using cl_long = int64_t;
+    using cl_bitfield = cl_ulong;
+    using cl_bool = cl_uint;
+    using cl_device_type = cl_bitfield;
+    using cl_mem_flags = cl_bitfield;
+    using cl_context_properties = intptr_t;
+    using cl_program_build_info = cl_uint;
+    using cl_command_queue_properties = cl_bitfield;
+
+    struct _cl_platform_id;
+    struct _cl_device_id;
+    struct _cl_context;
+    struct _cl_command_queue;
+    struct _cl_program;
+    struct _cl_kernel;
+    struct _cl_mem;
+
+    using cl_platform_id = _cl_platform_id *;
+    using cl_device_id = _cl_device_id *;
+    using cl_context = _cl_context *;
+    using cl_command_queue = _cl_command_queue *;
+    using cl_program = _cl_program *;
+    using cl_kernel = _cl_kernel *;
+    using cl_mem = _cl_mem *;
+
+    constexpr cl_int CL_SUCCESS = 0;
+    constexpr cl_int CL_DEVICE_NOT_FOUND = -1;
+
+    constexpr cl_uint CL_TRUE = 1;
+
+    constexpr cl_device_type CL_DEVICE_TYPE_DEFAULT = 1u << 0;
+    constexpr cl_device_type CL_DEVICE_TYPE_CPU = 1u << 1;
+    constexpr cl_device_type CL_DEVICE_TYPE_GPU = 1u << 2;
+
+    constexpr cl_mem_flags CL_MEM_WRITE_ONLY = 1u << 1;
+    constexpr cl_mem_flags CL_MEM_READ_ONLY = 1u << 2;
+    constexpr cl_mem_flags CL_MEM_COPY_HOST_PTR = 1u << 5;
+
+    constexpr cl_program_build_info CL_PROGRAM_BUILD_LOG = 0x1183;
+    constexpr cl_context_properties CL_CONTEXT_PLATFORM = 0x1084;
+
+    using clGetPlatformIDs_fn = cl_int(WINAPI *)(cl_uint, cl_platform_id *, cl_uint *);
+    using clGetDeviceIDs_fn = cl_int(WINAPI *)(cl_platform_id, cl_device_type, cl_uint, cl_device_id *, cl_uint *);
+    using clCreateContext_fn = cl_context(WINAPI *)(
+        const cl_context_properties *,
+        cl_uint,
+        const cl_device_id *,
+        void (WINAPI *)(const char *, const void *, size_t, void *),
+        void *,
+        cl_int *);
+    using clCreateCommandQueue_fn = cl_command_queue(WINAPI *)(
+        cl_context,
+        cl_device_id,
+        cl_command_queue_properties,
+        cl_int *);
+    using clCreateProgramWithSource_fn = cl_program(WINAPI *)(
+        cl_context,
+        cl_uint,
+        const char **,
+        const size_t *,
+        cl_int *);
+    using clBuildProgram_fn = cl_int(WINAPI *)(
+        cl_program,
+        cl_uint,
+        const cl_device_id *,
+        const char *,
+        void (WINAPI *)(cl_program, void *),
+        void *);
+    using clGetProgramBuildInfo_fn = cl_int(WINAPI *)(
+        cl_program,
+        cl_device_id,
+        cl_program_build_info,
+        size_t,
+        void *,
+        size_t *);
+    using clCreateKernel_fn = cl_kernel(WINAPI *)(cl_program, const char *, cl_int *);
+    using clCreateBuffer_fn = cl_mem(WINAPI *)(cl_context, cl_mem_flags, size_t, void *, cl_int *);
+    using clSetKernelArg_fn = cl_int(WINAPI *)(cl_kernel, cl_uint, size_t, const void *);
+    using clEnqueueNDRangeKernel_fn = cl_int(WINAPI *)(
+        cl_command_queue,
+        cl_kernel,
+        cl_uint,
+        const size_t *,
+        const size_t *,
+        const size_t *,
+        cl_uint,
+        const void *,
+        void *);
+    using clEnqueueReadBuffer_fn = cl_int(WINAPI *)(
+        cl_command_queue,
+        cl_mem,
+        cl_bool,
+        size_t,
+        size_t,
+        void *,
+        cl_uint,
+        const void *,
+        void *);
+    using clFinish_fn = cl_int(WINAPI *)(cl_command_queue);
+    using clReleaseMemObject_fn = cl_int(WINAPI *)(cl_mem);
+    using clReleaseKernel_fn = cl_int(WINAPI *)(cl_kernel);
+    using clReleaseProgram_fn = cl_int(WINAPI *)(cl_program);
+    using clReleaseCommandQueue_fn = cl_int(WINAPI *)(cl_command_queue);
+    using clReleaseContext_fn = cl_int(WINAPI *)(cl_context);
+
+    struct OpenCLApi
+    {
+        clGetPlatformIDs_fn clGetPlatformIDs{nullptr};
+        clGetDeviceIDs_fn clGetDeviceIDs{nullptr};
+        clCreateContext_fn clCreateContext{nullptr};
+        clCreateCommandQueue_fn clCreateCommandQueue{nullptr};
+        clCreateProgramWithSource_fn clCreateProgramWithSource{nullptr};
+        clBuildProgram_fn clBuildProgram{nullptr};
+        clGetProgramBuildInfo_fn clGetProgramBuildInfo{nullptr};
+        clCreateKernel_fn clCreateKernel{nullptr};
+        clCreateBuffer_fn clCreateBuffer{nullptr};
+        clSetKernelArg_fn clSetKernelArg{nullptr};
+        clEnqueueNDRangeKernel_fn clEnqueueNDRangeKernel{nullptr};
+        clEnqueueReadBuffer_fn clEnqueueReadBuffer{nullptr};
+        clFinish_fn clFinish{nullptr};
+        clReleaseMemObject_fn clReleaseMemObject{nullptr};
+        clReleaseKernel_fn clReleaseKernel{nullptr};
+        clReleaseProgram_fn clReleaseProgram{nullptr};
+        clReleaseCommandQueue_fn clReleaseCommandQueue{nullptr};
+        clReleaseContext_fn clReleaseContext{nullptr};
+    };
+
+    template <typename T>
+    bool loadProc(const HMODULE module, const char *name, T &fn)
+    {
+        fn = reinterpret_cast<T>(GetProcAddress(module, name));
+        return fn != nullptr;
+    }
+
+    constexpr const char *kKernelSource = R"CLC(
+__kernel void rasterize_unresolved(
+    __global const int* chunk_states,
+    int chunk_width,
+    int chunk_height,
+    float x_lower,
+    float y_lower,
+    float delta_x,
+    float delta_y,
+    int target_level,
+    long min_chunk_x,
+    long min_chunk_y,
+    int window_width,
+    int window_height,
+    __global int* output_image)
+{
+    int pixel_x = get_global_id(0);
+    int pixel_y = get_global_id(1);
+
+    if (pixel_x >= window_width || pixel_y >= window_height)
+    {
+        return;
+    }
+
+    float sample_x = x_lower + ((float)pixel_x + 0.5f) * delta_x;
+    float sample_y = y_lower + ((float)pixel_y + 0.5f) * delta_y;
+    float chunk_size = exp2((float)target_level);
+
+    long chunk_x = (long)floor(sample_x / chunk_size);
+    long chunk_y = (long)floor(sample_y / chunk_size);
+
+    int out_index = pixel_y * window_width + pixel_x;
+
+    long local_x = chunk_x - min_chunk_x;
+    long local_y = chunk_y - min_chunk_y;
+    if (local_x < 0 || local_x >= (long)chunk_width || local_y < 0 || local_y >= (long)chunk_height)
+    {
+        output_image[out_index] = 0;
+        return;
+    }
+
+    int chunk_index = (int)(local_y * (long)chunk_width + local_x);
+    int state = chunk_states[chunk_index];
+    output_image[out_index] = state < 0 ? -1 : 0;
+}
+)CLC";
+
+    std::string toOpenClFloatLiteral(const std::string &numberToken)
+    {
+        if (numberToken.empty())
+        {
+            return "0.0f";
+        }
+
+        auto literal = numberToken;
+        if (literal.back() == 'f' || literal.back() == 'F')
+        {
+            return literal;
+        }
+
+        if (literal.find_first_of(".eE") == std::string::npos)
+        {
+            literal += ".0";
+        }
+
+        literal += "f";
+        return literal;
+    }
+
+    bool buildOpenClExpressionFromRpn(const RPN &rpn, std::string &outputExpression)
+    {
+        std::vector<std::string> stack;
+        stack.reserve(rpn.tokens.size());
+
+        const auto popBinary = [&stack](std::string &lhs, std::string &rhs) -> bool
+        {
+            if (stack.size() < 2)
+            {
+                return false;
+            }
+
+            rhs = std::move(stack.back());
+            stack.pop_back();
+            lhs = std::move(stack.back());
+            stack.pop_back();
+            return true;
+        };
+
+        for (const auto &token : rpn.tokens)
+        {
+            switch (token.type)
+            {
+            case TokenType::NUMBER:
+                stack.push_back(toOpenClFloatLiteral(token.value));
+                break;
+            case TokenType::VARIABLE:
+                if (token.value == "x" || token.value == "y")
+                {
+                    stack.push_back(token.value);
+                    break;
+                }
+
+                return false;
+            case TokenType::OPERATOR:
+            {
+                std::string lhs;
+                std::string rhs;
+                if (!popBinary(lhs, rhs))
+                {
+                    return false;
+                }
+
+                if (token.value == "+")
+                {
+                    stack.push_back("(" + lhs + " + " + rhs + ")");
+                }
+                else if (token.value == "-")
+                {
+                    stack.push_back("(" + lhs + " - " + rhs + ")");
+                }
+                else if (token.value == "*")
+                {
+                    stack.push_back("(" + lhs + " * " + rhs + ")");
+                }
+                else if (token.value == "/")
+                {
+                    stack.push_back("(" + lhs + " / " + rhs + ")");
+                }
+                else if (token.value == "^")
+                {
+                    stack.push_back("pow(" + lhs + ", " + rhs + ")");
+                }
+                else if (token.value == ">")
+                {
+                    stack.push_back("((" + lhs + " > " + rhs + ") ? 1.0f : 0.0f)");
+                }
+                else if (token.value == "<")
+                {
+                    stack.push_back("((" + lhs + " < " + rhs + ") ? 1.0f : 0.0f)");
+                }
+                else if (token.value == ">=")
+                {
+                    stack.push_back("((" + lhs + " >= " + rhs + ") ? 1.0f : 0.0f)");
+                }
+                else if (token.value == "<=")
+                {
+                    stack.push_back("((" + lhs + " <= " + rhs + ") ? 1.0f : 0.0f)");
+                }
+                else if (token.value == "==")
+                {
+                    stack.push_back("((" + lhs + " == " + rhs + ") ? 1.0f : 0.0f)");
+                }
+                else if (token.value == "!=")
+                {
+                    stack.push_back("((" + lhs + " != " + rhs + ") ? 1.0f : 0.0f)");
+                }
+                else if (token.value == "&&")
+                {
+                    stack.push_back(
+                        "((((" + lhs + ") > 0.0f) && ((" + rhs + ") > 0.0f)) ? 1.0f : 0.0f)");
+                }
+                else if (token.value == "||")
+                {
+                    stack.push_back(
+                        "((((" + lhs + ") > 0.0f) || ((" + rhs + ") > 0.0f)) ? 1.0f : 0.0f)");
+                }
+                else
+                {
+                    return false;
+                }
+                break;
+            }
+            case TokenType::FUNCTION:
+            {
+                if (stack.empty())
+                {
+                    return false;
+                }
+
+                auto argument = std::move(stack.back());
+                stack.pop_back();
+
+                if (token.value == "sin" || token.value == "cos" || token.value == "tan"
+                    || token.value == "log" || token.value == "exp" || token.value == "sqrt")
+                {
+                    stack.push_back(token.value + "(" + argument + ")");
+                    break;
+                }
+
+                return false;
+            }
+            default:
+                return false;
+            }
+        }
+
+        if (stack.size() != 1)
+        {
+            return false;
+        }
+
+        outputExpression = std::move(stack.back());
+        return true;
+    }
+
+    std::string buildMixedChunkKernelSource(const std::string &openClExpression)
+    {
+        return "__kernel void rasterize_mixed_chunk_texture(\n"
+            "    float x_lower,\n"
+            "    float y_lower,\n"
+            "    float delta_x,\n"
+            "    float delta_y,\n"
+            "    int texture_size,\n"
+            "    __global int* output_pixels)\n"
+            "{\n"
+            "    int px = get_global_id(0);\n"
+            "    int py = get_global_id(1);\n"
+            "    if (px >= texture_size || py >= texture_size)\n"
+            "    {\n"
+            "        return;\n"
+            "    }\n"
+            "\n"
+            "    float x = x_lower + ((float)px + 0.5f) * delta_x;\n"
+            "    float y = y_lower + ((float)py + 0.5f) * delta_y;\n"
+            "    float value = " + openClExpression + ";\n"
+            "    int idx = py * texture_size + px;\n"
+            "    output_pixels[idx] = value > 0.0f ? 1 : 0;\n"
+            "}\n";
+    }
+}
+#endif
+
+struct OpenCLChunkRenderer::Impl
+{
+    bool available{false};
+
+#if defined(_WIN32)
+    HMODULE module{nullptr};
+    OpenCLApi api{};
+
+    cl_context context{nullptr};
+    cl_command_queue queue{nullptr};
+    cl_program program{nullptr};
+    cl_kernel kernel{nullptr};
+    cl_program mixedTextureProgram{nullptr};
+    cl_kernel mixedTextureKernel{nullptr};
+    cl_device_id device{nullptr};
+    cl_platform_id platform{nullptr};
+    std::string compiledMixedFormula;
+
+    bool initialize()
+    {
+        module = LoadLibraryA("OpenCL.dll");
+        if (!module)
+        {
+            return false;
+        }
+
+        if (!loadApi())
+        {
+            shutdown();
+            return false;
+        }
+
+        if (!createContextAndKernel())
+        {
+            shutdown();
+            return false;
+        }
+
+        available = true;
+        return true;
+    }
+
+    bool loadApi()
+    {
+        return loadProc(module, "clGetPlatformIDs", api.clGetPlatformIDs)
+               && loadProc(module, "clGetDeviceIDs", api.clGetDeviceIDs)
+               && loadProc(module, "clCreateContext", api.clCreateContext)
+               && loadProc(module, "clCreateCommandQueue", api.clCreateCommandQueue)
+               && loadProc(module, "clCreateProgramWithSource", api.clCreateProgramWithSource)
+               && loadProc(module, "clBuildProgram", api.clBuildProgram)
+               && loadProc(module, "clGetProgramBuildInfo", api.clGetProgramBuildInfo)
+               && loadProc(module, "clCreateKernel", api.clCreateKernel)
+               && loadProc(module, "clCreateBuffer", api.clCreateBuffer)
+               && loadProc(module, "clSetKernelArg", api.clSetKernelArg)
+               && loadProc(module, "clEnqueueNDRangeKernel", api.clEnqueueNDRangeKernel)
+               && loadProc(module, "clEnqueueReadBuffer", api.clEnqueueReadBuffer)
+               && loadProc(module, "clFinish", api.clFinish)
+               && loadProc(module, "clReleaseMemObject", api.clReleaseMemObject)
+               && loadProc(module, "clReleaseKernel", api.clReleaseKernel)
+               && loadProc(module, "clReleaseProgram", api.clReleaseProgram)
+               && loadProc(module, "clReleaseCommandQueue", api.clReleaseCommandQueue)
+               && loadProc(module, "clReleaseContext", api.clReleaseContext);
+    }
+
+    bool createContextAndKernel()
+    {
+        cl_uint platformCount = 0;
+        if (api.clGetPlatformIDs(0, nullptr, &platformCount) != CL_SUCCESS || platformCount == 0)
+        {
+            return false;
+        }
+
+        std::vector<cl_platform_id> platforms(platformCount);
+        if (api.clGetPlatformIDs(platformCount, platforms.data(), nullptr) != CL_SUCCESS)
+        {
+            return false;
+        }
+
+        bool foundDevice = false;
+        for (const auto candidatePlatform : platforms)
+        {
+            cl_int result = api.clGetDeviceIDs(candidatePlatform, CL_DEVICE_TYPE_GPU, 1, &device, nullptr);
+            if (result == CL_SUCCESS)
+            {
+                platform = candidatePlatform;
+                foundDevice = true;
+                break;
+            }
+            if (result != CL_DEVICE_NOT_FOUND)
+            {
+                continue;
+            }
+        }
+
+        if (!foundDevice)
+        {
+            for (const auto candidatePlatform : platforms)
+            {
+                cl_int result = api.clGetDeviceIDs(candidatePlatform, CL_DEVICE_TYPE_CPU, 1, &device, nullptr);
+                if (result == CL_SUCCESS)
+                {
+                    platform = candidatePlatform;
+                    foundDevice = true;
+                    break;
+                }
+                if (result != CL_DEVICE_NOT_FOUND)
+                {
+                    continue;
+                }
+            }
+        }
+
+        if (!foundDevice)
+        {
+            for (const auto candidatePlatform : platforms)
+            {
+                cl_int result = api.clGetDeviceIDs(candidatePlatform, CL_DEVICE_TYPE_DEFAULT, 1, &device, nullptr);
+                if (result == CL_SUCCESS)
+                {
+                    platform = candidatePlatform;
+                    foundDevice = true;
+                    break;
+                }
+                if (result != CL_DEVICE_NOT_FOUND)
+                {
+                    continue;
+                }
+            }
+        }
+
+        if (!foundDevice)
+        {
+            return false;
+        }
+
+        cl_int error = CL_SUCCESS;
+        std::array<cl_context_properties, 3> properties{
+            CL_CONTEXT_PLATFORM, reinterpret_cast<cl_context_properties>(platform), 0
+        };
+        context = api.clCreateContext(properties.data(), 1, &device, nullptr, nullptr, &error);
+        if (error != CL_SUCCESS || !context)
+        {
+            return false;
+        }
+
+        queue = api.clCreateCommandQueue(context, device, 0, &error);
+        if (error != CL_SUCCESS || !queue)
+        {
+            return false;
+        }
+
+        const char *source = kKernelSource;
+        const size_t sourceLength = std::char_traits<char>::length(source);
+        program = api.clCreateProgramWithSource(context, 1, &source, &sourceLength, &error);
+        if (error != CL_SUCCESS || !program)
+        {
+            return false;
+        }
+
+        error = api.clBuildProgram(program, 1, &device, nullptr, nullptr, nullptr);
+        if (error != CL_SUCCESS)
+        {
+            return false;
+        }
+
+        kernel = api.clCreateKernel(program, "rasterize_unresolved", &error);
+        return error == CL_SUCCESS && kernel != nullptr;
+    }
+
+    [[nodiscard]] std::string getProgramBuildLog(const cl_program targetProgram) const
+    {
+        if (!targetProgram)
+        {
+            return {};
+        }
+
+        size_t logSize = 0;
+        if (api.clGetProgramBuildInfo(targetProgram, device, CL_PROGRAM_BUILD_LOG, 0, nullptr, &logSize)
+            != CL_SUCCESS
+            || logSize == 0)
+        {
+            return {};
+        }
+
+        std::string log(logSize, '\0');
+        if (api.clGetProgramBuildInfo(targetProgram, device, CL_PROGRAM_BUILD_LOG, log.size(), log.data(), nullptr)
+            != CL_SUCCESS)
+        {
+            return {};
+        }
+
+        while (!log.empty() && (log.back() == '\0' || log.back() == '\n' || log.back() == '\r'))
+        {
+            log.pop_back();
+        }
+        return log;
+    }
+
+    void releaseMixedTextureKernel()
+    {
+        compiledMixedFormula.clear();
+
+        if (mixedTextureKernel && api.clReleaseKernel)
+        {
+            api.clReleaseKernel(mixedTextureKernel);
+            mixedTextureKernel = nullptr;
+        }
+
+        if (mixedTextureProgram && api.clReleaseProgram)
+        {
+            api.clReleaseProgram(mixedTextureProgram);
+            mixedTextureProgram = nullptr;
+        }
+    }
+
+    bool ensureMixedTextureKernel(const std::string &formulaSource)
+    {
+        if (formulaSource.empty())
+        {
+            return false;
+        }
+
+        if (mixedTextureKernel && compiledMixedFormula == formulaSource)
+        {
+            return true;
+        }
+
+        releaseMixedTextureKernel();
+
+        const auto kernelSource = buildMixedChunkKernelSource(formulaSource);
+        const char *source = kernelSource.c_str();
+        const size_t sourceLength = kernelSource.size();
+
+        cl_int error = CL_SUCCESS;
+        mixedTextureProgram = api.clCreateProgramWithSource(context, 1, &source, &sourceLength, &error);
+        if (error != CL_SUCCESS || !mixedTextureProgram)
+        {
+            return false;
+        }
+
+        error = api.clBuildProgram(mixedTextureProgram, 1, &device, nullptr, nullptr, nullptr);
+        if (error != CL_SUCCESS)
+        {
+            std::cerr << "[OpenCLChunkRenderer] Failed to build mixed-texture kernel.\n"
+                      << getProgramBuildLog(mixedTextureProgram) << std::endl;
+            releaseMixedTextureKernel();
+            return false;
+        }
+
+        mixedTextureKernel = api.clCreateKernel(mixedTextureProgram, "rasterize_mixed_chunk_texture", &error);
+        if (error != CL_SUCCESS || !mixedTextureKernel)
+        {
+            releaseMixedTextureKernel();
+            return false;
+        }
+
+        compiledMixedFormula = formulaSource;
+        return true;
+    }
+
+    void shutdown()
+    {
+        available = false;
+
+        releaseMixedTextureKernel();
+
+        if (kernel && api.clReleaseKernel)
+        {
+            api.clReleaseKernel(kernel);
+            kernel = nullptr;
+        }
+
+        if (program && api.clReleaseProgram)
+        {
+            api.clReleaseProgram(program);
+            program = nullptr;
+        }
+
+        if (queue && api.clReleaseCommandQueue)
+        {
+            api.clReleaseCommandQueue(queue);
+            queue = nullptr;
+        }
+
+        if (context && api.clReleaseContext)
+        {
+            api.clReleaseContext(context);
+            context = nullptr;
+        }
+
+        if (module)
+        {
+            FreeLibrary(module);
+            module = nullptr;
+        }
+    }
+#else
+    bool initialize()
+    {
+        available = false;
+        return false;
+    }
+
+    void shutdown()
+    {
+        available = false;
+    }
+#endif
+};
+
+OpenCLChunkRenderer::OpenCLChunkRenderer(): impl(std::make_unique<Impl>())
+{
+    impl->initialize();
+}
+
+OpenCLChunkRenderer::~OpenCLChunkRenderer()
+{
+    if (impl)
+    {
+        impl->shutdown();
+    }
+}
+
+bool OpenCLChunkRenderer::isAvailable() const
+{
+    return impl && impl->available;
+}
+
+bool OpenCLChunkRenderer::rasterizeMixedChunkTexture(const std::shared_ptr<Formula> &formula,
+                                                     const Interval &xRange,
+                                                     const Interval &yRange,
+                                                     const int textureSize,
+                                                     std::vector<int> &outputPixels)
+{
+#if defined(_WIN32)
+    if (!impl || !impl->available || !formula || textureSize <= 0)
+    {
+        return false;
+    }
+
+    std::string formulaExpression;
+    if (!buildOpenClExpressionFromRpn(formula->getRPN(), formulaExpression))
+    {
+        return false;
+    }
+
+    if (!impl->ensureMixedTextureKernel(formulaExpression))
+    {
+        return false;
+    }
+
+    const auto pixelCount = static_cast<size_t>(textureSize) * static_cast<size_t>(textureSize);
+    outputPixels.assign(pixelCount, 0);
+
+    const auto xLower = static_cast<float>(xRange.lower);
+    const auto yLower = static_cast<float>(yRange.lower);
+    const auto deltaX = static_cast<float>(xRange.size() / static_cast<double>(textureSize));
+    const auto deltaY = static_cast<float>(yRange.size() / static_cast<double>(textureSize));
+    const cl_int textureSizeCL = textureSize;
+
+    cl_int error = CL_SUCCESS;
+    cl_mem outputBuffer = impl->api.clCreateBuffer(
+        impl->context,
+        CL_MEM_WRITE_ONLY,
+        pixelCount * sizeof(int),
+        nullptr,
+        &error);
+
+    if (error != CL_SUCCESS || !outputBuffer)
+    {
+        return false;
+    }
+
+    auto cleanup = [&]()
+    {
+        impl->api.clReleaseMemObject(outputBuffer);
+    };
+
+    error = impl->api.clSetKernelArg(impl->mixedTextureKernel, 0, sizeof(float), &xLower);
+    error |= impl->api.clSetKernelArg(impl->mixedTextureKernel, 1, sizeof(float), &yLower);
+    error |= impl->api.clSetKernelArg(impl->mixedTextureKernel, 2, sizeof(float), &deltaX);
+    error |= impl->api.clSetKernelArg(impl->mixedTextureKernel, 3, sizeof(float), &deltaY);
+    error |= impl->api.clSetKernelArg(impl->mixedTextureKernel, 4, sizeof(cl_int), &textureSizeCL);
+    error |= impl->api.clSetKernelArg(impl->mixedTextureKernel, 5, sizeof(cl_mem), &outputBuffer);
+
+    if (error != CL_SUCCESS)
+    {
+        cleanup();
+        return false;
+    }
+
+    const std::array<size_t, 2> globalWorkSize{
+        static_cast<size_t>(textureSize),
+        static_cast<size_t>(textureSize)
+    };
+
+    error = impl->api.clEnqueueNDRangeKernel(
+        impl->queue,
+        impl->mixedTextureKernel,
+        2,
+        nullptr,
+        globalWorkSize.data(),
+        nullptr,
+        0,
+        nullptr,
+        nullptr);
+    if (error != CL_SUCCESS)
+    {
+        cleanup();
+        return false;
+    }
+
+    error = impl->api.clFinish(impl->queue);
+    if (error != CL_SUCCESS)
+    {
+        cleanup();
+        return false;
+    }
+
+    error = impl->api.clEnqueueReadBuffer(
+        impl->queue,
+        outputBuffer,
+        CL_TRUE,
+        0,
+        pixelCount * sizeof(int),
+        outputPixels.data(),
+        0,
+        nullptr,
+        nullptr);
+
+    cleanup();
+    return error == CL_SUCCESS;
+#else
+    (void)formula;
+    (void)xRange;
+    (void)yRange;
+    (void)textureSize;
+    (void)outputPixels;
+    return false;
+#endif
+}
+
+bool OpenCLChunkRenderer::rasterize(const std::vector<int> &chunkStates,
+                                    const int chunkWidth,
+                                    const int chunkHeight,
+                                    const float xLower,
+                                    const float yLower,
+                                    const float deltaX,
+                                    const float deltaY,
+                                    const int targetLevel,
+                                    const int64_t minChunkX,
+                                    const int64_t minChunkY,
+                                    const int windowWidth,
+                                    const int windowHeight,
+                                    std::vector<int> &outputImage) const
+{
+#if defined(_WIN32)
+    if (!impl || !impl->available)
+    {
+        return false;
+    }
+
+    if (chunkWidth <= 0 || chunkHeight <= 0 || windowWidth <= 0 || windowHeight <= 0)
+    {
+        return false;
+    }
+
+    const size_t chunkCount = static_cast<size_t>(chunkWidth) * static_cast<size_t>(chunkHeight);
+    if (chunkStates.size() != chunkCount)
+    {
+        return false;
+    }
+
+    const size_t imageCount = static_cast<size_t>(windowWidth) * static_cast<size_t>(windowHeight);
+    if (outputImage.size() != imageCount)
+    {
+        outputImage.assign(imageCount, 0);
+    }
+
+    cl_int error = CL_SUCCESS;
+    cl_mem chunkBuffer = impl->api.clCreateBuffer(
+        impl->context,
+        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        chunkCount * sizeof(int),
+        const_cast<int *>(chunkStates.data()),
+        &error);
+    if (error != CL_SUCCESS || !chunkBuffer)
+    {
+        return false;
+    }
+
+    cl_mem outputBuffer = impl->api.clCreateBuffer(
+        impl->context,
+        CL_MEM_WRITE_ONLY,
+        imageCount * sizeof(int),
+        nullptr,
+        &error);
+    if (error != CL_SUCCESS || !outputBuffer)
+    {
+        impl->api.clReleaseMemObject(chunkBuffer);
+        return false;
+    }
+
+    auto cleanup = [&]()
+    {
+        impl->api.clReleaseMemObject(outputBuffer);
+        impl->api.clReleaseMemObject(chunkBuffer);
+    };
+
+    const cl_int chunkWidthCL = chunkWidth;
+    const cl_int chunkHeightCL = chunkHeight;
+    const cl_int targetLevelCL = targetLevel;
+    const cl_long minChunkXCL = minChunkX;
+    const cl_long minChunkYCL = minChunkY;
+    const cl_int windowWidthCL = windowWidth;
+    const cl_int windowHeightCL = windowHeight;
+
+    error = impl->api.clSetKernelArg(impl->kernel, 0, sizeof(cl_mem), &chunkBuffer);
+    error |= impl->api.clSetKernelArg(impl->kernel, 1, sizeof(cl_int), &chunkWidthCL);
+    error |= impl->api.clSetKernelArg(impl->kernel, 2, sizeof(cl_int), &chunkHeightCL);
+    error |= impl->api.clSetKernelArg(impl->kernel, 3, sizeof(float), &xLower);
+    error |= impl->api.clSetKernelArg(impl->kernel, 4, sizeof(float), &yLower);
+    error |= impl->api.clSetKernelArg(impl->kernel, 5, sizeof(float), &deltaX);
+    error |= impl->api.clSetKernelArg(impl->kernel, 6, sizeof(float), &deltaY);
+    error |= impl->api.clSetKernelArg(impl->kernel, 7, sizeof(cl_int), &targetLevelCL);
+    error |= impl->api.clSetKernelArg(impl->kernel, 8, sizeof(cl_long), &minChunkXCL);
+    error |= impl->api.clSetKernelArg(impl->kernel, 9, sizeof(cl_long), &minChunkYCL);
+    error |= impl->api.clSetKernelArg(impl->kernel, 10, sizeof(cl_int), &windowWidthCL);
+    error |= impl->api.clSetKernelArg(impl->kernel, 11, sizeof(cl_int), &windowHeightCL);
+    error |= impl->api.clSetKernelArg(impl->kernel, 12, sizeof(cl_mem), &outputBuffer);
+
+    if (error != CL_SUCCESS)
+    {
+        cleanup();
+        return false;
+    }
+
+    const std::array<size_t, 2> globalWorkSize{
+        static_cast<size_t>(windowWidth),
+        static_cast<size_t>(windowHeight)
+    };
+
+    error = impl->api.clEnqueueNDRangeKernel(
+        impl->queue,
+        impl->kernel,
+        2,
+        nullptr,
+        globalWorkSize.data(),
+        nullptr,
+        0,
+        nullptr,
+        nullptr);
+    if (error != CL_SUCCESS)
+    {
+        cleanup();
+        return false;
+    }
+
+    error = impl->api.clFinish(impl->queue);
+    if (error != CL_SUCCESS)
+    {
+        cleanup();
+        return false;
+    }
+
+    error = impl->api.clEnqueueReadBuffer(
+        impl->queue,
+        outputBuffer,
+        CL_TRUE,
+        0,
+        imageCount * sizeof(int),
+        outputImage.data(),
+        0,
+        nullptr,
+        nullptr);
+
+    cleanup();
+    return error == CL_SUCCESS;
+#else
+    (void)chunkStates;
+    (void)chunkWidth;
+    (void)chunkHeight;
+    (void)xLower;
+    (void)yLower;
+    (void)deltaX;
+    (void)deltaY;
+    (void)targetLevel;
+    (void)minChunkX;
+    (void)minChunkY;
+    (void)windowWidth;
+    (void)windowHeight;
+    (void)outputImage;
+    return false;
+#endif
+}

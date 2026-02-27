@@ -4,40 +4,112 @@
 
 #include "Plot.h"
 
-#include <glad/glad.h>
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
+#include <tuple>
+
+#include <glad/glad.h>
 #include <staplegl/staplegl.hpp>
 
+#include "../Core/Window.h"
 #include "../Formula/Formula.h"
 #include "../Graph/Graph.h"
 #include "../Math/ComputeEngine.h"
 #include "../Render/Mesh.h"
-#include "../Core/Window.h"
+#include "../Util/PerformanceProfiler.h"
 
-
-void Plot::prepareVertices() const
+Plot::SolidChunkRenderItem::SolidChunkRenderItem(std::optional<Mesh> normalMesh, Mesh debugMesh): normalMesh{
+                                                                                                       std::move(
+                                                                                                           normalMesh)
+                                                                                                   },
+                                                                                                   debugMesh{
+                                                                                                       std::move(
+                                                                                                           debugMesh)
+                                                                                                   }
 {
-    std::array vertices = {
-        1.0f, 1.0f, 0.0f, // top right
-        1.0f, -1.0f, 0.0f, // bottom right
-        -1.0f, -1.0f, 0.0f, // bottom left
-        -1.0f, 1.0f, 0.0f // top left
-    };
+}
 
-    std::array<unsigned int, 6> indices = {
-        0, 1, 3, // first Triangle
-        1, 2, 3 // second Triangle
-    };
+const Mesh *Plot::SolidChunkRenderItem::meshForMode(const bool debugMode) const
+{
+    if (debugMode)
+    {
+        return &debugMesh;
+    }
 
-    staplegl::vertex_buffer vbo{vertices, staplegl::driver_draw_hint::STATIC_DRAW};
-    staplegl::index_buffer ebo{indices};
+    if (!normalMesh.has_value())
+    {
+        return nullptr;
+    }
 
-    staplegl::vertex_buffer_layout const layout{{staplegl::shader_data_type::u_type::vec3, "aPos"}};
+    return &normalMesh.value();
+}
 
-    vbo.set_layout(layout);
+bool Plot::SolidChunkRenderItem::hasNormalMesh() const
+{
+    return normalMesh.has_value();
+}
 
-    vao->add_vertex_buffer(std::move(vbo));
-    vao->set_index_buffer(std::move(ebo));
+Plot::TexturedChunkRenderItem::TexturedChunkRenderItem(Mesh normalMesh, Mesh debugMesh): normalMesh{
+                                                                                              std::move(normalMesh)
+                                                                                          },
+                                                                                          debugMesh{
+                                                                                              std::move(debugMesh)
+                                                                                          }
+{
+}
+
+const Mesh *Plot::TexturedChunkRenderItem::meshForMode(const bool debugMode) const
+{
+    if (debugMode)
+    {
+        return &debugMesh;
+    }
+
+    return &normalMesh;
+}
+
+bool Plot::TexturedChunkRenderItem::hasNormalMesh() const
+{
+    return true;
+}
+
+int Plot::getTargetLevel(const Interval &xRange, const Interval &yRange, const int windowWidth,
+                         const int windowHeight)
+{
+    const auto minRangeSize = std::min(xRange.size(), yRange.size());
+    const auto maxWindowSize = std::max(windowWidth, windowHeight);
+
+    if (minRangeSize <= 0.0 || maxWindowSize <= 0)
+    {
+        return 0;
+    }
+
+    const auto rangePerPixel = minRangeSize / static_cast<double>(maxWindowSize);
+    const auto rangePerChunk = rangePerPixel * static_cast<double>(MIN_CHUNK_PIXELS);
+    return static_cast<int>(std::floor(std::log2(rangePerChunk)));
+}
+
+std::pair<int64_t, int64_t> Plot::getChunkIndexBounds(const Interval &range, const int level)
+{
+    if (range.upper <= range.lower)
+    {
+        const auto chunkIndex = worldToChunkIndex(range.lower, level);
+        return {chunkIndex, chunkIndex};
+    }
+
+    const auto chunkSize = chunkSizeForLevel(level);
+    const auto minIndex = worldToChunkIndex(range.lower, level);
+    const auto scaledUpper = range.upper / chunkSize;
+    const auto upperInclusiveScaled = std::nextafter(scaledUpper, -std::numeric_limits<double>::infinity());
+    const auto maxIndex = static_cast<int64_t>(std::floor(upperInclusiveScaled));
+    return {minIndex, maxIndex};
+}
+
+PlotChunkKey Plot::toChunkKey(const RasterChunk &chunk)
+{
+    return {chunk.chunkX, chunk.chunkY, chunk.level};
 }
 
 Plot::Plot(const std::shared_ptr<ComputeEngine> &engine,
@@ -47,10 +119,20 @@ Plot::Plot(const std::shared_ptr<ComputeEngine> &engine,
                                                    window{window},
                                                    viewXRange{-20.0, 20.0},
                                                    viewYRange{-20.0, 20.0},
-                                                   plotXRange{-20.0, 20.0},
-                                                   plotYRange{-20.0, 20.0},
-                                                   vao{std::make_shared<staplegl::vertex_array>()},
-                                                   shader{
+                                                   chunkShader{
+                                                       new staplegl::shader_program{
+                                                           "chunk_shader",
+                                                           {
+                                                               std::pair{
+                                                                   staplegl::shader_type::vertex, "./shader/chunk.vert"
+                                                               },
+                                                               std::pair{
+                                                                   staplegl::shader_type::fragment, "./shader/chunk.frag"
+                                                               }
+                                                           }
+                                                       }
+                                                   },
+                                                   plotShader{
                                                        new staplegl::shader_program{
                                                            "plot_shader",
                                                            {
@@ -63,20 +145,34 @@ Plot::Plot(const std::shared_ptr<ComputeEngine> &engine,
                                                            }
                                                        }
                                                    },
-                                                   model{1.0}
+                                                   visibleChunkMeshes{},
+                                                   meshes{},
+                                                   sampledChunkCache{},
+                                                   chunkTextureCache{},
+                                                   chunkRenderItems{},
+                                                   sampledChunkLevels{},
+                                                   chunkModel{1.0f},
+                                                   debug{false}
 {
     computeEngine->setComputeCompleteCallback(
-        [this](const std::vector<int> &image, Interval xRange, Interval yRange, int width, int height) {
-            plotXRange = xRange;
-            plotYRange = yRange;
+        [this](std::vector<RasterChunk> chunks,
+               std::vector<RasterChunkTexture> chunkTextures,
+               const Interval xRange, const Interval yRange, const int width, const int height,
+               const uint64_t requestId)
+        {
+            GRAPHX_PROFILE_SCOPE("plot.asyncCallback.total");
+            (void)xRange;
+            (void)yRange;
+            (void)width;
+            (void)height;
+            (void)requestId;
+
+            mergeSampledChunks(chunks);
+            mergeChunkTextures(chunkTextures);
+            rebuildChunkRenderItems();
             updateModelMat();
-
-            const auto meshes = prepareMeshes(image, width, height);
-
-            plotCompleteCallback(meshes);
+            rebuildAndPublishMeshes();
         });
-
-    prepareVertices();
 }
 
 void Plot::setPlotCompleteCallback(const std::function<void(const std::vector<Mesh> &)> &callback)
@@ -98,64 +194,817 @@ int Plot::getDepth() const
 void Plot::requestNewPlot(const std::string &input)
 {
     formula = std::make_shared<Formula>(input);
-
     graph = std::make_shared<Graph>();
 
-    computeEngine->addTask({graph, formula, viewXRange, viewYRange, window->getWidth(), window->getHeight(), debug});
+    sampledChunkCache.clear();
+    chunkTextureCache.clear();
+    chunkRenderItems.clear();
+    sampledChunkLevels.clear();
+    visibleChunkMeshes.clear();
+    meshes.clear();
+
+    updateModelMat();
+    rebuildAndPublishMeshes();
+
+    computeEngine->addTask({graph, formula, viewXRange, viewYRange, window->getWidth(), window->getHeight()});
 }
 
-std::vector<Mesh> Plot::prepareMeshes(const std::vector<int> &image, const int width, const int height)
+Mesh Plot::createColoredChunkMesh(const RasterChunk &chunk, const glm::vec4 &color) const
 {
-    auto getGradent = [](const int value) -> float {
-        return static_cast<float>(value > 0);
+    auto chunkVao = std::make_shared<staplegl::vertex_array>();
+
+    std::array vertices{
+        static_cast<float>(chunk.xRange.upper), static_cast<float>(chunk.yRange.upper), 0.0f, 1.0f, 1.0f, color.r,
+        color.g, color.b, color.a, // top right
+        static_cast<float>(chunk.xRange.upper), static_cast<float>(chunk.yRange.lower), 0.0f, 1.0f, 0.0f, color.r,
+        color.g, color.b, color.a, // bottom right
+        static_cast<float>(chunk.xRange.lower), static_cast<float>(chunk.yRange.lower), 0.0f, 0.0f, 0.0f, color.r,
+        color.g, color.b, color.a, // bottom left
+        static_cast<float>(chunk.xRange.lower), static_cast<float>(chunk.yRange.upper), 0.0f, 0.0f, 1.0f, color.r,
+        color.g, color.b, color.a // top left
     };
 
-    std::vector<float> data;
-
-    std::ranges::transform(image, std::back_inserter(data), getGradent);
-
-    const auto textureData = std::span<const float>{data};
-    const auto textureResolution = staplegl::resolution{width, height};
-    constexpr auto textureColor = staplegl::texture_color{
-        GL_RED, GL_RED, GL_FLOAT
-    };
-    constexpr auto textureFilter = staplegl::texture_filter{
-        GL_NEAREST, GL_NEAREST
+    std::array<unsigned int, 6> indices{
+        0, 1, 3,
+        1, 2, 3
     };
 
-    auto texture = std::make_shared<staplegl::texture_2d>(
-        textureData,
-        textureResolution,
-        textureColor,
-        textureFilter
-    );
+    staplegl::vertex_buffer vbo{vertices, staplegl::driver_draw_hint::STATIC_DRAW};
+    staplegl::index_buffer ebo{indices};
+    staplegl::vertex_buffer_layout const layout{
+        {staplegl::shader_data_type::u_type::vec3, "aPos"},
+        {staplegl::shader_data_type::u_type::vec2, "aUv"},
+        {staplegl::shader_data_type::u_type::vec4, "aColor"}
+    };
+    vbo.set_layout(layout);
 
-    shader->bind();
-    shader->upload_uniform_mat4f("transform", std::span<float, 16>{glm::value_ptr(model), 16});
+    chunkVao->add_vertex_buffer(std::move(vbo));
+    chunkVao->set_index_buffer(std::move(ebo));
 
-    plotMesh = {shader, vao, std::vector{texture}};
+    return {chunkShader, chunkVao, {}};
+}
 
-    return {plotMesh};
+Mesh Plot::createTexturedChunkMesh(const RasterChunk &chunk, const std::shared_ptr<staplegl::texture_2d> &texture) const
+{
+    auto textureVao = std::make_shared<staplegl::vertex_array>();
+    std::array vertices{
+        static_cast<float>(chunk.xRange.upper), static_cast<float>(chunk.yRange.upper), 0.0f, 1.0f, 1.0f, // top right
+        static_cast<float>(chunk.xRange.upper), static_cast<float>(chunk.yRange.lower), 0.0f, 1.0f, 0.0f, // bottom right
+        static_cast<float>(chunk.xRange.lower), static_cast<float>(chunk.yRange.lower), 0.0f, 0.0f, 0.0f, // bottom left
+        static_cast<float>(chunk.xRange.lower), static_cast<float>(chunk.yRange.upper), 0.0f, 0.0f, 1.0f // top left
+    };
+
+    std::array<unsigned int, 6> indices{
+        0, 1, 3,
+        1, 2, 3
+    };
+
+    staplegl::vertex_buffer vbo{vertices, staplegl::driver_draw_hint::STATIC_DRAW};
+    staplegl::index_buffer ebo{indices};
+    staplegl::vertex_buffer_layout const layout{
+        {staplegl::shader_data_type::u_type::vec3, "aPos"},
+        {staplegl::shader_data_type::u_type::vec2, "aUv"}
+    };
+    vbo.set_layout(layout);
+
+    textureVao->add_vertex_buffer(std::move(vbo));
+    textureVao->set_index_buffer(std::move(ebo));
+
+    return {plotShader, textureVao, std::vector{texture}};
+}
+
+glm::vec4 Plot::getDebugChunkColor(const RasterChunk &chunk) const
+{
+    if (chunk.state < 0)
+    {
+        // Alpha > 2.5 marks "mixed" debug overlays in chunk.frag.
+        return {1.0f, 0.72f, 0.24f, 3.0f};
+    }
+
+    // Alpha in (1.0, 2.5] marks "uniform" debug overlays in chunk.frag.
+    return {0.58f, 0.62f, 0.72f, 2.0f};
+}
+
+std::optional<glm::vec4> Plot::getNormalSolidColor(const RasterChunk &chunk) const
+{
+    if (chunk.state >= 0)
+    {
+        const auto alpha = chunk.state > 0 ? 1.0f : 0.0f;
+        return glm::vec4{0.0f, 0.47f, 0.95f, alpha};
+    }
+
+    return std::nullopt;
+}
+
+std::unique_ptr<Plot::ChunkRenderItem> Plot::buildChunkRenderItem(const PlotChunkKey &key)
+{
+    const auto chunkIt = sampledChunkCache.find(key);
+    if (chunkIt == sampledChunkCache.end())
+    {
+        return nullptr;
+    }
+
+    const auto &chunk = chunkIt->second;
+    auto debugMesh = createColoredChunkMesh(chunk, getDebugChunkColor(chunk));
+
+    if (chunk.state < 0)
+    {
+        const auto textureIt = chunkTextureCache.find(key);
+        if (textureIt != chunkTextureCache.end())
+        {
+            auto texturedMesh = createTexturedChunkMesh(chunk, textureIt->second);
+            return std::make_unique<TexturedChunkRenderItem>(std::move(texturedMesh), std::move(debugMesh));
+        }
+
+        return std::make_unique<SolidChunkRenderItem>(std::nullopt, std::move(debugMesh));
+    }
+
+    if (const auto color = getNormalSolidColor(chunk))
+    {
+        std::optional<Mesh> normalMesh{createColoredChunkMesh(chunk, *color)};
+        return std::make_unique<SolidChunkRenderItem>(std::move(normalMesh), std::move(debugMesh));
+    }
+
+    return std::make_unique<SolidChunkRenderItem>(std::nullopt, std::move(debugMesh));
+}
+
+bool Plot::isChunkRenderable(const PlotChunkKey &key) const
+{
+    const auto renderItemIt = chunkRenderItems.find(key);
+    if (renderItemIt == chunkRenderItems.end())
+    {
+        return false;
+    }
+
+    return renderItemIt->second && renderItemIt->second->hasNormalMesh();
+}
+
+std::optional<PlotChunkKey> Plot::findBestChunkForTarget(const int64_t chunkX, const int64_t chunkY,
+                                                          const int targetLevel) const
+{
+    const PlotChunkKey exactKey{chunkX, chunkY, targetLevel};
+    if (isChunkRenderable(exactKey))
+    {
+        return exactKey;
+    }
+
+    const auto chunkXRange = chunkIndexToRange(chunkX, targetLevel);
+    const auto chunkYRange = chunkIndexToRange(chunkY, targetLevel);
+    const auto centerX = (chunkXRange.lower + chunkXRange.upper) * 0.5;
+    const auto centerY = (chunkYRange.lower + chunkYRange.upper) * 0.5;
+
+    for (auto it = sampledChunkLevels.lower_bound(targetLevel); it != sampledChunkLevels.end(); ++it)
+    {
+        const auto level = it->first;
+        if (level == targetLevel)
+        {
+            continue;
+        }
+
+        const PlotChunkKey parentKey{
+            worldToChunkIndex(centerX, level),
+            worldToChunkIndex(centerY, level),
+            level
+        };
+        if (isChunkRenderable(parentKey))
+        {
+            return parentKey;
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::vector<PlotChunkKey> Plot::findCompleteRenderableChildrenForTarget(const int64_t chunkX, const int64_t chunkY,
+                                                                         const int targetLevel) const
+{
+    const auto targetXRange = chunkIndexToRange(chunkX, targetLevel);
+    const auto targetYRange = chunkIndexToRange(chunkY, targetLevel);
+
+    const auto begin = sampledChunkLevels.lower_bound(targetLevel);
+    for (auto it = std::make_reverse_iterator(begin); it != sampledChunkLevels.rend(); ++it)
+    {
+        const auto level = it->first;
+
+        auto [childMinX, childMaxX] = getChunkIndexBounds(targetXRange, level);
+        auto [childMinY, childMaxY] = getChunkIndexBounds(targetYRange, level);
+
+        std::vector<PlotChunkKey> candidateKeys;
+        candidateKeys.reserve(
+            static_cast<size_t>(childMaxX - childMinX + 1) * static_cast<size_t>(childMaxY - childMinY + 1));
+
+        auto isComplete = true;
+        for (auto childY = childMinY; childY <= childMaxY && isComplete; ++childY)
+        {
+            for (auto childX = childMinX; childX <= childMaxX; ++childX)
+            {
+                const PlotChunkKey childKey{childX, childY, level};
+                if (!isChunkRenderable(childKey))
+                {
+                    isComplete = false;
+                    break;
+                }
+
+                candidateKeys.push_back(childKey);
+            }
+        }
+
+        if (isComplete && !candidateKeys.empty())
+        {
+            return candidateKeys;
+        }
+    }
+
+    return {};
+}
+
+void Plot::mergeSampledChunks(const std::vector<RasterChunk> &chunks)
+{
+    GRAPHX_PROFILE_SCOPE("plot.mergeSampledChunks");
+
+    const auto addLevelRef = [this](const int level)
+    {
+        sampledChunkLevels[level] += 1;
+    };
+
+    const auto removeLevelRef = [this](const int level)
+    {
+        const auto levelCountIt = sampledChunkLevels.find(level);
+        if (levelCountIt == sampledChunkLevels.end())
+        {
+            return;
+        }
+
+        if (levelCountIt->second <= 1)
+        {
+            sampledChunkLevels.erase(level);
+            return;
+        }
+
+        levelCountIt->second -= 1;
+    };
+
+    const auto floorDivByPow2 = [](const int64_t value, const int shift) -> int64_t
+    {
+        if (shift <= 0)
+        {
+            return value;
+        }
+
+        if (shift >= 62)
+        {
+            return value >= 0 ? 0 : -1;
+        }
+
+        const auto divisor = int64_t{1} << shift;
+        if (value >= 0)
+        {
+            return value / divisor;
+        }
+
+        return -(((-value) + divisor - 1) / divisor);
+    };
+
+    const auto parentCoversChild = [floorDivByPow2](const PlotChunkKey &parent, const PlotChunkKey &child) -> bool
+    {
+        if (parent.level <= child.level)
+        {
+            return false;
+        }
+
+        const auto levelDelta = parent.level - child.level;
+        const auto projectedX = floorDivByPow2(child.x, levelDelta);
+        const auto projectedY = floorDivByPow2(child.y, levelDelta);
+        return projectedX == parent.x && projectedY == parent.y;
+    };
+
+    const auto eraseCachedChunk = [this, &removeLevelRef](const PlotChunkKey &key)
+    {
+        if (sampledChunkCache.erase(key) == 0)
+        {
+            return;
+        }
+
+        chunkRenderItems.erase(key);
+        chunkTextureCache.erase(key);
+        removeLevelRef(key.level);
+    };
+
+    for (const auto &chunk : chunks)
+    {
+        const auto key = toChunkKey(chunk);
+        const auto isUniformChunk = chunk.state >= 0;
+
+        // Redundant uniform children are skipped when an equivalent uniform parent already exists.
+        if (isUniformChunk)
+        {
+            auto coveredByUniformParent = false;
+            for (auto levelIt = sampledChunkLevels.upper_bound(chunk.level); levelIt != sampledChunkLevels.end();
+                 ++levelIt)
+            {
+                const auto parentLevel = levelIt->first;
+                const PlotChunkKey parentKey{
+                    floorDivByPow2(key.x, parentLevel - key.level),
+                    floorDivByPow2(key.y, parentLevel - key.level),
+                    parentLevel
+                };
+
+                const auto parentIt = sampledChunkCache.find(parentKey);
+                if (parentIt == sampledChunkCache.end())
+                {
+                    continue;
+                }
+
+                if (parentIt->second.state >= 0 && parentIt->second.state == chunk.state)
+                {
+                    coveredByUniformParent = true;
+                    break;
+                }
+            }
+
+            if (coveredByUniformParent)
+            {
+                continue;
+            }
+        }
+
+        const auto existingIt = sampledChunkCache.find(key);
+        if (existingIt == sampledChunkCache.end())
+        {
+            sampledChunkCache.emplace(key, chunk);
+            addLevelRef(chunk.level);
+        }
+        else
+        {
+            existingIt->second = chunk;
+        }
+
+        // Force rebind of render item whenever chunk metadata changes.
+        chunkRenderItems.erase(key);
+
+        // Uniform chunks do not need texture cache entries.
+        if (isUniformChunk)
+        {
+            chunkTextureCache.erase(key);
+
+            // A discovered uniform parent supersedes equivalent uniform children.
+            std::vector<PlotChunkKey> removableChildren;
+            removableChildren.reserve(16);
+
+            for (const auto &[childKey, childChunk] : sampledChunkCache)
+            {
+                if (childKey.level >= key.level)
+                {
+                    continue;
+                }
+
+                if (!parentCoversChild(key, childKey))
+                {
+                    continue;
+                }
+
+                // Sanity: only remove children that are also uniform and equivalent.
+                if (childChunk.state < 0 || childChunk.state != chunk.state)
+                {
+                    continue;
+                }
+
+                removableChildren.push_back(childKey);
+            }
+
+            for (const auto &childKey : removableChildren)
+            {
+                eraseCachedChunk(childKey);
+            }
+        }
+    }
+}
+
+void Plot::mergeChunkTextures(const std::vector<RasterChunkTexture> &chunkTextures)
+{
+    GRAPHX_PROFILE_SCOPE("plot.mergeChunkTextures");
+    for (const auto &chunkTexture : chunkTextures)
+    {
+        if (chunkTexture.width <= 0 || chunkTexture.height <= 0)
+        {
+            continue;
+        }
+
+        const PlotChunkKey key{chunkTexture.chunkX, chunkTexture.chunkY, chunkTexture.level};
+        const auto chunkIt = sampledChunkCache.find(key);
+        if (chunkIt == sampledChunkCache.end())
+        {
+            continue;
+        }
+
+        if (chunkIt->second.state >= 0)
+        {
+            chunkTextureCache.erase(key);
+            continue;
+        }
+
+        if (chunkTextureCache.contains(key))
+        {
+            continue;
+        }
+        std::vector<float> textureData;
+        textureData.reserve(chunkTexture.pixels.size());
+
+        for (const auto value : chunkTexture.pixels)
+        {
+            textureData.push_back(value > 0 ? 1.0f : 0.0f);
+        }
+
+        const auto resolution = staplegl::resolution{chunkTexture.width, chunkTexture.height};
+        constexpr auto textureColor = staplegl::texture_color{GL_RED, GL_RED, GL_FLOAT};
+        constexpr auto textureFilter = staplegl::texture_filter{GL_NEAREST, GL_NEAREST};
+
+        auto texture = std::make_shared<staplegl::texture_2d>(
+            std::span<const float>{textureData}, resolution, textureColor, textureFilter);
+
+        chunkTextureCache.insert_or_assign(key, texture);
+        chunkRenderItems.erase(key);
+    }
+}
+
+void Plot::rebuildChunkRenderItems()
+{
+    GRAPHX_PROFILE_SCOPE("plot.rebuildChunkRenderItems");
+    std::vector<PlotChunkKey> keysToBuild;
+    keysToBuild.reserve(sampledChunkCache.size());
+
+    for (const auto &[key, chunk] : sampledChunkCache)
+    {
+        (void)chunk;
+        if (!chunkRenderItems.contains(key))
+        {
+            keysToBuild.push_back(key);
+        }
+    }
+
+    for (const auto &key : keysToBuild)
+    {
+        auto renderItem = buildChunkRenderItem(key);
+        if (!renderItem)
+        {
+            continue;
+        }
+
+        chunkRenderItems.insert_or_assign(key, std::move(renderItem));
+    }
+}
+
+std::vector<PlotChunkKey> Plot::selectVisibleChunkKeysAtLevel(const int targetLevel) const
+{
+    GRAPHX_PROFILE_SCOPE("plot.selectVisibleChunkKeysAtLevel");
+    if (sampledChunkCache.empty())
+    {
+        return {};
+    }
+
+    const auto [minChunkX, maxChunkX] = getChunkIndexBounds(viewXRange, targetLevel);
+    const auto [minChunkY, maxChunkY] = getChunkIndexBounds(viewYRange, targetLevel);
+
+    struct TargetCellKey
+    {
+        int64_t x;
+        int64_t y;
+
+        bool operator==(const TargetCellKey &other) const
+        {
+            return x == other.x && y == other.y;
+        }
+    };
+
+    struct TargetCellKeyHash
+    {
+        size_t operator()(const TargetCellKey &key) const
+        {
+            const auto h1 = std::hash<int64_t>{}(key.x);
+            const auto h2 = std::hash<int64_t>{}(key.y);
+            size_t seed = h1;
+            seed ^= h2 + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+            return seed;
+        }
+    };
+
+    struct TargetCellRect
+    {
+        int64_t minX;
+        int64_t maxX;
+        int64_t minY;
+        int64_t maxY;
+    };
+
+    const auto getTargetRectForKey = [this, targetLevel, minChunkX, maxChunkX, minChunkY, maxChunkY](
+    const PlotChunkKey &key) -> std::optional<TargetCellRect>
+    {
+        const auto chunkIt = sampledChunkCache.find(key);
+        if (chunkIt == sampledChunkCache.end())
+        {
+            return std::nullopt;
+        }
+
+        const auto &chunk = chunkIt->second;
+        auto [coverMinX, coverMaxX] = getChunkIndexBounds(chunk.xRange, targetLevel);
+        auto [coverMinY, coverMaxY] = getChunkIndexBounds(chunk.yRange, targetLevel);
+
+        coverMinX = std::max(coverMinX, minChunkX);
+        coverMaxX = std::min(coverMaxX, maxChunkX);
+        coverMinY = std::max(coverMinY, minChunkY);
+        coverMaxY = std::min(coverMaxY, maxChunkY);
+
+        if (coverMinX > coverMaxX || coverMinY > coverMaxY)
+        {
+            return std::nullopt;
+        }
+
+        return TargetCellRect{coverMinX, coverMaxX, coverMinY, coverMaxY};
+    };
+
+    std::unordered_set<TargetCellKey, TargetCellKeyHash> coveredCells;
+    coveredCells.reserve(
+        static_cast<size_t>(maxChunkX - minChunkX + 1) * static_cast<size_t>(maxChunkY - minChunkY + 1));
+
+    std::unordered_set<PlotChunkKey, PlotChunkKeyHash> chosenKeys;
+    chosenKeys.reserve(
+        static_cast<size_t>(maxChunkX - minChunkX + 1) * static_cast<size_t>(maxChunkY - minChunkY + 1));
+
+    const auto markRectCovered = [&coveredCells](const TargetCellRect &rect)
+    {
+        for (auto y = rect.minY; y <= rect.maxY; ++y)
+        {
+            for (auto x = rect.minX; x <= rect.maxX; ++x)
+            {
+                coveredCells.insert({x, y});
+            }
+        }
+    };
+
+    const auto floorDivByPow2 = [](const int64_t value, const int shift) -> int64_t
+    {
+        if (shift <= 0)
+        {
+            return value;
+        }
+
+        if (shift >= 62)
+        {
+            return value >= 0 ? 0 : -1;
+        }
+
+        const auto divisor = int64_t{1} << shift;
+        if (value >= 0)
+        {
+            return value / divisor;
+        }
+
+        return -(((-value) + divisor - 1) / divisor);
+    };
+
+    const auto parentCoversChild = [floorDivByPow2](const PlotChunkKey &parent, const PlotChunkKey &child) -> bool
+    {
+        if (parent.level <= child.level)
+        {
+            return false;
+        }
+
+        const auto levelDelta = parent.level - child.level;
+        const auto projectedX = floorDivByPow2(child.x, levelDelta);
+        const auto projectedY = floorDivByPow2(child.y, levelDelta);
+        return projectedX == parent.x && projectedY == parent.y;
+    };
+
+    const auto evictCoveredFiner = [&chosenKeys, parentCoversChild](const PlotChunkKey &coarseKey)
+    {
+        for (auto it = chosenKeys.begin(); it != chosenKeys.end();)
+        {
+            if (!parentCoversChild(coarseKey, *it))
+            {
+                ++it;
+                continue;
+            }
+
+            it = chosenKeys.erase(it);
+        }
+    };
+
+    for (auto chunkY = minChunkY; chunkY <= maxChunkY; ++chunkY)
+    {
+        for (auto chunkX = minChunkX; chunkX <= maxChunkX; ++chunkX)
+        {
+            const TargetCellKey cell{chunkX, chunkY};
+            if (coveredCells.contains(cell))
+            {
+                continue;
+            }
+
+            if (const auto chosen = findBestChunkForTarget(chunkX, chunkY, targetLevel))
+            {
+                if (chosen->level > targetLevel)
+                {
+                    evictCoveredFiner(*chosen);
+                }
+
+                chosenKeys.insert(*chosen);
+
+                if (const auto chosenRect = getTargetRectForKey(*chosen))
+                {
+                    markRectCovered(*chosenRect);
+                }
+                else
+                {
+                    coveredCells.insert(cell);
+                }
+
+                continue;
+            }
+
+            const auto childKeys = findCompleteRenderableChildrenForTarget(chunkX, chunkY, targetLevel);
+            if (!childKeys.empty())
+            {
+                for (const auto &childKey : childKeys)
+                {
+                    chosenKeys.insert(childKey);
+                }
+                coveredCells.insert(cell);
+            }
+        }
+    }
+
+    std::vector<PlotChunkKey> keys;
+    keys.reserve(chosenKeys.size());
+    for (const auto &key : chosenKeys)
+    {
+        keys.push_back(key);
+    }
+
+    std::ranges::sort(keys, [](const PlotChunkKey &lhs, const PlotChunkKey &rhs)
+    {
+        if (lhs.level != rhs.level)
+        {
+            // Draw coarse chunks first, then refined chunks on top.
+            return lhs.level > rhs.level;
+        }
+
+        return std::tie(lhs.y, lhs.x) < std::tie(rhs.y, rhs.x);
+    });
+
+    // Final guard: once a parent chunk is selected, drop any covered finer chunks.
+    std::vector<PlotChunkKey> prunedKeys;
+    prunedKeys.reserve(keys.size());
+    for (const auto &candidate : keys)
+    {
+        auto coveredByParent = false;
+        for (const auto &selected : prunedKeys)
+        {
+            if (parentCoversChild(selected, candidate))
+            {
+                coveredByParent = true;
+                break;
+            }
+        }
+
+        if (!coveredByParent)
+        {
+            prunedKeys.push_back(candidate);
+        }
+    }
+
+    return prunedKeys;
+}
+
+std::vector<PlotChunkKey> Plot::selectVisibleChunkKeys() const
+{
+    GRAPHX_PROFILE_SCOPE("plot.selectVisibleChunkKeys");
+    if (sampledChunkCache.empty())
+    {
+        return {};
+    }
+
+    const auto desiredTargetLevel = getTargetLevel(viewXRange, viewYRange, window->getWidth(), window->getHeight());
+
+    std::vector<int> candidateLevels;
+    candidateLevels.reserve(sampledChunkLevels.size() + 1);
+    candidateLevels.push_back(desiredTargetLevel);
+
+    const auto finerBegin = sampledChunkLevels.lower_bound(desiredTargetLevel);
+    for (auto it = std::make_reverse_iterator(finerBegin); it != sampledChunkLevels.rend(); ++it)
+    {
+        const auto level = it->first;
+        if (level == desiredTargetLevel)
+        {
+            continue;
+        }
+
+        candidateLevels.push_back(level);
+    }
+
+    for (const auto candidateLevel : candidateLevels)
+    {
+        auto keys = selectVisibleChunkKeysAtLevel(candidateLevel);
+        if (!keys.empty())
+        {
+            return keys;
+        }
+    }
+
+    return {};
+}
+
+void Plot::rebuildVisibleChunkMeshes()
+{
+    GRAPHX_PROFILE_SCOPE("plot.rebuildVisibleChunkMeshes");
+    visibleChunkMeshes.clear();
+
+    if (sampledChunkCache.empty())
+    {
+        return;
+    }
+
+    const auto keys = selectVisibleChunkKeys();
+    visibleChunkMeshes.reserve(debug ? keys.size() * 2 : keys.size());
+
+    for (const auto &key : keys)
+    {
+        const auto renderIt = chunkRenderItems.find(key);
+        if (renderIt == chunkRenderItems.end())
+        {
+            continue;
+        }
+
+        if (const auto *mesh = renderIt->second->meshForMode(false))
+        {
+            visibleChunkMeshes.push_back(*mesh);
+        }
+    }
+
+    if (!debug)
+    {
+        return;
+    }
+
+    // Debug mode overlays chunk-selection visualization on top of normal meshes.
+    for (const auto &key : keys)
+    {
+        const auto renderIt = chunkRenderItems.find(key);
+        if (renderIt == chunkRenderItems.end())
+        {
+            continue;
+        }
+
+        if (const auto *debugMesh = renderIt->second->meshForMode(true))
+        {
+            visibleChunkMeshes.push_back(*debugMesh);
+        }
+    }
+}
+
+void Plot::rebuildAndPublishMeshes()
+{
+    GRAPHX_PROFILE_SCOPE("plot.rebuildAndPublishMeshes");
+    rebuildVisibleChunkMeshes();
+
+    meshes.clear();
+    meshes.reserve(visibleChunkMeshes.size());
+    meshes.insert(meshes.end(), visibleChunkMeshes.begin(), visibleChunkMeshes.end());
+
+    uploadShaderUniforms();
+
+    if (plotCompleteCallback)
+    {
+        plotCompleteCallback(meshes);
+    }
+}
+
+void Plot::uploadShaderUniforms()
+{
+    chunkShader->bind();
+    chunkShader->upload_uniform1i("debugMode", debug ? 1 : 0);
+    chunkShader->upload_uniform_mat4f("transform", std::span<float, 16>{glm::value_ptr(chunkModel), 16});
+
+    plotShader->bind();
+    plotShader->upload_uniform1i("texture1", 0);
+    plotShader->upload_uniform_mat4f("transform", std::span<float, 16>{glm::value_ptr(chunkModel), 16});
 }
 
 void Plot::updateModelMat()
 {
-    const auto scale = glm::vec3{viewXRange.size() / plotXRange.size(), viewYRange.size() / plotYRange.size(), 1.0f};
-    const auto scaleMat = glm::scale(glm::mat4(1.0), glm::vec3{1.0} / scale);
-    const auto translate = glm::vec3{viewXRange.mid() - plotXRange.mid(), viewYRange.mid() - plotYRange.mid(), 0.0f};
-    const auto translateMat = glm::translate(glm::mat4(1.0), -translate);
+    const auto worldToViewTranslate = glm::translate(
+        glm::mat4(1.0f), glm::vec3{-viewXRange.mid(), -viewYRange.mid(), 0.0f});
+    const auto viewToNDCMat = glm::scale(
+        glm::mat4(1.0f), glm::vec3{2.0f / static_cast<float>(viewXRange.size()),
+                                   2.0f / static_cast<float>(viewYRange.size()), 1.0f});
+    const auto worldToNDC = viewToNDCMat * worldToViewTranslate;
 
-    const auto NDCToPlotMat = glm::scale(glm::mat4(1.0), glm::vec3{viewXRange.size() / 2.0, viewYRange.size() / 2.0, 1.0});
-    const auto plotToViewMat = translateMat * scaleMat;
-    const auto viewToNDCMat = glm::scale(glm::mat4(1.0), glm::vec3{2.0 / viewXRange.size(), 2.0 / viewYRange.size(), 1.0});
-    model = viewToNDCMat * plotToViewMat * NDCToPlotMat;
+    chunkModel = worldToNDC;
 
-    shader->bind();
-    shader->upload_uniform_mat4f("transform", std::span<float, 16>{glm::value_ptr(model), 16});
+    uploadShaderUniforms();
 }
 
 void Plot::onCursorDrag(const double x, const double y)
 {
+    GRAPHX_PROFILE_SCOPE("plot.onCursorDrag");
     const auto windowWidth{window->getWidth()};
     const auto windowHeight{window->getHeight()};
 
@@ -165,26 +1014,22 @@ void Plot::onCursorDrag(const double x, const double y)
     viewXRange = viewXRange + Interval{x * -deltaX};
     viewYRange = viewYRange + Interval{y * deltaY};
 
-    plotRangeChangedCallback(viewXRange, viewYRange);
+    if (plotRangeChangedCallback)
+    {
+        plotRangeChangedCallback(viewXRange, viewYRange);
+    }
 
     updateModelMat();
 
-    // TODO: make plotMesh a pointer and check if it is nullptr
-    if (plotMesh.shader != nullptr)
-    {
-        plotMesh.shader->bind();
-        plotMesh.shader->upload_uniform_mat4f("transform", std::span<float, 16>{glm::value_ptr(model), 16});
-        plotCompleteCallback({plotMesh});
-    }
-
     if (formula)
     {
-        computeEngine->addTask({graph, formula, viewXRange, viewYRange, windowWidth, windowHeight, debug});
+        computeEngine->addTask({graph, formula, viewXRange, viewYRange, windowWidth, windowHeight});
     }
 }
 
 void Plot::onWindowSizeChanged(const int width, const int height)
 {
+    GRAPHX_PROFILE_SCOPE("plot.onWindowSizeChanged");
     auto ratio = width / static_cast<double>(height);
 
     double xRangeSize = viewYRange.size() * ratio;
@@ -193,13 +1038,16 @@ void Plot::onWindowSizeChanged(const int width, const int height)
 
     viewXRange = {xRangeMid - xRangeSize / 2.0, xRangeMid + xRangeSize / 2.0};
 
-    plotRangeChangedCallback(viewXRange, viewYRange);
+    if (plotRangeChangedCallback)
+    {
+        plotRangeChangedCallback(viewXRange, viewYRange);
+    }
 
     updateModelMat();
 
     if (formula)
     {
-        computeEngine->addTask({graph, formula, viewXRange, viewYRange, width, height, debug});
+        computeEngine->addTask({graph, formula, viewXRange, viewYRange, width, height});
     }
 }
 
@@ -213,8 +1061,9 @@ Interval Plot::getYRanges() const
     return viewYRange;
 }
 
-void Plot::onMouseScrolled(double offset)
+void Plot::onMouseScrolled(const double offset)
 {
+    GRAPHX_PROFILE_SCOPE("plot.onMouseScrolled");
     const auto windowWidth{window->getWidth()};
     const auto windowHeight{window->getHeight()};
 
@@ -227,24 +1076,54 @@ void Plot::onMouseScrolled(double offset)
     viewXRange = {xRangeMid - xRangeSize / 2.0, xRangeMid + xRangeSize / 2.0};
     viewYRange = {yRangeMid - yRangeSize / 2.0, yRangeMid + yRangeSize / 2.0};
 
-    plotRangeChangedCallback(viewXRange, viewYRange);
+    if (plotRangeChangedCallback)
+    {
+        plotRangeChangedCallback(viewXRange, viewYRange);
+    }
 
     updateModelMat();
 
     if (formula)
     {
-        computeEngine->addTask({graph, formula, viewXRange, viewYRange, windowWidth, windowHeight, debug});
+        computeEngine->addTask({graph, formula, viewXRange, viewYRange, windowWidth, windowHeight});
     }
 }
 
 void Plot::onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action, glfw::ModifierKeyBit mods)
 {
-    if (key == glfw::KeyCode::D && action == glfw::KeyState::Press)
+    (void)scancode;
+    (void)mods;
+    if (action != glfw::KeyState::Press)
+    {
+        return;
+    }
+
+    if (key == glfw::KeyCode::D)
     {
         debug = !debug;
+        updateModelMat();
+        rebuildAndPublishMeshes();
+    }
+    else if (key == glfw::KeyCode::H)
+    {
+        const auto windowWidth{window->getWidth()};
+        const auto windowHeight{window->getHeight()};
+
+        viewYRange = {-20.0, 20.0};
+        const auto ratio = windowWidth / static_cast<double>(windowHeight);
+        const auto xRangeSize = viewYRange.size() * ratio;
+        viewXRange = {-xRangeSize / 2.0, xRangeSize / 2.0};
+
+        if (plotRangeChangedCallback)
+        {
+            plotRangeChangedCallback(viewXRange, viewYRange);
+        }
+
+        updateModelMat();
+
         if (formula)
         {
-            computeEngine->addTask({graph, formula, viewXRange, viewYRange, window->getWidth(), window->getHeight(), debug});
+            computeEngine->addTask({graph, formula, viewXRange, viewYRange, windowWidth, windowHeight});
         }
     }
 }

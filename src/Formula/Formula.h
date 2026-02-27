@@ -18,6 +18,8 @@ public:
     Formula(const std::string& expression);
     double evaluate(const std::unordered_map<std::string, double>& variables);
     Interval evaluate(const std::unordered_map<std::string, Interval>& variables);
+    [[nodiscard]] const std::string &getExpression() const;
+    [[nodiscard]] const RPN &getRPN() const;
 
 private:
     std::string expressionStr;

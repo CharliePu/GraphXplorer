@@ -16,6 +16,7 @@
 
 #include "../Math/ComputeEngine.h"
 #include "../Math/GraphRasterizer.h"
+#include "../Util/PerformanceProfiler.h"
 #include "../Util/ThreadPool.h"
 
 Application::Application(const int width, const int height, const std::string &name) :
@@ -35,14 +36,24 @@ void Application::run()
 
     while (!window->shouldClose())
     {
-        computeEngine->pollAsyncStates();
+        {
+            GRAPHX_PROFILE_SCOPE("main.pollAsyncStates");
+            computeEngine->pollAsyncStates();
+        }
 
-        renderer->clear();
-        renderer->draw();
+        {
+            GRAPHX_PROFILE_SCOPE("main.render");
+            renderer->clear();
+            renderer->draw();
+        }
+
+        GRAPHX_PROFILE_FLUSH_IF_DUE();
 
         glfw::waitEvents();
         window->swapBuffers();
     }
+
+    GRAPHX_PROFILE_FLUSH_NOW();
 }
 
 void Application::onWindowSizeChanged(const int width, const int height)

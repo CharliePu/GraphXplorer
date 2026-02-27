@@ -26,6 +26,8 @@ public:
 
     void hideInputBox();
 
+    void beginInput();
+
     void updateTextDisplay();
 
     void onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action, glfw::ModifierKeyBit mods) override;
@@ -36,7 +38,11 @@ public:
 
     void onWindowSizeChanged(int width, int height) override;
 
+    bool isCapturingInput() const;
+
 private:
+    static bool isAllowedInputCharacter(unsigned int codepoint);
+
     bool isInputing;
 
     std::shared_ptr<Window> window;

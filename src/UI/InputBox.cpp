@@ -4,8 +4,6 @@
 
 #include "InputBox.h"
 
-#include <unordered_set>
-
 #include "../Core/Window.h"
 #include "../Render/TextMeshesGenerator.h"
 #include "staplegl/staplegl.hpp"
@@ -91,6 +89,18 @@ void InputBox::hideInputBox()
     updateMeshes();
 }
 
+void InputBox::beginInput()
+{
+    if (isInputing)
+    {
+        return;
+    }
+
+    isInputing = true;
+    showInputBox();
+    updateTextDisplay();
+}
+
 void InputBox::updateTextDisplay()
 {
     auto &textGenerator = TextMeshesGenerator::getInstance();
@@ -105,86 +115,53 @@ void InputBox::updateTextDisplay()
 
 void InputBox::onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action, glfw::ModifierKeyBit mods)
 {
+    (void)scancode;
+    (void)mods;
+
     if (!isInputing)
     {
-        if (key == glfw::KeyCode::I && action == glfw::KeyState::Press)
+        return;
+    }
+
+    if (action != glfw::KeyState::Press && action != glfw::KeyState::Repeat)
+    {
+        return;
+    }
+
+    if (key == glfw::KeyCode::Enter && action == glfw::KeyState::Press)
+    {
+        if (inputCompleteCallback)
         {
-            isInputing = true;
-            showInputBox();
+            inputCompleteCallback(line);
+        }
+        isInputing = false;
+        hideInputBox();
+    }
+    else if (key == glfw::KeyCode::Backspace)
+    {
+        if (!line.empty())
+        {
+            line.pop_back();
+            updateTextDisplay();
         }
     }
-    else
+    else if (key == glfw::KeyCode::Escape)
     {
-        if (key == glfw::KeyCode::I && action == glfw::KeyState::Press)
-        {
-            isInputing = false;
-            hideInputBox();
-        }
-        else if (key == glfw::KeyCode::Enter && action == glfw::KeyState::Press)
-        {
-            inputCompleteCallback(line);
-            isInputing = false;
-            hideInputBox();
-        }
-        else if (key == glfw::KeyCode::Backspace && action == glfw::KeyState::Press)
-        {
-            if (!line.empty())
-            {
-                line.pop_back();
-                updateTextDisplay();
-            }
-        }
-        else
-        if (key == glfw::KeyCode::Enter && action == glfw::KeyState::Press)
-        {
-            inputCompleteCallback(line);
-            isInputing = false;
-            hideInputBox();
-        }
-        else if (key == glfw::KeyCode::Backspace && action == glfw::KeyState::Press)
-        {
-            if (!line.empty())
-            {
-                line.pop_back();
-                updateTextDisplay();
-            }
-        }
+        isInputing = false;
+        hideInputBox();
     }
 }
 
 void InputBox::onTextEntered(unsigned int codepoint)
 {
-    if (isInputing)
+    if (!isInputing)
     {
-        if (codepoint >= glfw::KeyCode::Zero && codepoint <= glfw::KeyCode::Nine)
-        {
-            line.push_back(static_cast<char>(codepoint));
-        }
-        else if (codepoint == 0x3C || codepoint == 0x3E || codepoint == 0x3D) // <. >, =
-        {
-            line.push_back(static_cast<char>(codepoint));
-        }
-        else if (codepoint == 0x2B || codepoint == 0x2D || codepoint == 0x2A || codepoint == 0x2F) // +, -, *, /
-        {
-            line.push_back(static_cast<char>(codepoint));
-        }
-        else if (codepoint == 0x28 || codepoint == 0x29) // (, )
-        {
-            line.push_back(static_cast<char>(codepoint));
-        }
-        else if (codepoint == 0x5E) // ^
-        {
-            line.push_back(static_cast<char>(codepoint));
-        }
-        else if (codepoint == 0x2E) // .
-        {
-            line.push_back(static_cast<char>(codepoint));
-        }
-        else if (codepoint == 0x58 || codepoint == 0x59 || codepoint == 0x78 || codepoint == 0x79) // x, y, X, Y
-        {
-            line.push_back(static_cast<char>(codepoint));
-        }
+        return;
+    }
 
+    if (isAllowedInputCharacter(codepoint))
+    {
+        line.push_back(static_cast<char>(codepoint));
         updateTextDisplay();
     }
 }
@@ -197,4 +174,19 @@ int InputBox::getDepth() const
 void InputBox::onWindowSizeChanged(int width, int height)
 {
     updateTextDisplay();
+}
+
+bool InputBox::isCapturingInput() const
+{
+    return isInputing;
+}
+
+bool InputBox::isAllowedInputCharacter(unsigned int codepoint)
+{
+    if (codepoint < 0x20 || codepoint == 0x7F)
+    {
+        return false;
+    }
+
+    return codepoint <= 0x7E;
 }

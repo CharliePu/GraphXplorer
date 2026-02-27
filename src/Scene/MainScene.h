@@ -30,12 +30,20 @@ public:
     void onMouseScrolled(double offset) override;
 
 private:
+    enum class InteractionState
+    {
+        Navigation,
+        FormulaInput
+    };
+
+    void transitionToState(InteractionState nextState);
 
     std::shared_ptr<Plot> plot;
     std::shared_ptr<Grid> grid;
     std::shared_ptr<AxisLabels> axisLabels;
     std::shared_ptr<ConsoleInput> cmd;
     std::shared_ptr<InputBox> inputBox;
+    InteractionState interactionState{InteractionState::Navigation};
 };
 
 

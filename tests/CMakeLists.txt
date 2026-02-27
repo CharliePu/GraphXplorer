@@ -3,6 +3,7 @@ add_executable(GraphXplorerTests
         FormulaTests.cpp
         GraphGenerationTests.cpp
         ParserTests.cpp
+        TrigSupportTests.cpp
         TokenizerTests.cpp
 )
 

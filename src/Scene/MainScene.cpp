@@ -57,20 +57,39 @@ MainScene::MainScene(const std::shared_ptr<ComputeEngine> &engine,
 
 void MainScene::onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action, glfw::ModifierKeyBit mods)
 {
+    if (interactionState == InteractionState::FormulaInput)
+    {
+        inputBox->onKeyPressed(key, scancode, action, mods);
+        if (!inputBox->isCapturingInput())
+        {
+            transitionToState(InteractionState::Navigation);
+        }
+        return;
+    }
+
+    if (key == glfw::KeyCode::I && action == glfw::KeyState::Release)
+    {
+        transitionToState(InteractionState::FormulaInput);
+        return;
+    }
+
     plot->onKeyPressed(key, scancode, action, mods);
     grid->onKeyPressed(key, scancode, action, mods);
     axisLabels->onKeyPressed(key, scancode, action, mods);
     cmd->onKeyPressed(key, scancode, action, mods);
-    inputBox->onKeyPressed(key, scancode, action, mods);
 }
 
 void MainScene::onCursorDrag(const double x, const double y)
 {
+    if (interactionState == InteractionState::FormulaInput)
+    {
+        return;
+    }
+
     plot->onCursorDrag(x, y);
     grid->onCursorDrag(x, y);
     axisLabels->onCursorDrag(x, y);
     cmd->onCursorDrag(x, y);
-    inputBox->onCursorDrag(x, y);
 }
 
 void MainScene::onWindowSizeChanged(const int width, const int height)
@@ -84,18 +103,42 @@ void MainScene::onWindowSizeChanged(const int width, const int height)
 
 void MainScene::onTextEntered(unsigned int codepoint)
 {
+    if (interactionState == InteractionState::FormulaInput)
+    {
+        inputBox->onTextEntered(codepoint);
+        return;
+    }
+
     plot->onTextEntered(codepoint);
     grid->onTextEntered(codepoint);
     axisLabels->onTextEntered(codepoint);
     cmd->onTextEntered(codepoint);
-    inputBox->onTextEntered(codepoint);
 }
 
 void MainScene::onMouseScrolled(double offset)
 {
+    if (interactionState == InteractionState::FormulaInput)
+    {
+        return;
+    }
+
     plot->onMouseScrolled(offset);
     grid->onMouseScrolled(offset);
     axisLabels->onMouseScrolled(offset);
     cmd->onMouseScrolled(offset);
-    inputBox->onMouseScrolled(offset);
+}
+
+void MainScene::transitionToState(const InteractionState nextState)
+{
+    if (interactionState == nextState)
+    {
+        return;
+    }
+
+    interactionState = nextState;
+
+    if (interactionState == InteractionState::FormulaInput)
+    {
+        inputBox->beginInput();
+    }
 }

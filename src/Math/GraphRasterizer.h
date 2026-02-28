@@ -5,35 +5,30 @@
 #ifndef GRAPHRASTERIZER_H
 #define GRAPHRASTERIZER_H
 #include <cstdint>
-#include <functional>
-#include <future>
 #include <memory>
 #include <optional>
-#include <queue>
-#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
-#include "ChunkRenderer.h"
 #include "Interval.h"
 #include "RasterizedPlot.h"
-
 
 class ThreadPool;
 class Window;
 class Formula;
-struct Mesh;
 struct Graph;
+class ChunkRegionRasterizer;
+class ChunkContourRasterizer;
 
-class GraphRasterizer {
+class GraphRasterizer
+{
 public:
     GraphRasterizer(const std::shared_ptr<Window> &window, const std::shared_ptr<ThreadPool> &threadPool);
-
+    ~GraphRasterizer();
 
     RasterizedPlot rasterize(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula,
                              const Interval &xRange,
-                             const Interval &yRange, int windowWidth, int
-                             windowHeight);
+                             const Interval &yRange, int windowWidth, int windowHeight);
 
 private:
     enum class LookupSource
@@ -53,21 +48,21 @@ private:
         int64_t chunkY;
     };
 
-    struct MixedTextureKey
+    struct MixedChunkKey
     {
         int64_t chunkX;
         int64_t chunkY;
         int level;
 
-        bool operator==(const MixedTextureKey &other) const
+        bool operator==(const MixedChunkKey &other) const
         {
             return chunkX == other.chunkX && chunkY == other.chunkY && level == other.level;
         }
     };
 
-    struct MixedTextureKeyHash
+    struct MixedChunkKeyHash
     {
-        size_t operator()(const MixedTextureKey &key) const
+        size_t operator()(const MixedChunkKey &key) const
         {
             const auto h1 = std::hash<int64_t>{}(key.chunkX);
             const auto h2 = std::hash<int64_t>{}(key.chunkY);
@@ -85,16 +80,9 @@ private:
     static std::optional<Interval> lookupAtLevel(const std::shared_ptr<Graph> &graph, double x, double y, int level);
     static int intervalToState(const Interval &interval);
     static SampleResult samplePoint(const std::shared_ptr<Graph> &graph, double x, double y, int targetLevel);
-private:
-    std::shared_ptr<Window> window;
-
-    std::shared_ptr<ThreadPool> threadPool;
-    std::unique_ptr<ChunkRenderer> chunkRenderer;
-    bool usingGpuChunkRenderer;
+    std::unique_ptr<ChunkRegionRasterizer> chunkRegionRasterizer;
+    std::unique_ptr<ChunkContourRasterizer> chunkContourRasterizer;
     const Formula *cachedFormula;
-    std::unordered_map<MixedTextureKey, std::vector<int>, MixedTextureKeyHash> mixedChunkTextureCache;
 };
-
-
 
 #endif //GRAPHRASTERIZER_H

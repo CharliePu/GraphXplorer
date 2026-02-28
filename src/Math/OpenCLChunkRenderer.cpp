@@ -4,7 +4,9 @@
 
 #include "OpenCLChunkRenderer.h"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -309,7 +311,7 @@ __kernel void rasterize_unresolved(
                 {
                     stack.push_back("((" + lhs + " <= " + rhs + ") ? 1.0f : 0.0f)");
                 }
-                else if (token.value == "==")
+                else if (token.value == "=")
                 {
                     stack.push_back("((" + lhs + " == " + rhs + ") ? 1.0f : 0.0f)");
                 }
@@ -390,6 +392,133 @@ __kernel void rasterize_unresolved(
             "    output_pixels[idx] = value > 0.0f ? 1 : 0;\n"
             "}\n";
     }
+
+    std::string buildContourSegmentsKernelSource(const std::string &openClExpression)
+    {
+        return
+            "inline float2 interpolate_zero(float v0, float v1, float2 p0, float2 p1)\n"
+            "{\n"
+            "    float t = 0.5f;\n"
+            "    float denom = v0 - v1;\n"
+            "    if (isfinite(denom) && fabs(denom) > 1.0e-12f)\n"
+            "    {\n"
+            "        t = clamp(v0 / denom, 0.0f, 1.0f);\n"
+            "    }\n"
+            "    return (float2)(p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * t);\n"
+            "}\n"
+            "\n"
+            "inline void write_segment(__global float* output_segments, int base, int segment_index, float2 p0, float2 p1)\n"
+            "{\n"
+            "    int offset = base + segment_index * 4;\n"
+            "    output_segments[offset + 0] = p0.x;\n"
+            "    output_segments[offset + 1] = p0.y;\n"
+            "    output_segments[offset + 2] = p1.x;\n"
+            "    output_segments[offset + 3] = p1.y;\n"
+            "}\n"
+            "\n"
+            "__kernel void rasterize_contour_segments(\n"
+            "    float x_lower,\n"
+            "    float y_lower,\n"
+            "    float cell_step_x,\n"
+            "    float cell_step_y,\n"
+            "    int cells_per_axis,\n"
+            "    __global int* output_counts,\n"
+            "    __global float* output_segments)\n"
+            "{\n"
+            "    int cell_x = get_global_id(0);\n"
+            "    int cell_y = get_global_id(1);\n"
+            "    if (cell_x >= cells_per_axis || cell_y >= cells_per_axis)\n"
+            "    {\n"
+            "        return;\n"
+            "    }\n"
+            "\n"
+            "    int cell_index = cell_y * cells_per_axis + cell_x;\n"
+            "    int base = cell_index * 8;\n"
+            "    output_counts[cell_index] = 0;\n"
+            "    for (int i = 0; i < 8; ++i)\n"
+            "    {\n"
+            "        output_segments[base + i] = 0.0f;\n"
+            "    }\n"
+            "\n"
+            "    float cell_min_x = x_lower + (float)cell_x * cell_step_x;\n"
+            "    float cell_max_x = cell_min_x + cell_step_x;\n"
+            "    float cell_min_y = y_lower + (float)cell_y * cell_step_y;\n"
+            "    float cell_max_y = cell_min_y + cell_step_y;\n"
+            "\n"
+            "    float x = cell_min_x;\n"
+            "    float y = cell_min_y;\n"
+            "    float v0 = " + openClExpression + ";\n"
+            "    x = cell_max_x;\n"
+            "    y = cell_min_y;\n"
+            "    float v1 = " + openClExpression + ";\n"
+            "    x = cell_max_x;\n"
+            "    y = cell_max_y;\n"
+            "    float v2 = " + openClExpression + ";\n"
+            "    x = cell_min_x;\n"
+            "    y = cell_max_y;\n"
+            "    float v3 = " + openClExpression + ";\n"
+            "\n"
+            "    if (!isfinite(v0) || !isfinite(v1) || !isfinite(v2) || !isfinite(v3))\n"
+            "    {\n"
+            "        return;\n"
+            "    }\n"
+            "\n"
+            "    int mask = (v0 > 0.0f ? 1 : 0)\n"
+            "             | (v1 > 0.0f ? 2 : 0)\n"
+            "             | (v2 > 0.0f ? 4 : 0)\n"
+            "             | (v3 > 0.0f ? 8 : 0);\n"
+            "    if (mask == 0 || mask == 15)\n"
+            "    {\n"
+            "        return;\n"
+            "    }\n"
+            "\n"
+            "    float2 edge0 = interpolate_zero(v0, v1, (float2)(cell_min_x, cell_min_y), (float2)(cell_max_x, cell_min_y));\n"
+            "    float2 edge1 = interpolate_zero(v1, v2, (float2)(cell_max_x, cell_min_y), (float2)(cell_max_x, cell_max_y));\n"
+            "    float2 edge2 = interpolate_zero(v2, v3, (float2)(cell_max_x, cell_max_y), (float2)(cell_min_x, cell_max_y));\n"
+            "    float2 edge3 = interpolate_zero(v3, v0, (float2)(cell_min_x, cell_max_y), (float2)(cell_min_x, cell_min_y));\n"
+            "\n"
+            "    int count = 0;\n"
+            "    switch (mask)\n"
+            "    {\n"
+            "    case 1:\n"
+            "    case 14:\n"
+            "        write_segment(output_segments, base, count++, edge3, edge0);\n"
+            "        break;\n"
+            "    case 2:\n"
+            "    case 13:\n"
+            "        write_segment(output_segments, base, count++, edge0, edge1);\n"
+            "        break;\n"
+            "    case 3:\n"
+            "    case 12:\n"
+            "        write_segment(output_segments, base, count++, edge3, edge1);\n"
+            "        break;\n"
+            "    case 4:\n"
+            "    case 11:\n"
+            "        write_segment(output_segments, base, count++, edge1, edge2);\n"
+            "        break;\n"
+            "    case 5:\n"
+            "        write_segment(output_segments, base, count++, edge3, edge2);\n"
+            "        write_segment(output_segments, base, count++, edge0, edge1);\n"
+            "        break;\n"
+            "    case 6:\n"
+            "    case 9:\n"
+            "        write_segment(output_segments, base, count++, edge0, edge2);\n"
+            "        break;\n"
+            "    case 7:\n"
+            "    case 8:\n"
+            "        write_segment(output_segments, base, count++, edge3, edge2);\n"
+            "        break;\n"
+            "    case 10:\n"
+            "        write_segment(output_segments, base, count++, edge0, edge1);\n"
+            "        write_segment(output_segments, base, count++, edge2, edge3);\n"
+            "        break;\n"
+            "    default:\n"
+            "        break;\n"
+            "    }\n"
+            "\n"
+            "    output_counts[cell_index] = count;\n"
+            "}\n";
+    }
 }
 #endif
 
@@ -407,9 +536,12 @@ struct OpenCLChunkRenderer::Impl
     cl_kernel kernel{nullptr};
     cl_program mixedTextureProgram{nullptr};
     cl_kernel mixedTextureKernel{nullptr};
+    cl_program contourSegmentsProgram{nullptr};
+    cl_kernel contourSegmentsKernel{nullptr};
     cl_device_id device{nullptr};
     cl_platform_id platform{nullptr};
     std::string compiledMixedFormula;
+    std::string compiledContourFormula;
 
     bool initialize()
     {
@@ -608,6 +740,23 @@ struct OpenCLChunkRenderer::Impl
         }
     }
 
+    void releaseContourSegmentsKernel()
+    {
+        compiledContourFormula.clear();
+
+        if (contourSegmentsKernel && api.clReleaseKernel)
+        {
+            api.clReleaseKernel(contourSegmentsKernel);
+            contourSegmentsKernel = nullptr;
+        }
+
+        if (contourSegmentsProgram && api.clReleaseProgram)
+        {
+            api.clReleaseProgram(contourSegmentsProgram);
+            contourSegmentsProgram = nullptr;
+        }
+    }
+
     bool ensureMixedTextureKernel(const std::string &formulaSource)
     {
         if (formulaSource.empty())
@@ -653,11 +802,57 @@ struct OpenCLChunkRenderer::Impl
         return true;
     }
 
+    bool ensureContourSegmentsKernel(const std::string &formulaSource)
+    {
+        if (formulaSource.empty())
+        {
+            return false;
+        }
+
+        if (contourSegmentsKernel && compiledContourFormula == formulaSource)
+        {
+            return true;
+        }
+
+        releaseContourSegmentsKernel();
+
+        const auto kernelSource = buildContourSegmentsKernelSource(formulaSource);
+        const char *source = kernelSource.c_str();
+        const size_t sourceLength = kernelSource.size();
+
+        cl_int error = CL_SUCCESS;
+        contourSegmentsProgram = api.clCreateProgramWithSource(context, 1, &source, &sourceLength, &error);
+        if (error != CL_SUCCESS || !contourSegmentsProgram)
+        {
+            return false;
+        }
+
+        error = api.clBuildProgram(contourSegmentsProgram, 1, &device, nullptr, nullptr, nullptr);
+        if (error != CL_SUCCESS)
+        {
+            std::cerr << "[OpenCLChunkRenderer] Failed to build contour-segments kernel.\n"
+                      << getProgramBuildLog(contourSegmentsProgram) << std::endl;
+            releaseContourSegmentsKernel();
+            return false;
+        }
+
+        contourSegmentsKernel = api.clCreateKernel(contourSegmentsProgram, "rasterize_contour_segments", &error);
+        if (error != CL_SUCCESS || !contourSegmentsKernel)
+        {
+            releaseContourSegmentsKernel();
+            return false;
+        }
+
+        compiledContourFormula = formulaSource;
+        return true;
+    }
+
     void shutdown()
     {
         available = false;
 
         releaseMixedTextureKernel();
+        releaseContourSegmentsKernel();
 
         if (kernel && api.clReleaseKernel)
         {
@@ -831,6 +1026,186 @@ bool OpenCLChunkRenderer::rasterizeMixedChunkTexture(const std::shared_ptr<Formu
     (void)yRange;
     (void)textureSize;
     (void)outputPixels;
+    return false;
+#endif
+}
+
+bool OpenCLChunkRenderer::rasterizeChunkContourSegments(const RPN &residualRpn,
+                                                        const Interval &xRange,
+                                                        const Interval &yRange,
+                                                        const int cellsPerAxis,
+                                                        std::vector<RasterContourSegment> &outputSegments)
+{
+#if defined(_WIN32)
+    outputSegments.clear();
+
+    if (!impl || !impl->available || cellsPerAxis < 1)
+    {
+        return false;
+    }
+
+    std::string formulaExpression;
+    if (!buildOpenClExpressionFromRpn(residualRpn, formulaExpression))
+    {
+        return false;
+    }
+
+    if (!impl->ensureContourSegmentsKernel(formulaExpression))
+    {
+        return false;
+    }
+
+    const auto cellCount = static_cast<size_t>(cellsPerAxis) * static_cast<size_t>(cellsPerAxis);
+    std::vector<int> segmentCounts(cellCount, 0);
+    std::vector<float> packedSegments(cellCount * 8, 0.0f);
+
+    const auto xLower = static_cast<float>(xRange.lower);
+    const auto yLower = static_cast<float>(yRange.lower);
+    const auto cellStepX = static_cast<float>(xRange.size() / static_cast<double>(cellsPerAxis));
+    const auto cellStepY = static_cast<float>(yRange.size() / static_cast<double>(cellsPerAxis));
+    const cl_int cellsPerAxisCL = cellsPerAxis;
+
+    cl_int error = CL_SUCCESS;
+    cl_mem countBuffer = impl->api.clCreateBuffer(
+        impl->context,
+        CL_MEM_WRITE_ONLY,
+        cellCount * sizeof(int),
+        nullptr,
+        &error);
+
+    if (error != CL_SUCCESS || !countBuffer)
+    {
+        return false;
+    }
+
+    cl_mem segmentBuffer = impl->api.clCreateBuffer(
+        impl->context,
+        CL_MEM_WRITE_ONLY,
+        packedSegments.size() * sizeof(float),
+        nullptr,
+        &error);
+
+    if (error != CL_SUCCESS || !segmentBuffer)
+    {
+        impl->api.clReleaseMemObject(countBuffer);
+        return false;
+    }
+
+    auto cleanup = [&]()
+    {
+        impl->api.clReleaseMemObject(segmentBuffer);
+        impl->api.clReleaseMemObject(countBuffer);
+    };
+
+    error = impl->api.clSetKernelArg(impl->contourSegmentsKernel, 0, sizeof(float), &xLower);
+    error |= impl->api.clSetKernelArg(impl->contourSegmentsKernel, 1, sizeof(float), &yLower);
+    error |= impl->api.clSetKernelArg(impl->contourSegmentsKernel, 2, sizeof(float), &cellStepX);
+    error |= impl->api.clSetKernelArg(impl->contourSegmentsKernel, 3, sizeof(float), &cellStepY);
+    error |= impl->api.clSetKernelArg(impl->contourSegmentsKernel, 4, sizeof(cl_int), &cellsPerAxisCL);
+    error |= impl->api.clSetKernelArg(impl->contourSegmentsKernel, 5, sizeof(cl_mem), &countBuffer);
+    error |= impl->api.clSetKernelArg(impl->contourSegmentsKernel, 6, sizeof(cl_mem), &segmentBuffer);
+
+    if (error != CL_SUCCESS)
+    {
+        cleanup();
+        return false;
+    }
+
+    const std::array<size_t, 2> globalWorkSize{
+        static_cast<size_t>(cellsPerAxis),
+        static_cast<size_t>(cellsPerAxis)
+    };
+
+    error = impl->api.clEnqueueNDRangeKernel(
+        impl->queue,
+        impl->contourSegmentsKernel,
+        2,
+        nullptr,
+        globalWorkSize.data(),
+        nullptr,
+        0,
+        nullptr,
+        nullptr);
+    if (error != CL_SUCCESS)
+    {
+        cleanup();
+        return false;
+    }
+
+    error = impl->api.clFinish(impl->queue);
+    if (error != CL_SUCCESS)
+    {
+        cleanup();
+        return false;
+    }
+
+    error = impl->api.clEnqueueReadBuffer(
+        impl->queue,
+        countBuffer,
+        CL_TRUE,
+        0,
+        cellCount * sizeof(int),
+        segmentCounts.data(),
+        0,
+        nullptr,
+        nullptr);
+    if (error != CL_SUCCESS)
+    {
+        cleanup();
+        return false;
+    }
+
+    error = impl->api.clEnqueueReadBuffer(
+        impl->queue,
+        segmentBuffer,
+        CL_TRUE,
+        0,
+        packedSegments.size() * sizeof(float),
+        packedSegments.data(),
+        0,
+        nullptr,
+        nullptr);
+
+    cleanup();
+    if (error != CL_SUCCESS)
+    {
+        return false;
+    }
+
+    outputSegments.reserve(cellCount * 2);
+    for (size_t cellIndex = 0; cellIndex < cellCount; ++cellIndex)
+    {
+        const auto count = std::clamp(segmentCounts[cellIndex], 0, 2);
+        const auto base = cellIndex * 8;
+        for (auto segmentIndex = 0; segmentIndex < count; ++segmentIndex)
+        {
+            const auto offset = base + static_cast<size_t>(segmentIndex) * 4;
+            const auto x0 = static_cast<double>(packedSegments[offset + 0]);
+            const auto y0 = static_cast<double>(packedSegments[offset + 1]);
+            const auto x1 = static_cast<double>(packedSegments[offset + 2]);
+            const auto y1 = static_cast<double>(packedSegments[offset + 3]);
+
+            if (!std::isfinite(x0) || !std::isfinite(y0) || !std::isfinite(x1) || !std::isfinite(y1))
+            {
+                continue;
+            }
+
+            if (std::hypot(x1 - x0, y1 - y0) <= 1e-12)
+            {
+                continue;
+            }
+
+            outputSegments.push_back({x0, y0, x1, y1});
+        }
+    }
+
+    return true;
+#else
+    (void)residualRpn;
+    (void)xRange;
+    (void)yRange;
+    (void)cellsPerAxis;
+    (void)outputSegments;
     return false;
 #endif
 }

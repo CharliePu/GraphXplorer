@@ -42,6 +42,10 @@ add_library(GraphXplorerLib
         src/Math/ChunkRenderer.h
         src/Math/CpuChunkRenderer.cpp
         src/Math/CpuChunkRenderer.h
+        src/Math/ChunkRegionRasterizer.cpp
+        src/Math/ChunkRegionRasterizer.h
+        src/Math/ChunkContourRasterizer.cpp
+        src/Math/ChunkContourRasterizer.h
         src/Math/GraphRasterizer.cpp
         src/Math/GraphRasterizer.h
         src/Math/OpenCLChunkRenderer.cpp

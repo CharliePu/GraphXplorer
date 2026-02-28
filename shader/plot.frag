@@ -3,7 +3,6 @@
 in vec2 TexCoords;
 
 uniform sampler2D texture1;
-uniform int debugMode;
 
 out vec4 FragColor;
 

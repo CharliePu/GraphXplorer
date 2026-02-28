@@ -57,7 +57,13 @@ void Grid::prepareMesh()
     vao->add_vertex_buffer(std::move(vbo));
     vao->set_index_buffer(std::move(ebo));
 
-    mesh = {shader, vao, std::vector<std::shared_ptr<staplegl::texture_2d> >{}};
+    mesh = {
+        shader,
+        vao,
+        std::vector<std::shared_ptr<staplegl::texture_2d>>{},
+        MeshPrimitive::Triangles,
+        static_cast<int>(indices.size())
+    };
 }
 
 void Grid::updatePosition(Interval xInterval, Interval yInterval)

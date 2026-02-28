@@ -6,38 +6,122 @@
 
 #include <algorithm>
 #include <cmath>
-#include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 
-#include "CpuChunkRenderer.h"
-#include "OpenCLChunkRenderer.h"
-#include "../Core/Window.h"
+#include "ChunkContourRasterizer.h"
+#include "ChunkRegionRasterizer.h"
 #include "../Formula/Formula.h"
 #include "../Graph/Graph.h"
-#include "../Util/ThreadPool.h"
+
+namespace
+{
+bool isTopLevelComparisonOperator(const std::string_view op)
+{
+    return op == "=" || op == "<=" || op == ">=" || op == "<" || op == ">" || op == "!=";
+}
+
+bool comparisonSupportsContourRendering(const std::string_view op)
+{
+    return op == "=" || op == "<=" || op == ">=";
+}
+
+bool comparisonSupportsRegionRendering(const std::string_view op)
+{
+    return op != "=";
+}
+
+size_t findRpnSubExpressionStart(const std::vector<Token> &tokens, const size_t endExclusive)
+{
+    if (endExclusive == 0 || endExclusive > tokens.size())
+    {
+        return std::numeric_limits<size_t>::max();
+    }
+
+    auto neededValues = 1;
+    for (auto i = endExclusive; i-- > 0;)
+    {
+        const auto &token = tokens[i];
+        if (token.type == TokenType::NUMBER || token.type == TokenType::VARIABLE)
+        {
+            --neededValues;
+        }
+        else if (token.type == TokenType::FUNCTION)
+        {
+            // Unary functions keep the same stack depth (consume one, produce one).
+        }
+        else if (token.type == TokenType::OPERATOR)
+        {
+            // Binary operators increase required operand count by one when walking backward.
+            ++neededValues;
+        }
+        else
+        {
+            return std::numeric_limits<size_t>::max();
+        }
+
+        if (neededValues == 0)
+        {
+            return i;
+        }
+    }
+
+    return std::numeric_limits<size_t>::max();
+}
+
+bool tryBuildTopLevelComparisonResidual(const Formula &formula, RPN &residualRpn, std::string &comparisonOperator)
+{
+    const auto &tokens = formula.getRPN().tokens;
+    if (tokens.empty())
+    {
+        return false;
+    }
+
+    const auto &root = tokens.back();
+    if (root.type != TokenType::OPERATOR || !isTopLevelComparisonOperator(root.value))
+    {
+        return false;
+    }
+
+    const auto rootIndex = tokens.size() - 1;
+    const auto rhsStart = findRpnSubExpressionStart(tokens, rootIndex);
+    if (rhsStart == std::numeric_limits<size_t>::max() || rhsStart >= rootIndex)
+    {
+        return false;
+    }
+
+    const auto lhsStart = findRpnSubExpressionStart(tokens, rhsStart);
+    if (lhsStart != 0)
+    {
+        return false;
+    }
+
+    residualRpn.tokens.clear();
+    residualRpn.tokens.reserve(rootIndex + 1);
+    residualRpn.tokens.insert(residualRpn.tokens.end(), tokens.begin(), tokens.begin() + rhsStart);
+    residualRpn.tokens.insert(residualRpn.tokens.end(), tokens.begin() + rhsStart, tokens.begin() + rootIndex);
+    residualRpn.tokens.push_back(Token{TokenType::OPERATOR, "-"});
+
+    comparisonOperator = root.value;
+    return true;
+}
+}
 
 GraphRasterizer::GraphRasterizer(const std::shared_ptr<Window> &window,
-                                 const std::shared_ptr<ThreadPool> &threadPool): window{window},
-                                                                                  threadPool{threadPool},
-                                                                                  chunkRenderer{nullptr},
-                                                                                  usingGpuChunkRenderer{false},
-                                                                                  cachedFormula{nullptr},
-                                                                                  mixedChunkTextureCache{}
+                                 const std::shared_ptr<ThreadPool> &threadPool): chunkRegionRasterizer{
+                                                                                      std::make_unique<ChunkRegionRasterizer>()
+                                                                                  },
+                                                                                  chunkContourRasterizer{
+                                                                                      std::make_unique<ChunkContourRasterizer>()
+                                                                                  },
+                                                                                  cachedFormula{nullptr}
 {
-    auto gpuRenderer = std::make_unique<OpenCLChunkRenderer>();
-    if (gpuRenderer->isAvailable())
-    {
-        chunkRenderer = std::move(gpuRenderer);
-        usingGpuChunkRenderer = true;
-        std::cout << "[GraphRasterizer] Mixed chunk renderer backend: OpenCL device" << std::endl;
-    }
-    else
-    {
-        chunkRenderer = std::make_unique<CpuChunkRenderer>();
-        std::cout << "[GraphRasterizer] Mixed chunk renderer backend: CPU" << std::endl;
-    }
+    (void)window;
+    (void)threadPool;
 }
+
+GraphRasterizer::~GraphRasterizer() = default;
 
 int GraphRasterizer::getTargetLevel(const Interval &xRange, const Interval &yRange, const int windowWidth,
                                     const int windowHeight)
@@ -155,7 +239,8 @@ RasterizedPlot GraphRasterizer::rasterize(const std::shared_ptr<Graph> &graph,
 
     if (cachedFormula != formula.get())
     {
-        mixedChunkTextureCache.clear();
+        chunkRegionRasterizer->clearCache();
+        chunkContourRasterizer->clearCache();
         cachedFormula = formula.get();
     }
 
@@ -164,9 +249,17 @@ RasterizedPlot GraphRasterizer::rasterize(const std::shared_ptr<Graph> &graph,
     const auto [minChunkY, maxChunkY] = getChunkIndexBounds(yRange, targetLevel);
     const auto targetChunkSize = chunkSizeForLevel(targetLevel);
 
-    std::unordered_set<MixedTextureKey, MixedTextureKeyHash> emittedChunks;
-    std::unordered_set<MixedTextureKey, MixedTextureKeyHash> mixedChunksInView;
+    RPN residualRpn;
+    std::string topComparisonOperator;
+    const auto hasTopLevelComparisonResidual = formula
+                                                   && tryBuildTopLevelComparisonResidual(
+                                                       *formula, residualRpn, topComparisonOperator);
+    const auto shouldRenderContour = hasTopLevelComparisonResidual
+                                     && comparisonSupportsContourRendering(topComparisonOperator);
+    const auto shouldRenderRegion = !hasTopLevelComparisonResidual
+                                    || comparisonSupportsRegionRendering(topComparisonOperator);
 
+    std::unordered_set<MixedChunkKey, MixedChunkKeyHash> emittedChunks;
     for (auto chunkY = minChunkY; chunkY <= maxChunkY; ++chunkY)
     {
         for (auto chunkX = minChunkX; chunkX <= maxChunkX; ++chunkX)
@@ -174,76 +267,48 @@ RasterizedPlot GraphRasterizer::rasterize(const std::shared_ptr<Graph> &graph,
             const auto x = (static_cast<double>(chunkX) + 0.5) * targetChunkSize;
             const auto y = (static_cast<double>(chunkY) + 0.5) * targetChunkSize;
             const auto sample = samplePoint(graph, x, y, targetLevel);
-
             if (sample.source == LookupSource::Missing)
             {
                 continue;
             }
 
-            const auto chunkKey = MixedTextureKey{sample.chunkX, sample.chunkY, sample.levelUsed};
+            const auto key = MixedChunkKey{sample.chunkX, sample.chunkY, sample.levelUsed};
+            if (!emittedChunks.insert(key).second)
+            {
+                continue;
+            }
+
             const auto chunkSource = sample.source == LookupSource::Parent
                                          ? RasterChunkSource::Parent
                                          : (sample.source == LookupSource::Child
                                                 ? RasterChunkSource::Child
                                                 : RasterChunkSource::Exact);
 
-            if (emittedChunks.insert(chunkKey).second)
+            const auto sampledXRange = chunkIndexToRange(sample.chunkX, sample.levelUsed);
+            const auto sampledYRange = chunkIndexToRange(sample.chunkY, sample.levelUsed);
+            RasterChunk chunk{
+                sample.chunkX, sample.chunkY, sample.levelUsed, sampledXRange, sampledYRange, sample.state, chunkSource
+            };
+
+            ChunkRenderData renderData{chunk, std::nullopt, std::nullopt};
+            if (sample.state < 0 && formula)
             {
-                const auto sampledXRange = chunkIndexToRange(sample.chunkX, sample.levelUsed);
-                const auto sampledYRange = chunkIndexToRange(sample.chunkY, sample.levelUsed);
-                result.chunks.push_back(
-                    {sample.chunkX, sample.chunkY, sample.levelUsed, sampledXRange, sampledYRange, sample.state,
-                     chunkSource});
+                if (shouldRenderRegion)
+                {
+                    renderData.region = chunkRegionRasterizer->rasterizeChunkRegion(key.chunkX, key.chunkY, key.level,
+                                                                                     formula);
+                }
+
+                if (shouldRenderContour)
+                {
+                    renderData.contour = chunkContourRasterizer->rasterizeChunkContour(
+                        key.chunkX, key.chunkY, key.level, residualRpn);
+                }
+
             }
 
-            if (sample.state < 0)
-            {
-                mixedChunksInView.insert(chunkKey);
-            }
+            result.chunkRenderData.push_back(std::move(renderData));
         }
-    }
-
-    if (mixedChunksInView.empty() || !formula)
-    {
-        return result;
-    }
-
-    constexpr auto textureSize = MIN_CHUNK_PIXELS;
-    result.chunkTextures.reserve(mixedChunksInView.size());
-    for (const auto &key : mixedChunksInView)
-    {
-        auto cacheIt = mixedChunkTextureCache.find(key);
-        if (cacheIt == mixedChunkTextureCache.end())
-        {
-            const auto mixedXRange = chunkIndexToRange(key.chunkX, key.level);
-            const auto mixedYRange = chunkIndexToRange(key.chunkY, key.level);
-            std::vector<int> texturePixels;
-            auto didRasterize = chunkRenderer
-                                && chunkRenderer->rasterizeMixedChunkTexture(
-                                    formula, mixedXRange, mixedYRange, textureSize, texturePixels);
-
-            // If GPU renderer cannot serve this path, downgrade once to CPU and retry.
-            if (!didRasterize && usingGpuChunkRenderer)
-            {
-                std::cout << "[GraphRasterizer] OpenCL backend cannot rasterize mixed chunk textures. "
-                             "Switching to CPU backend."
-                          << std::endl;
-                chunkRenderer = std::make_unique<CpuChunkRenderer>();
-                usingGpuChunkRenderer = false;
-                didRasterize = chunkRenderer->rasterizeMixedChunkTexture(
-                    formula, mixedXRange, mixedYRange, textureSize, texturePixels);
-            }
-
-            if (!didRasterize)
-            {
-                texturePixels.assign(static_cast<size_t>(textureSize) * static_cast<size_t>(textureSize), 0);
-            }
-
-            cacheIt = mixedChunkTextureCache.emplace(key, std::move(texturePixels)).first;
-        }
-
-        result.chunkTextures.push_back(
-            {key.chunkX, key.chunkY, key.level, textureSize, textureSize, cacheIt->second});
     }
 
     return result;

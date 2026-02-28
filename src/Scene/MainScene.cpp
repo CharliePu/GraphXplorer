@@ -50,7 +50,7 @@ MainScene::MainScene(const std::shared_ptr<ComputeEngine> &engine,
         renderer->updateMeshes(axisLabels, meshes);
     });
 
-    plot->requestNewPlot("x^2+y^2<4^2");
+    plot->requestNewPlot("x<=y");
     grid->updatePosition(plot->getXRanges(), plot->getYRanges());
     axisLabels->updateLabels(plot->getXRanges(), plot->getYRanges());
 }

@@ -15,10 +15,21 @@ namespace staplegl
     class shader_program;
 }
 
+enum class MeshPrimitive
+{
+    Triangles,
+    Lines
+};
+
 struct Mesh {
     std::shared_ptr<staplegl::shader_program> shader;
     std::shared_ptr<staplegl::vertex_array> vao;
     std::vector<std::shared_ptr<staplegl::texture_2d>> textures;
+    MeshPrimitive primitive{MeshPrimitive::Triangles};
+    int elementCount{0};
+    float lineWidth{1.0f};
+    bool indexed{true};
+    int vertexCount{0};
 };
 
 

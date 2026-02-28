@@ -137,6 +137,38 @@ TEST_CASE("Tokenizer handles inequalities correctly", "[Tokenizer][Inequalities]
     }
 }
 
+TEST_CASE("Tokenizer handles '=' equality operator", "[Tokenizer][Equality]")
+{
+    std::string formula = "x=y^2";
+    Tokenizer tokenizer(formula);
+    std::vector<Token> tokens = tokenizer.tokenize();
+
+    std::vector<Token> expected = {
+        Token{TokenType::VARIABLE, "x"},
+        Token{TokenType::OPERATOR, "="},
+        Token{TokenType::VARIABLE, "y"},
+        Token{TokenType::OPERATOR, "^"},
+        Token{TokenType::NUMBER, "2"}
+    };
+
+    REQUIRE(tokens.size() == expected.size());
+    for (size_t i = 0; i < tokens.size(); ++i)
+    {
+        REQUIRE(compareTokens(tokens[i], expected[i]));
+    }
+}
+
+TEST_CASE("Tokenizer rejects double-equals input", "[Tokenizer][Equality]")
+{
+    std::string formula = "x";
+    formula.push_back('=');
+    formula.push_back('=');
+    formula.push_back('y');
+
+    Tokenizer tokenizer(formula);
+    REQUIRE_THROWS_AS(tokenizer.tokenize(), std::invalid_argument);
+}
+
 // Additional Test Cases for Enhanced Coverage
 
 TEST_CASE("Tokenizer handles multiple implicit multiplications in a single expression", "[Tokenizer][ImplicitMultiplication]")

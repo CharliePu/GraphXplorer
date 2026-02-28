@@ -46,7 +46,13 @@ void InputBox::prepareMesh()
         }
     };
 
-    boxMesh = Mesh{std::make_shared<staplegl::shader_program>(std::move(shader)), vao, {}};
+    boxMesh = Mesh{
+        std::make_shared<staplegl::shader_program>(std::move(shader)),
+        vao,
+        {},
+        MeshPrimitive::Triangles,
+        static_cast<int>(indices.size())
+    };
 }
 
 void InputBox::setInputCompleteCallback(const std::function<void(std::string)> &callback)

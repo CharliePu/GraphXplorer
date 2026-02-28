@@ -105,22 +105,32 @@ Interval operator||(const Interval& lhs, const Interval& rhs) {
 }
 
 Interval operator==(const Interval& lhs, const Interval& rhs) {
-    bool candidates[] = {
-        lhs.lower == rhs.lower,
-        lhs.lower == rhs.upper,
-        lhs.upper == rhs.lower,
-        lhs.upper == rhs.upper
-    };
+    if (lhs.upper < rhs.lower || rhs.upper < lhs.lower)
+    {
+        return {0.0, 0.0};
+    }
 
-    return Interval{
-        static_cast<double>(candidates[0] && candidates[1] && candidates[2] && candidates[3]),
-        static_cast<double>(candidates[0] || candidates[1] || candidates[2] || candidates[3])
-    };
+    if (lhs.allConstant() && rhs.allConstant() && lhs.lower == rhs.lower)
+    {
+        return {1.0, 1.0};
+    }
+
+    return {0.0, 1.0};
 }
 
 Interval operator!=(const Interval& lhs, const Interval& rhs) {
-    return {static_cast<double>(lhs.lower != rhs.lower),
-            static_cast<double>(lhs.upper != rhs.upper)};
+    const auto equalRange = lhs == rhs;
+    if (equalRange.allTrue())
+    {
+        return {0.0, 0.0};
+    }
+
+    if (equalRange.allFalse())
+    {
+        return {1.0, 1.0};
+    }
+
+    return {0.0, 1.0};
 }
 
 Interval operator+(const Interval& lhs, const Interval& rhs) {
@@ -166,9 +176,63 @@ Interval operator/(const Interval& lhs, const Interval& rhs) {
 }
 
 Interval pow(const Interval& base, const Interval& exp) {
+    const auto computeIntegerPower = [](const Interval &baseInterval, const long long exponent) -> Interval
+    {
+        if (exponent == 0)
+        {
+            return {1.0, 1.0};
+        }
+
+        const auto absExponent = exponent < 0 ? -exponent : exponent;
+        const auto endpointLower = std::pow(baseInterval.lower, static_cast<double>(absExponent));
+        const auto endpointUpper = std::pow(baseInterval.upper, static_cast<double>(absExponent));
+
+        Interval powered;
+        if ((absExponent & 1LL) == 0LL)
+        {
+            const auto upper = std::max(endpointLower, endpointUpper);
+            const auto lower = baseInterval.contains(0.0) ? 0.0 : std::min(endpointLower, endpointUpper);
+            powered = Interval{lower, upper};
+        }
+        else
+        {
+            if (endpointLower <= endpointUpper)
+            {
+                powered = Interval{endpointLower, endpointUpper};
+            }
+            else
+            {
+                powered = Interval{endpointUpper, endpointLower};
+            }
+        }
+
+        if (exponent > 0)
+        {
+            return powered;
+        }
+
+        if (powered.contains(0.0))
+        {
+            return {-std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()};
+        }
+
+        const auto reciprocalLower = 1.0 / powered.upper;
+        const auto reciprocalUpper = 1.0 / powered.lower;
+        if (reciprocalLower <= reciprocalUpper)
+        {
+            return {reciprocalLower, reciprocalUpper};
+        }
+
+        return {reciprocalUpper, reciprocalLower};
+    };
 
     // non-positive exp => if base is zero, undefined
     // non-zero non-integer exp => if base is negative, undefined
+
+    if (exp.allIntConst())
+    {
+        return computeIntegerPower(base, static_cast<long long>(exp.lower));
+    }
 
     if (!exp.allPositive() && base.anyZero())
         return INTERVAL_UNDEFINED;

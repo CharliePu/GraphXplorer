@@ -32,6 +32,12 @@ public:
                                     int textureSize,
                                     std::vector<int> &outputPixels) override;
 
+    bool rasterizeChunkContourSegments(const RPN &residualRpn,
+                                       const Interval &xRange,
+                                       const Interval &yRange,
+                                       int cellsPerAxis,
+                                       std::vector<RasterContourSegment> &outputSegments) override;
+
     bool rasterize(const std::vector<int> &chunkStates,
                    int chunkWidth,
                    int chunkHeight,

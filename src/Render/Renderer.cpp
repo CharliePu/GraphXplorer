@@ -56,6 +56,29 @@ void Renderer::draw(const std::vector<Mesh> &meshes)
             glActiveTexture(GL_TEXTURE0 + i);
             mesh.textures[i]->bind();
         }
-        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
+
+        const auto primitive = mesh.primitive == MeshPrimitive::Lines ? GL_LINES : GL_TRIANGLES;
+        if (mesh.primitive == MeshPrimitive::Lines)
+        {
+            glLineWidth(mesh.lineWidth);
+        }
+        if (mesh.indexed)
+        {
+            if (mesh.elementCount >= 0)
+            {
+                glDrawElements(primitive, mesh.elementCount, GL_UNSIGNED_INT, nullptr);
+            }
+        }
+        else
+        {
+            if (mesh.vertexCount >= 0)
+            {
+                glDrawArrays(primitive, 0, mesh.vertexCount);
+            }
+        }
+        if (mesh.primitive == MeshPrimitive::Lines)
+        {
+            glLineWidth(1.0f);
+        }
     }
 }

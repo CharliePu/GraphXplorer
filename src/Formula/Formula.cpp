@@ -37,3 +37,32 @@ const RPN &Formula::getRPN() const
 {
     return rpn;
 }
+
+bool Formula::hasOperatorContainingEqualSign() const
+{
+    for (const auto &token : rpn.tokens)
+    {
+        if (token.type != TokenType::OPERATOR)
+        {
+            continue;
+        }
+
+        if (token.value.find('=') != std::string::npos)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool Formula::isTopLevelOperator(const std::string &op) const
+{
+    if (rpn.tokens.empty())
+    {
+        return false;
+    }
+
+    const auto &token = rpn.tokens.back();
+    return token.type == TokenType::OPERATOR && token.value == op;
+}

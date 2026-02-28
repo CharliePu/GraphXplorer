@@ -20,6 +20,8 @@ public:
     Interval evaluate(const std::unordered_map<std::string, Interval>& variables);
     [[nodiscard]] const std::string &getExpression() const;
     [[nodiscard]] const RPN &getRPN() const;
+    [[nodiscard]] bool hasOperatorContainingEqualSign() const;
+    [[nodiscard]] bool isTopLevelOperator(const std::string &op) const;
 
 private:
     std::string expressionStr;

@@ -94,7 +94,7 @@ std::vector<Mesh> TextMeshesGenerator::generateTextMesh(const std::string &text,
 
         x += ch.advance / 64 * scale / aspectRatio;
 
-        meshes.push_back(Mesh{shader, vao, {ch.texture}});
+        meshes.push_back(Mesh{shader, vao, {ch.texture}, MeshPrimitive::Triangles, static_cast<int>(indices.size())});
     }
 
     return meshes;

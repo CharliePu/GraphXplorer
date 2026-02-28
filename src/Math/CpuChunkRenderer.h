@@ -15,6 +15,12 @@ public:
                                     const Interval &yRange,
                                     int textureSize,
                                     std::vector<int> &outputPixels) override;
+
+    bool rasterizeChunkContourSegments(const RPN &residualRpn,
+                                       const Interval &xRange,
+                                       const Interval &yRange,
+                                       int cellsPerAxis,
+                                       std::vector<RasterContourSegment> &outputSegments) override;
 };
 
 #endif // CPUCHUNKRENDERER_H

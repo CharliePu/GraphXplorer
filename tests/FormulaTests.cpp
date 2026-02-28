@@ -123,3 +123,52 @@ TEST_CASE("Formula handles complex logical expressions correctly", "[Formula][Lo
     double result3 = formula.evaluate(vars3);
     REQUIRE(approxEqual(result3, 0.0));
 }
+
+TEST_CASE("Formula detects equality-style operators", "[Formula][Operators]") {
+    Formula leFormula("x<=y");
+    REQUIRE(leFormula.hasOperatorContainingEqualSign());
+    REQUIRE(leFormula.isTopLevelOperator("<="));
+
+    Formula eqFormula("x=y");
+    REQUIRE(eqFormula.hasOperatorContainingEqualSign());
+    REQUIRE(eqFormula.isTopLevelOperator("="));
+
+    Formula ltFormula("x<y");
+    REQUIRE_FALSE(ltFormula.hasOperatorContainingEqualSign());
+    REQUIRE(ltFormula.isTopLevelOperator("<"));
+}
+
+TEST_CASE("Interval equality is conservative for overlap", "[Formula][Interval][Equality]") {
+    Formula eqFormula("x=y");
+
+    const auto disjoint = eqFormula.evaluate({{"x", Interval{0.0, 1.0}}, {"y", Interval{2.0, 3.0}}});
+    REQUIRE(disjoint.allFalse());
+
+    const auto overlap = eqFormula.evaluate({{"x", Interval{0.0, 1.0}}, {"y", Interval{0.5, 1.5}}});
+    REQUIRE(overlap.lower == 0.0);
+    REQUIRE(overlap.upper == 1.0);
+
+    const auto exact = eqFormula.evaluate({{"x", Interval{1.0, 1.0}}, {"y", Interval{1.0, 1.0}}});
+    REQUIRE(exact.allTrue());
+}
+
+TEST_CASE("Formula uses '=' as equality operator", "[Formula][Operators][Equality]") {
+    Formula aliasFormula("x=y^2");
+    REQUIRE(aliasFormula.hasOperatorContainingEqualSign());
+    REQUIRE(aliasFormula.isTopLevelOperator("="));
+
+    const double trueValue = aliasFormula.evaluate({{"x", 4.0}, {"y", 2.0}});
+    REQUIRE(approxEqual(trueValue, 1.0));
+
+    const double falseValue = aliasFormula.evaluate({{"x", 5.0}, {"y", 2.0}});
+    REQUIRE(approxEqual(falseValue, 0.0));
+}
+
+TEST_CASE("Interval power is conservative when base crosses zero", "[Formula][Interval][Power]") {
+    Formula eqFormula("x=y^2");
+
+    // There exists y=0 inside [-1,1], so y^2 includes 0 and equality can be true.
+    const auto maybeEqual = eqFormula.evaluate({{"x", Interval{0.0, 0.0}}, {"y", Interval{-1.0, 1.0}}});
+    REQUIRE(maybeEqual.lower == 0.0);
+    REQUIRE(maybeEqual.upper == 1.0);
+}

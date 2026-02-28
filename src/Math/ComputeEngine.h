@@ -36,8 +36,7 @@ public:
     };
 
     using ComputeCompleteCallBack = std::function<void(
-        std::vector<RasterChunk>,
-        std::vector<RasterChunkTexture>,
+        std::vector<ChunkRenderData>,
         Interval,
         Interval,
         int,
@@ -59,8 +58,7 @@ private:
     struct RasterizedData
     {
         uint64_t requestId{0};
-        std::vector<RasterChunk> chunks;
-        std::vector<RasterChunkTexture> chunkTextures;
+        std::vector<ChunkRenderData> chunkRenderData;
         Interval xRange;
         Interval yRange;
         int windowWidth;

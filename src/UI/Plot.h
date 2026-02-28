@@ -94,32 +94,37 @@ private:
     public:
         virtual ~ChunkRenderItem() = default;
         [[nodiscard]] virtual const Mesh *meshForMode(bool debugMode) const = 0;
+        [[nodiscard]] virtual const Mesh *contourMesh() const = 0;
         [[nodiscard]] virtual bool hasNormalMesh() const = 0;
     };
 
     class SolidChunkRenderItem final : public ChunkRenderItem
     {
     public:
-        SolidChunkRenderItem(std::optional<Mesh> normalMesh, Mesh debugMesh);
+        SolidChunkRenderItem(std::optional<Mesh> normalMesh, std::optional<Mesh> contourMesh, Mesh debugMesh);
 
         [[nodiscard]] const Mesh *meshForMode(bool debugMode) const override;
+        [[nodiscard]] const Mesh *contourMesh() const override;
         [[nodiscard]] bool hasNormalMesh() const override;
 
     private:
         std::optional<Mesh> normalMesh;
+        std::optional<Mesh> contour;
         Mesh debugMesh;
     };
 
     class TexturedChunkRenderItem final : public ChunkRenderItem
     {
     public:
-        TexturedChunkRenderItem(Mesh normalMesh, Mesh debugMesh);
+        TexturedChunkRenderItem(Mesh normalMesh, std::optional<Mesh> contourMesh, Mesh debugMesh);
 
         [[nodiscard]] const Mesh *meshForMode(bool debugMode) const override;
+        [[nodiscard]] const Mesh *contourMesh() const override;
         [[nodiscard]] bool hasNormalMesh() const override;
 
     private:
         Mesh normalMesh;
+        std::optional<Mesh> contour;
         Mesh debugMesh;
     };
 
@@ -130,6 +135,7 @@ private:
 
     Mesh createColoredChunkMesh(const RasterChunk &chunk, const glm::vec4 &color) const;
     Mesh createTexturedChunkMesh(const RasterChunk &chunk, const std::shared_ptr<staplegl::texture_2d> &texture) const;
+    Mesh createContourMesh(const std::vector<RasterContourSegment> &segments) const;
     glm::vec4 getDebugChunkColor(const RasterChunk &chunk) const;
     std::optional<glm::vec4> getNormalSolidColor(const RasterChunk &chunk) const;
     std::unique_ptr<ChunkRenderItem> buildChunkRenderItem(const PlotChunkKey &key);
@@ -141,9 +147,8 @@ private:
                                                                                      int targetLevel) const;
     [[nodiscard]] std::vector<PlotChunkKey> selectVisibleChunkKeysAtLevel(int targetLevel) const;
     std::vector<PlotChunkKey> selectVisibleChunkKeys() const;
-    void mergeSampledChunks(const std::vector<RasterChunk> &chunks);
-    void mergeChunkTextures(const std::vector<RasterChunkTexture> &chunkTextures);
-    void rebuildChunkRenderItems();
+    void applyChunkRenderData(const ChunkRenderData &chunkRenderData);
+    void applyChunkRenderDataBatch(const std::vector<ChunkRenderData> &chunkRenderDataBatch);
     void rebuildVisibleChunkMeshes();
     void rebuildAndPublishMeshes();
     void uploadShaderUniforms();
@@ -160,17 +165,20 @@ private:
 
     std::shared_ptr<staplegl::shader_program> chunkShader;
     std::shared_ptr<staplegl::shader_program> plotShader;
+    std::shared_ptr<staplegl::shader_program> contourShader;
 
     std::vector<Mesh> visibleChunkMeshes;
     std::vector<Mesh> meshes;
 
     std::unordered_map<PlotChunkKey, RasterChunk, PlotChunkKeyHash> sampledChunkCache;
-    std::unordered_map<PlotChunkKey, std::shared_ptr<staplegl::texture_2d>, PlotChunkKeyHash> chunkTextureCache;
+    std::unordered_map<PlotChunkKey, std::shared_ptr<staplegl::texture_2d>, PlotChunkKeyHash> chunkRegionTextureCache;
+    std::unordered_map<PlotChunkKey, std::vector<RasterContourSegment>, PlotChunkKeyHash> chunkContourCache;
     std::unordered_map<PlotChunkKey, std::unique_ptr<ChunkRenderItem>, PlotChunkKeyHash> chunkRenderItems;
     std::map<int, size_t> sampledChunkLevels;
 
     glm::mat4 chunkModel;
 
+    bool shouldRenderRegionForFormula;
     bool debug;
 };
 

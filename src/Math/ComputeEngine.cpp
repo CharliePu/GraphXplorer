@@ -5,7 +5,6 @@
 #include "ComputeEngine.h"
 
 #include <iostream>
-#include <unordered_map>
 #include <glfwpp/event.h>
 
 #include "GraphRasterizer.h"
@@ -80,18 +79,16 @@ void ComputeEngine::pollAsyncStates()
         return;
     }
 
-    constexpr size_t maxUpdatesPerPoll = 8;
     auto hasBatchedUpdate = false;
     uint64_t batchedRequestId = 0;
     Interval batchedXRange{};
     Interval batchedYRange{};
     auto batchedWindowWidth = 0;
     auto batchedWindowHeight = 0;
-    std::vector<RasterChunk> batchedChunks;
-    std::vector<RasterChunkTexture> batchedChunkTextures;
+    std::vector<ChunkRenderData> batchedChunkRenderData;
     std::shared_ptr<RasterizedData> deferredUpdate;
 
-    for (size_t i = 0; i < maxUpdatesPerPoll; ++i)
+    while (true)
     {
         std::shared_ptr<RasterizedData> data;
         {
@@ -132,16 +129,11 @@ void ComputeEngine::pollAsyncStates()
         batchedWindowWidth = data->windowWidth;
         batchedWindowHeight = data->windowHeight;
 
-        if (!data->chunks.empty())
+        if (!data->chunkRenderData.empty())
         {
-            batchedChunks.insert(batchedChunks.end(), std::make_move_iterator(data->chunks.begin()),
-                                 std::make_move_iterator(data->chunks.end()));
-        }
-
-        if (!data->chunkTextures.empty())
-        {
-            batchedChunkTextures.insert(batchedChunkTextures.end(), std::make_move_iterator(data->chunkTextures.begin()),
-                                        std::make_move_iterator(data->chunkTextures.end()));
+            batchedChunkRenderData.insert(batchedChunkRenderData.end(),
+                                          std::make_move_iterator(data->chunkRenderData.begin()),
+                                          std::make_move_iterator(data->chunkRenderData.end()));
         }
     }
 
@@ -153,8 +145,8 @@ void ComputeEngine::pollAsyncStates()
 
     if (hasBatchedUpdate)
     {
-        computeCompleteCallback(std::move(batchedChunks), std::move(batchedChunkTextures), batchedXRange, batchedYRange,
-                                batchedWindowWidth, batchedWindowHeight, batchedRequestId);
+        computeCompleteCallback(std::move(batchedChunkRenderData),
+                                batchedXRange, batchedYRange, batchedWindowWidth, batchedWindowHeight, batchedRequestId);
     }
 
     // Keep driving incremental streaming even when there is no user input event.
@@ -170,33 +162,6 @@ void ComputeEngine::pollAsyncStates()
 
 void ComputeEngine::processTasks()
 {
-    struct ChunkTextureKey
-    {
-        int64_t x;
-        int64_t y;
-        int level;
-
-        bool operator==(const ChunkTextureKey &other) const
-        {
-            return x == other.x && y == other.y && level == other.level;
-        }
-    };
-
-    struct ChunkTextureKeyHash
-    {
-        size_t operator()(const ChunkTextureKey &key) const
-        {
-            const auto h1 = std::hash<int64_t>{}(key.x);
-            const auto h2 = std::hash<int64_t>{}(key.y);
-            const auto h3 = std::hash<int>{}(key.level);
-
-            size_t seed = h1;
-            seed ^= h2 + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
-            seed ^= h3 + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
-            return seed;
-        }
-    };
-
     while (true)
     {
         currentTask.wait(nullptr);
@@ -230,18 +195,8 @@ void ComputeEngine::processTasks()
             continue;
         }
 
-        std::unordered_map<ChunkTextureKey, size_t, ChunkTextureKeyHash> textureIndexByKey;
-        textureIndexByKey.reserve(rasterized.chunkTextures.size());
-
-        for (size_t textureIndex = 0; textureIndex < rasterized.chunkTextures.size(); ++textureIndex)
-        {
-            const auto &texture = rasterized.chunkTextures[textureIndex];
-            textureIndexByKey.insert_or_assign({texture.chunkX, texture.chunkY, texture.level}, textureIndex);
-        }
-
-        std::vector<char> consumedTextures(rasterized.chunkTextures.size(), 0);
         std::deque<std::shared_ptr<RasterizedData>> pendingUpdates;
-        for (auto &chunk : rasterized.chunks)
+        for (auto &chunkRenderData : rasterized.chunkRenderData)
         {
             if (task->requestId != latestRequestedTaskId.load())
             {
@@ -255,19 +210,7 @@ void ComputeEngine::processTasks()
             update->yRange = task->yRange;
             update->windowWidth = task->windowWidth;
             update->windowHeight = task->windowHeight;
-            update->chunks.push_back(std::move(chunk));
-
-            const ChunkTextureKey key{update->chunks.front().chunkX, update->chunks.front().chunkY,
-                                      update->chunks.front().level};
-            if (const auto textureIt = textureIndexByKey.find(key); textureIt != textureIndexByKey.end())
-            {
-                const auto textureIndex = textureIt->second;
-                if (!consumedTextures[textureIndex])
-                {
-                    consumedTextures[textureIndex] = 1;
-                    update->chunkTextures.push_back(std::move(rasterized.chunkTextures[textureIndex]));
-                }
-            }
+            update->chunkRenderData.push_back(std::move(chunkRenderData));
 
             pendingUpdates.push_back(std::move(update));
         }

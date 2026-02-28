@@ -9,6 +9,8 @@
 #include <vector>
 
 #include "Interval.h"
+#include "RasterizedPlot.h"
+#include "../Formula/Parser.h"
 
 class Formula;
 
@@ -22,6 +24,12 @@ public:
                                             const Interval &yRange,
                                             int textureSize,
                                             std::vector<int> &outputPixels) = 0;
+
+    virtual bool rasterizeChunkContourSegments(const RPN &residualRpn,
+                                               const Interval &xRange,
+                                               const Interval &yRange,
+                                               int cellsPerAxis,
+                                               std::vector<RasterContourSegment> &outputSegments) = 0;
 };
 
 #endif // CHUNKRENDERER_H

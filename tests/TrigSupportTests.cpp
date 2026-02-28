@@ -4,10 +4,12 @@
 
 #include "catch.hpp"
 
+#include <array>
 #include <cmath>
 #include <numbers>
 
 #include "../src/Formula/Formula.h"
+#include "../src/Graph/Graph.h"
 #include "../src/Math/CpuChunkRenderer.h"
 #include "../src/Math/Interval.h"
 #include "../src/Math/OpenCLChunkRenderer.h"
@@ -120,3 +122,89 @@ TEST_CASE("OpenCL trig rasterization agrees with CPU renderer", "[OpenCL][Trig]"
     compareFormula("tan(x)<0.5", {-1.0, 1.0}, {-1.0, 1.0});
 }
 
+TEST_CASE("OpenCL contour marching agrees with CPU renderer on a linear residual", "[OpenCL][Contour]")
+{
+    OpenCLChunkRenderer openclRenderer;
+    if (!openclRenderer.isAvailable())
+    {
+        SUCCEED("OpenCL device not available; contour path falls back to CPU.");
+        return;
+    }
+
+    CpuChunkRenderer cpuRenderer;
+    const Formula residualFormula("x-y");
+    constexpr auto cellsPerAxis = 32;
+    const Interval xRange{0.0, 1.0};
+    const Interval yRange{0.0, 1.0};
+
+    std::vector<RasterContourSegment> cpuSegments;
+    std::vector<RasterContourSegment> gpuSegments;
+    REQUIRE(cpuRenderer.rasterizeChunkContourSegments(residualFormula.getRPN(), xRange, yRange, cellsPerAxis, cpuSegments));
+    REQUIRE(openclRenderer.rasterizeChunkContourSegments(
+        residualFormula.getRPN(), xRange, yRange, cellsPerAxis, gpuSegments));
+
+    REQUIRE(cpuSegments.size() == gpuSegments.size());
+    constexpr auto epsilon = 1e-5;
+
+    for (size_t i = 0; i < cpuSegments.size(); ++i)
+    {
+        CHECK(std::abs(cpuSegments[i].x0 - gpuSegments[i].x0) <= epsilon);
+        CHECK(std::abs(cpuSegments[i].y0 - gpuSegments[i].y0) <= epsilon);
+        CHECK(std::abs(cpuSegments[i].x1 - gpuSegments[i].x1) <= epsilon);
+        CHECK(std::abs(cpuSegments[i].y1 - gpuSegments[i].y1) <= epsilon);
+    }
+}
+
+TEST_CASE("OpenCL contour endpoints stay within chunk bounds for linear residual across far chunks",
+          "[OpenCL][Contour][Bounds]")
+{
+    OpenCLChunkRenderer openclRenderer;
+    if (!openclRenderer.isAvailable())
+    {
+        SUCCEED("OpenCL backend unavailable on this machine");
+        return;
+    }
+
+    Formula residualFormula{"x-y"};
+    constexpr auto cellsPerAxis = 32;
+    constexpr auto epsilon = 1e-3;
+
+    const std::array<std::pair<int64_t, int>, 8> chunkCases{{
+        {0, 0},
+        {1, 0},
+        {-1, 0},
+        {1024, 0},
+        {-1024, 0},
+        {1024, 10},
+        {-1024, 10},
+        {1LL << 20, 8}
+    }};
+
+    for (const auto &[chunkIndex, level] : chunkCases)
+    {
+        const auto xRange = chunkIndexToRange(chunkIndex, level);
+        const auto yRange = chunkIndexToRange(chunkIndex + 1, level);
+
+        std::vector<RasterContourSegment> segments;
+        REQUIRE(openclRenderer.rasterizeChunkContourSegments(
+            residualFormula.getRPN(), xRange, yRange, cellsPerAxis, segments));
+
+        for (const auto &segment : segments)
+        {
+            INFO("chunkIndex=" << chunkIndex << " level=" << level);
+            CHECK(std::isfinite(segment.x0));
+            CHECK(std::isfinite(segment.y0));
+            CHECK(std::isfinite(segment.x1));
+            CHECK(std::isfinite(segment.y1));
+
+            CHECK(segment.x0 >= xRange.lower - epsilon);
+            CHECK(segment.x0 <= xRange.upper + epsilon);
+            CHECK(segment.x1 >= xRange.lower - epsilon);
+            CHECK(segment.x1 <= xRange.upper + epsilon);
+            CHECK(segment.y0 >= yRange.lower - epsilon);
+            CHECK(segment.y0 <= yRange.upper + epsilon);
+            CHECK(segment.y1 >= yRange.lower - epsilon);
+            CHECK(segment.y1 <= yRange.upper + epsilon);
+        }
+    }
+}

@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <span>
 #include <tuple>
 
 #include <glad/glad.h>
@@ -20,9 +21,14 @@
 #include "../Render/Mesh.h"
 #include "../Util/PerformanceProfiler.h"
 
-Plot::SolidChunkRenderItem::SolidChunkRenderItem(std::optional<Mesh> normalMesh, Mesh debugMesh): normalMesh{
+Plot::SolidChunkRenderItem::SolidChunkRenderItem(std::optional<Mesh> normalMesh, std::optional<Mesh> contourMesh,
+                                                 Mesh debugMesh): normalMesh{
                                                                                                        std::move(
                                                                                                            normalMesh)
+                                                                                                   },
+                                                                                                   contour{
+                                                                                                       std::move(
+                                                                                                           contourMesh)
                                                                                                    },
                                                                                                    debugMesh{
                                                                                                        std::move(
@@ -46,13 +52,27 @@ const Mesh *Plot::SolidChunkRenderItem::meshForMode(const bool debugMode) const
     return &normalMesh.value();
 }
 
+const Mesh *Plot::SolidChunkRenderItem::contourMesh() const
+{
+    if (!contour.has_value())
+    {
+        return nullptr;
+    }
+
+    return &contour.value();
+}
+
 bool Plot::SolidChunkRenderItem::hasNormalMesh() const
 {
     return normalMesh.has_value();
 }
 
-Plot::TexturedChunkRenderItem::TexturedChunkRenderItem(Mesh normalMesh, Mesh debugMesh): normalMesh{
+Plot::TexturedChunkRenderItem::TexturedChunkRenderItem(Mesh normalMesh, std::optional<Mesh> contourMesh,
+                                                       Mesh debugMesh): normalMesh{
                                                                                               std::move(normalMesh)
+                                                                                          },
+                                                                                          contour{
+                                                                                              std::move(contourMesh)
                                                                                           },
                                                                                           debugMesh{
                                                                                               std::move(debugMesh)
@@ -68,6 +88,16 @@ const Mesh *Plot::TexturedChunkRenderItem::meshForMode(const bool debugMode) con
     }
 
     return &normalMesh;
+}
+
+const Mesh *Plot::TexturedChunkRenderItem::contourMesh() const
+{
+    if (!contour.has_value())
+    {
+        return nullptr;
+    }
+
+    return &contour.value();
 }
 
 bool Plot::TexturedChunkRenderItem::hasNormalMesh() const
@@ -145,18 +175,32 @@ Plot::Plot(const std::shared_ptr<ComputeEngine> &engine,
                                                            }
                                                        }
                                                    },
+                                                   contourShader{
+                                                       new staplegl::shader_program{
+                                                           "contour_shader",
+                                                           {
+                                                               std::pair{
+                                                                   staplegl::shader_type::vertex, "./shader/line.vert"
+                                                               },
+                                                               std::pair{
+                                                                   staplegl::shader_type::fragment, "./shader/line.frag"
+                                                               }
+                                                           }
+                                                       }
+                                                   },
                                                    visibleChunkMeshes{},
                                                    meshes{},
                                                    sampledChunkCache{},
-                                                   chunkTextureCache{},
+                                                   chunkRegionTextureCache{},
+                                                   chunkContourCache{},
                                                    chunkRenderItems{},
                                                    sampledChunkLevels{},
                                                    chunkModel{1.0f},
+                                                   shouldRenderRegionForFormula{true},
                                                    debug{false}
 {
     computeEngine->setComputeCompleteCallback(
-        [this](std::vector<RasterChunk> chunks,
-               std::vector<RasterChunkTexture> chunkTextures,
+        [this](std::vector<ChunkRenderData> chunkRenderDataBatch,
                const Interval xRange, const Interval yRange, const int width, const int height,
                const uint64_t requestId)
         {
@@ -167,9 +211,7 @@ Plot::Plot(const std::shared_ptr<ComputeEngine> &engine,
             (void)height;
             (void)requestId;
 
-            mergeSampledChunks(chunks);
-            mergeChunkTextures(chunkTextures);
-            rebuildChunkRenderItems();
+            applyChunkRenderDataBatch(chunkRenderDataBatch);
             updateModelMat();
             rebuildAndPublishMeshes();
         });
@@ -194,10 +236,12 @@ int Plot::getDepth() const
 void Plot::requestNewPlot(const std::string &input)
 {
     formula = std::make_shared<Formula>(input);
+    shouldRenderRegionForFormula = !(formula && formula->isTopLevelOperator("="));
     graph = std::make_shared<Graph>();
 
     sampledChunkCache.clear();
-    chunkTextureCache.clear();
+    chunkRegionTextureCache.clear();
+    chunkContourCache.clear();
     chunkRenderItems.clear();
     sampledChunkLevels.clear();
     visibleChunkMeshes.clear();
@@ -241,7 +285,7 @@ Mesh Plot::createColoredChunkMesh(const RasterChunk &chunk, const glm::vec4 &col
     chunkVao->add_vertex_buffer(std::move(vbo));
     chunkVao->set_index_buffer(std::move(ebo));
 
-    return {chunkShader, chunkVao, {}};
+    return {chunkShader, chunkVao, {}, MeshPrimitive::Triangles, static_cast<int>(indices.size())};
 }
 
 Mesh Plot::createTexturedChunkMesh(const RasterChunk &chunk, const std::shared_ptr<staplegl::texture_2d> &texture) const
@@ -270,7 +314,67 @@ Mesh Plot::createTexturedChunkMesh(const RasterChunk &chunk, const std::shared_p
     textureVao->add_vertex_buffer(std::move(vbo));
     textureVao->set_index_buffer(std::move(ebo));
 
-    return {plotShader, textureVao, std::vector{texture}};
+    return {plotShader, textureVao, std::vector{texture}, MeshPrimitive::Triangles, static_cast<int>(indices.size())};
+}
+
+Mesh Plot::createContourMesh(const std::vector<RasterContourSegment> &segments) const
+{
+    constexpr auto contourLineWidth = 2.5f;
+    auto contourVao = std::make_shared<staplegl::vertex_array>();
+    if (segments.empty())
+    {
+        return {contourShader, contourVao, {}, MeshPrimitive::Lines, 0, contourLineWidth, false, 0};
+    }
+
+    std::vector<float> vertices;
+    vertices.reserve(segments.size() * 6);
+    for (const auto &segment : segments)
+    {
+        if (!std::isfinite(segment.x0) || !std::isfinite(segment.y0)
+            || !std::isfinite(segment.x1) || !std::isfinite(segment.y1))
+        {
+            continue;
+        }
+
+        const auto dx = segment.x1 - segment.x0;
+        const auto dy = segment.y1 - segment.y0;
+        const auto length = std::hypot(dx, dy);
+        if (length <= 1e-12)
+        {
+            continue;
+        }
+
+        vertices.push_back(static_cast<float>(segment.x0));
+        vertices.push_back(static_cast<float>(segment.y0));
+        vertices.push_back(0.0f);
+        vertices.push_back(static_cast<float>(segment.x1));
+        vertices.push_back(static_cast<float>(segment.y1));
+        vertices.push_back(0.0f);
+    }
+
+    if (vertices.empty())
+    {
+        return {contourShader, contourVao, {}, MeshPrimitive::Lines, 0, contourLineWidth, false, 0};
+    }
+
+    staplegl::vertex_buffer vbo{std::span<const float>{vertices}, staplegl::driver_draw_hint::STATIC_DRAW};
+    staplegl::vertex_buffer_layout const layout{
+        {staplegl::shader_data_type::u_type::vec3, "aPos"}
+    };
+    vbo.set_layout(layout);
+
+    contourVao->add_vertex_buffer(std::move(vbo));
+
+    return {
+        contourShader,
+        contourVao,
+        {},
+        MeshPrimitive::Lines,
+        0,
+        contourLineWidth,
+        false,
+        static_cast<int>(vertices.size() / 3u)
+    };
 }
 
 glm::vec4 Plot::getDebugChunkColor(const RasterChunk &chunk) const
@@ -306,30 +410,47 @@ std::unique_ptr<Plot::ChunkRenderItem> Plot::buildChunkRenderItem(const PlotChun
 
     const auto &chunk = chunkIt->second;
     auto debugMesh = createColoredChunkMesh(chunk, getDebugChunkColor(chunk));
+    std::optional<Mesh> contourMesh;
+    if (const auto contourIt = chunkContourCache.find(key); contourIt != chunkContourCache.end()
+        && !contourIt->second.empty())
+    {
+        contourMesh.emplace(createContourMesh(contourIt->second));
+    }
 
     if (chunk.state < 0)
     {
-        const auto textureIt = chunkTextureCache.find(key);
-        if (textureIt != chunkTextureCache.end())
+        const auto textureIt = chunkRegionTextureCache.find(key);
+        if (textureIt != chunkRegionTextureCache.end())
         {
             auto texturedMesh = createTexturedChunkMesh(chunk, textureIt->second);
-            return std::make_unique<TexturedChunkRenderItem>(std::move(texturedMesh), std::move(debugMesh));
+            return std::make_unique<TexturedChunkRenderItem>(
+                std::move(texturedMesh), std::move(contourMesh), std::move(debugMesh));
         }
 
-        return std::make_unique<SolidChunkRenderItem>(std::nullopt, std::move(debugMesh));
+        return std::make_unique<SolidChunkRenderItem>(std::nullopt, std::move(contourMesh), std::move(debugMesh));
     }
 
     if (const auto color = getNormalSolidColor(chunk))
     {
         std::optional<Mesh> normalMesh{createColoredChunkMesh(chunk, *color)};
-        return std::make_unique<SolidChunkRenderItem>(std::move(normalMesh), std::move(debugMesh));
+        return std::make_unique<SolidChunkRenderItem>(
+            std::move(normalMesh), std::move(contourMesh), std::move(debugMesh));
     }
 
-    return std::make_unique<SolidChunkRenderItem>(std::nullopt, std::move(debugMesh));
+    return std::make_unique<SolidChunkRenderItem>(std::nullopt, std::move(contourMesh), std::move(debugMesh));
 }
 
 bool Plot::isChunkRenderable(const PlotChunkKey &key) const
 {
+    if (!shouldRenderRegionForFormula)
+    {
+        if (const auto contourIt = chunkContourCache.find(key); contourIt != chunkContourCache.end()
+            && !contourIt->second.empty())
+        {
+            return true;
+        }
+    }
+
     const auto renderItemIt = chunkRenderItems.find(key);
     if (renderItemIt == chunkRenderItems.end())
     {
@@ -418,9 +539,9 @@ std::vector<PlotChunkKey> Plot::findCompleteRenderableChildrenForTarget(const in
     return {};
 }
 
-void Plot::mergeSampledChunks(const std::vector<RasterChunk> &chunks)
+void Plot::applyChunkRenderData(const ChunkRenderData &chunkRenderData)
 {
-    GRAPHX_PROFILE_SCOPE("plot.mergeSampledChunks");
+    GRAPHX_PROFILE_SCOPE("plot.applyChunkRenderData");
 
     const auto addLevelRef = [this](const int level)
     {
@@ -486,171 +607,141 @@ void Plot::mergeSampledChunks(const std::vector<RasterChunk> &chunks)
         }
 
         chunkRenderItems.erase(key);
-        chunkTextureCache.erase(key);
+        chunkRegionTextureCache.erase(key);
+        chunkContourCache.erase(key);
         removeLevelRef(key.level);
     };
 
-    for (const auto &chunk : chunks)
+    const auto &chunk = chunkRenderData.chunk;
+    const auto key = toChunkKey(chunk);
+    const auto isUniformChunk = chunk.state >= 0;
+
+    if (isUniformChunk)
     {
-        const auto key = toChunkKey(chunk);
-        const auto isUniformChunk = chunk.state >= 0;
-
-        // Redundant uniform children are skipped when an equivalent uniform parent already exists.
-        if (isUniformChunk)
+        auto coveredByUniformParent = false;
+        for (auto levelIt = sampledChunkLevels.upper_bound(chunk.level); levelIt != sampledChunkLevels.end(); ++levelIt)
         {
-            auto coveredByUniformParent = false;
-            for (auto levelIt = sampledChunkLevels.upper_bound(chunk.level); levelIt != sampledChunkLevels.end();
-                 ++levelIt)
-            {
-                const auto parentLevel = levelIt->first;
-                const PlotChunkKey parentKey{
-                    floorDivByPow2(key.x, parentLevel - key.level),
-                    floorDivByPow2(key.y, parentLevel - key.level),
-                    parentLevel
-                };
+            const auto parentLevel = levelIt->first;
+            const PlotChunkKey parentKey{
+                floorDivByPow2(key.x, parentLevel - key.level),
+                floorDivByPow2(key.y, parentLevel - key.level),
+                parentLevel
+            };
 
-                const auto parentIt = sampledChunkCache.find(parentKey);
-                if (parentIt == sampledChunkCache.end())
-                {
-                    continue;
-                }
-
-                if (parentIt->second.state >= 0 && parentIt->second.state == chunk.state)
-                {
-                    coveredByUniformParent = true;
-                    break;
-                }
-            }
-
-            if (coveredByUniformParent)
+            const auto parentIt = sampledChunkCache.find(parentKey);
+            if (parentIt == sampledChunkCache.end())
             {
                 continue;
             }
+
+            if (parentIt->second.state >= 0 && parentIt->second.state == chunk.state)
+            {
+                coveredByUniformParent = true;
+                break;
+            }
         }
 
-        const auto existingIt = sampledChunkCache.find(key);
-        if (existingIt == sampledChunkCache.end())
+        if (coveredByUniformParent)
         {
-            sampledChunkCache.emplace(key, chunk);
-            addLevelRef(chunk.level);
+            return;
+        }
+    }
+
+    const auto existingIt = sampledChunkCache.find(key);
+    if (existingIt == sampledChunkCache.end())
+    {
+        sampledChunkCache.emplace(key, chunk);
+        addLevelRef(chunk.level);
+    }
+    else
+    {
+        existingIt->second = chunk;
+    }
+
+    chunkRenderItems.erase(key);
+
+    if (isUniformChunk)
+    {
+        chunkRegionTextureCache.erase(key);
+        chunkContourCache.erase(key);
+
+        std::vector<PlotChunkKey> removableChildren;
+        removableChildren.reserve(16);
+        for (const auto &[childKey, childChunk] : sampledChunkCache)
+        {
+            if (childKey.level >= key.level)
+            {
+                continue;
+            }
+
+            if (!parentCoversChild(key, childKey))
+            {
+                continue;
+            }
+
+            if (childChunk.state < 0 || childChunk.state != chunk.state)
+            {
+                continue;
+            }
+
+            removableChildren.push_back(childKey);
+        }
+
+        for (const auto &childKey : removableChildren)
+        {
+            eraseCachedChunk(childKey);
+        }
+    }
+    else
+    {
+        if (chunkRenderData.region.has_value() && chunkRenderData.region->width > 0 && chunkRenderData.region->height > 0)
+        {
+            std::vector<float> textureData;
+            textureData.reserve(chunkRenderData.region->pixels.size());
+            for (const auto value : chunkRenderData.region->pixels)
+            {
+                textureData.push_back(value > 0 ? 1.0f : 0.0f);
+            }
+
+            const auto resolution = staplegl::resolution{chunkRenderData.region->width, chunkRenderData.region->height};
+            constexpr auto textureColor = staplegl::texture_color{GL_RED, GL_RED, GL_FLOAT};
+            constexpr auto textureFilter = staplegl::texture_filter{GL_NEAREST, GL_NEAREST};
+
+            auto texture = std::make_shared<staplegl::texture_2d>(
+                std::span<const float>{textureData}, resolution, textureColor, textureFilter);
+            chunkRegionTextureCache.insert_or_assign(key, texture);
         }
         else
         {
-            existingIt->second = chunk;
+            chunkRegionTextureCache.erase(key);
         }
 
-        // Force rebind of render item whenever chunk metadata changes.
-        chunkRenderItems.erase(key);
-
-        // Uniform chunks do not need texture cache entries.
-        if (isUniformChunk)
+        if (chunkRenderData.contour.has_value() && !chunkRenderData.contour->segments.empty())
         {
-            chunkTextureCache.erase(key);
-
-            // A discovered uniform parent supersedes equivalent uniform children.
-            std::vector<PlotChunkKey> removableChildren;
-            removableChildren.reserve(16);
-
-            for (const auto &[childKey, childChunk] : sampledChunkCache)
-            {
-                if (childKey.level >= key.level)
-                {
-                    continue;
-                }
-
-                if (!parentCoversChild(key, childKey))
-                {
-                    continue;
-                }
-
-                // Sanity: only remove children that are also uniform and equivalent.
-                if (childChunk.state < 0 || childChunk.state != chunk.state)
-                {
-                    continue;
-                }
-
-                removableChildren.push_back(childKey);
-            }
-
-            for (const auto &childKey : removableChildren)
-            {
-                eraseCachedChunk(childKey);
-            }
+            chunkContourCache.insert_or_assign(key, chunkRenderData.contour->segments);
         }
-    }
-}
-
-void Plot::mergeChunkTextures(const std::vector<RasterChunkTexture> &chunkTextures)
-{
-    GRAPHX_PROFILE_SCOPE("plot.mergeChunkTextures");
-    for (const auto &chunkTexture : chunkTextures)
-    {
-        if (chunkTexture.width <= 0 || chunkTexture.height <= 0)
+        else
         {
-            continue;
-        }
-
-        const PlotChunkKey key{chunkTexture.chunkX, chunkTexture.chunkY, chunkTexture.level};
-        const auto chunkIt = sampledChunkCache.find(key);
-        if (chunkIt == sampledChunkCache.end())
-        {
-            continue;
-        }
-
-        if (chunkIt->second.state >= 0)
-        {
-            chunkTextureCache.erase(key);
-            continue;
-        }
-
-        if (chunkTextureCache.contains(key))
-        {
-            continue;
-        }
-        std::vector<float> textureData;
-        textureData.reserve(chunkTexture.pixels.size());
-
-        for (const auto value : chunkTexture.pixels)
-        {
-            textureData.push_back(value > 0 ? 1.0f : 0.0f);
-        }
-
-        const auto resolution = staplegl::resolution{chunkTexture.width, chunkTexture.height};
-        constexpr auto textureColor = staplegl::texture_color{GL_RED, GL_RED, GL_FLOAT};
-        constexpr auto textureFilter = staplegl::texture_filter{GL_NEAREST, GL_NEAREST};
-
-        auto texture = std::make_shared<staplegl::texture_2d>(
-            std::span<const float>{textureData}, resolution, textureColor, textureFilter);
-
-        chunkTextureCache.insert_or_assign(key, texture);
-        chunkRenderItems.erase(key);
-    }
-}
-
-void Plot::rebuildChunkRenderItems()
-{
-    GRAPHX_PROFILE_SCOPE("plot.rebuildChunkRenderItems");
-    std::vector<PlotChunkKey> keysToBuild;
-    keysToBuild.reserve(sampledChunkCache.size());
-
-    for (const auto &[key, chunk] : sampledChunkCache)
-    {
-        (void)chunk;
-        if (!chunkRenderItems.contains(key))
-        {
-            keysToBuild.push_back(key);
+            chunkContourCache.erase(key);
         }
     }
 
-    for (const auto &key : keysToBuild)
+    if (auto renderItem = buildChunkRenderItem(key))
     {
-        auto renderItem = buildChunkRenderItem(key);
-        if (!renderItem)
-        {
-            continue;
-        }
-
         chunkRenderItems.insert_or_assign(key, std::move(renderItem));
+    }
+    else
+    {
+        chunkRenderItems.erase(key);
+    }
+}
+
+void Plot::applyChunkRenderDataBatch(const std::vector<ChunkRenderData> &chunkRenderDataBatch)
+{
+    GRAPHX_PROFILE_SCOPE("plot.applyChunkRenderDataBatch");
+    for (const auto &chunkRenderData : chunkRenderDataBatch)
+    {
+        applyChunkRenderData(chunkRenderData);
     }
 }
 
@@ -916,6 +1007,7 @@ void Plot::rebuildVisibleChunkMeshes()
 {
     GRAPHX_PROFILE_SCOPE("plot.rebuildVisibleChunkMeshes");
     visibleChunkMeshes.clear();
+    constexpr auto contourOnlyMode = false;
 
     if (sampledChunkCache.empty())
     {
@@ -923,7 +1015,10 @@ void Plot::rebuildVisibleChunkMeshes()
     }
 
     const auto keys = selectVisibleChunkKeys();
-    visibleChunkMeshes.reserve(debug ? keys.size() * 2 : keys.size());
+    std::vector<Mesh> deferredContourMeshes;
+    deferredContourMeshes.reserve(keys.size());
+
+    visibleChunkMeshes.reserve(debug ? keys.size() * 3 : keys.size() * 2);
 
     for (const auto &key : keys)
     {
@@ -933,31 +1028,43 @@ void Plot::rebuildVisibleChunkMeshes()
             continue;
         }
 
-        if (const auto *mesh = renderIt->second->meshForMode(false))
+        if (!contourOnlyMode)
         {
-            visibleChunkMeshes.push_back(*mesh);
+            if (const auto *mesh = renderIt->second->meshForMode(false))
+            {
+                visibleChunkMeshes.push_back(*mesh);
+            }
+        }
+
+        if (const auto *contourMesh = renderIt->second->contourMesh())
+        {
+            deferredContourMeshes.push_back(*contourMesh);
         }
     }
 
-    if (!debug)
+    if (debug)
     {
-        return;
-    }
-
-    // Debug mode overlays chunk-selection visualization on top of normal meshes.
-    for (const auto &key : keys)
-    {
-        const auto renderIt = chunkRenderItems.find(key);
-        if (renderIt == chunkRenderItems.end())
+        // Debug mode overlays chunk-selection visualization on top of normal meshes.
+        for (const auto &key : keys)
         {
-            continue;
-        }
+            const auto renderIt = chunkRenderItems.find(key);
+            if (renderIt == chunkRenderItems.end())
+            {
+                continue;
+            }
 
-        if (const auto *debugMesh = renderIt->second->meshForMode(true))
-        {
-            visibleChunkMeshes.push_back(*debugMesh);
+            if (const auto *debugMesh = renderIt->second->meshForMode(true))
+            {
+                visibleChunkMeshes.push_back(*debugMesh);
+            }
         }
     }
+
+    // Keep contour overlays on top of all chunk/debug meshes.
+    visibleChunkMeshes.insert(
+        visibleChunkMeshes.end(),
+        deferredContourMeshes.begin(),
+        deferredContourMeshes.end());
 }
 
 void Plot::rebuildAndPublishMeshes()
@@ -986,6 +1093,10 @@ void Plot::uploadShaderUniforms()
     plotShader->bind();
     plotShader->upload_uniform1i("texture1", 0);
     plotShader->upload_uniform_mat4f("transform", std::span<float, 16>{glm::value_ptr(chunkModel), 16});
+
+    contourShader->bind();
+    contourShader->upload_uniform_mat4f("transform", std::span<float, 16>{glm::value_ptr(chunkModel), 16});
+    contourShader->upload_uniform4f("contourColor", 1.0f, 0.72f, 0.24f, 1.0f);
 }
 
 void Plot::updateModelMat()

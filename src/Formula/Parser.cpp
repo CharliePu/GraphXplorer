@@ -18,7 +18,7 @@ std::unordered_map<std::string, OperatorInfo> operators = {
     {"^", {4, true}},
     {"<", {1, false}}, {">", {1, false}},
     {"<=", {1, false}}, {">=", {1, false}},
-    {"==", {0, false}}, {"!=", {0, false}},
+    {"=", {0, false}}, {"!=", {0, false}},
     {"&&", {-1, false}}, {"||", {-2, false}}
     // Add more operators as needed
 };

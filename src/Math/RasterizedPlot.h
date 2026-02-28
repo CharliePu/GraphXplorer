@@ -6,6 +6,7 @@
 #define RASTERIZEDPLOT_H
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "Interval.h"
@@ -38,10 +39,32 @@ struct RasterChunkTexture
     std::vector<int> pixels;
 };
 
+struct RasterContourSegment
+{
+    double x0;
+    double y0;
+    double x1;
+    double y1;
+};
+
+struct RasterChunkContour
+{
+    int64_t chunkX;
+    int64_t chunkY;
+    int level;
+    std::vector<RasterContourSegment> segments;
+};
+
+struct ChunkRenderData
+{
+    RasterChunk chunk;
+    std::optional<RasterChunkTexture> region;
+    std::optional<RasterChunkContour> contour;
+};
+
 struct RasterizedPlot
 {
-    std::vector<RasterChunk> chunks;
-    std::vector<RasterChunkTexture> chunkTextures;
+    std::vector<ChunkRenderData> chunkRenderData;
 };
 
 #endif //RASTERIZEDPLOT_H

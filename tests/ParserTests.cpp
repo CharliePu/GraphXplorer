@@ -128,3 +128,29 @@ TEST_CASE("Parser converts expressions with parentheses correctly", "[Parser][In
         REQUIRE(compareTokens(postfix.tokens[i], expected[i]));
     }
 }
+
+TEST_CASE("Parser handles '=' equality correctly", "[Parser][InfixToPostfix][Equality]") {
+    std::vector<Token> infix = {
+        Token{TokenType::VARIABLE, "x"},
+        Token{TokenType::OPERATOR, "="},
+        Token{TokenType::VARIABLE, "y"},
+        Token{TokenType::OPERATOR, "^"},
+        Token{TokenType::NUMBER, "2"}
+    };
+
+    Parser parser;
+    RPN postfix = parser.convertToRPN(infix);
+
+    std::vector<Token> expected = {
+        Token{TokenType::VARIABLE, "x"},
+        Token{TokenType::VARIABLE, "y"},
+        Token{TokenType::NUMBER, "2"},
+        Token{TokenType::OPERATOR, "^"},
+        Token{TokenType::OPERATOR, "="}
+    };
+
+    REQUIRE(postfix.tokens.size() == expected.size());
+    for (size_t i = 0; i < postfix.tokens.size(); ++i) {
+        REQUIRE(compareTokens(postfix.tokens[i], expected[i]));
+    }
+}

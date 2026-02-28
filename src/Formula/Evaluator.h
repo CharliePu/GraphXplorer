@@ -81,7 +81,7 @@ T Evaluator<T>::applyOperator(const std::string &op, T a, T b)
     if (op == "<") return a < b;
     if (op == ">=") return a >= b;
     if (op == "<=") return a <= b;
-    if (op == "==") return a == b;
+    if (op == "=") return a == b;
     if (op == "!=") return a != b;
     if (op == "&&") return a && b;
     if (op == "||") return a || b;

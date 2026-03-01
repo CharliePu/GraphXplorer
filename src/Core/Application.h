@@ -5,6 +5,7 @@
 #ifndef APPLICATION_H
 #define APPLICATION_H
 
+#include <optional>
 #include <memory>
 
 #define GLFW_INCLUDE_NONE
@@ -43,6 +44,9 @@ public:
     void onMouseScrolled(double offset) override;
 
 private:
+    void applyPendingWindowSizeChange();
+    static bool isValidFramebufferSize(int width, int height);
+
     std::string name;
 
     std::shared_ptr<Window> window;
@@ -51,6 +55,8 @@ private:
     std::shared_ptr<ThreadPool> threadPool;
     std::shared_ptr<ComputeEngine> computeEngine;
     std::shared_ptr<SceneManager> sceneManager;
+    std::optional<std::pair<int, int>> pendingWindowSize;
+    std::optional<std::pair<int, int>> appliedWindowSize;
 };
 
 

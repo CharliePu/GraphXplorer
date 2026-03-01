@@ -5,10 +5,12 @@
 
 #include "TextMeshesGenerator.h"
 
+#include <cmath>
 #include <stdexcept>
 #include <staplegl/staplegl.hpp>
 
 #include "Mesh.h"
+#include "../Util/PerformanceProfiler.h"
 
 struct FontCharacter
 {
@@ -18,83 +20,146 @@ struct FontCharacter
     int advance; // Horizontal offset to advance to next glyph
 };
 
+size_t TextMeshesGenerator::GlyphGeometryKeyHasher::operator()(const GlyphGeometryKey &key) const noexcept
+{
+    const auto h1 = std::hash<int>{}(static_cast<int>(key.glyph));
+    const auto h2 = std::hash<int>{}(key.scaleMicro);
+    const auto h3 = std::hash<int>{}(key.aspectMicro);
+    return h1 ^ (h2 << 1) ^ (h3 << 2);
+}
+
+int TextMeshesGenerator::quantizeCacheValue(const double value)
+{
+    return static_cast<int>(std::llround(value * 1'000'000.0));
+}
+
+TextMeshesGenerator::GlyphGeometryKey TextMeshesGenerator::buildGlyphCacheKey(
+    const GLchar glyph, const double scale, const double aspectRatio) const
+{
+    return GlyphGeometryKey{
+        glyph,
+        quantizeCacheValue(scale),
+        quantizeCacheValue(aspectRatio)
+    };
+}
+
+Mesh TextMeshesGenerator::buildGlyphGeometry(const GLchar glyph, const double scale, const double aspectRatio)
+{
+    GRAPHX_PROFILE_SCOPE("text.generateTextMesh.meshBuild");
+
+    const auto result = characterMap.find(glyph);
+    if (result == characterMap.end())
+    {
+        throw std::runtime_error("Character not found in font");
+    }
+
+    const FontCharacter ch{result->second};
+    const float xpos{static_cast<float>(ch.bearingX * scale)};
+    const float ypos{static_cast<float>(-(ch.height - ch.bearingY) * scale)};
+    const float w{static_cast<float>(ch.width * scale / aspectRatio)};
+    const float h{static_cast<float>(ch.height * scale)};
+
+    auto vao{std::make_shared<staplegl::vertex_array>()};
+
+    std::array vertices{
+        xpos, ypos + h, 0.0f, 0.0f,
+        xpos, ypos, 0.0f, 1.0f,
+        xpos + w, ypos, 1.0f, 1.0f,
+        xpos + w, ypos + h, 1.0f, 0.0f
+    };
+
+    std::array<unsigned int, 6> indices{
+        0, 1, 2,
+        0, 2, 3
+    };
+
+    staplegl::vertex_buffer vbo{vertices, staplegl::driver_draw_hint::STATIC_DRAW};
+    staplegl::index_buffer ebo{indices};
+
+    staplegl::vertex_buffer_layout const layout{
+        {staplegl::shader_data_type::u_type::vec2, "aPos"},
+        {staplegl::shader_data_type::u_type::vec2, "aTexCoord"}
+    };
+
+    vbo.set_layout(layout);
+
+    vao->add_vertex_buffer(std::move(vbo));
+    vao->set_index_buffer(std::move(ebo));
+
+    return Mesh{shader, vao, {ch.texture}, MeshPrimitive::Triangles, static_cast<int>(indices.size())};
+}
+
+std::array<float, 16> TextMeshesGenerator::buildTranslationTransform(const double x, const double y) const
+{
+    return {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        static_cast<float>(x), static_cast<float>(y), 0.0f, 1.0f
+    };
+}
+
 std::vector<Mesh> TextMeshesGenerator::generateTextMesh(const std::string &text, double x, double y, double scale,
                                                         TextAlign align, double aspectRatio)
 {
+    GRAPHX_PROFILE_SCOPE("text.generateTextMesh");
     if (text.empty())
     {
         return {};
     }
 
-    std::vector<Mesh> meshes;
-
-    // Calculate the width of the text
+    // Calculate the width of the text for alignment in local text space.
     double textWidth{0.0};
-    for (const char &c: text)
     {
-        if (characterMap.find(c) == characterMap.end())
+        GRAPHX_PROFILE_SCOPE("text.generateTextMesh.widthPass");
+        for (const char c: text)
         {
-            throw std::runtime_error("Character not found in font");
+            const auto result = characterMap.find(c);
+            if (result == characterMap.end())
+            {
+                throw std::runtime_error("Character not found in font");
+            }
+            textWidth += result->second.advance / 64.0 * scale / aspectRatio;
         }
-        auto ch = characterMap[c];
-        textWidth += ch.advance / 64.0 * scale / aspectRatio;
     }
 
-    // Alignment adjustment
+    double penX{0.0};
     if (align == TextAlign::CENTER)
     {
-        x -= textWidth / 2.0f;
+        penX -= textWidth / 2.0;
     }
     else if (align == TextAlign::RIGHT)
     {
-        x -= textWidth;
+        penX -= textWidth;
     }
 
-    for (const char &c: text)
+    std::vector<Mesh> meshes;
+    meshes.reserve(text.size());
     {
-        auto result = characterMap.find(c);
-        if (result == characterMap.end())
+        GRAPHX_PROFILE_SCOPE("text.generateTextMesh.cacheLookup");
+        for (const char c : text)
         {
-            continue;
+            const auto result = characterMap.find(c);
+            if (result == characterMap.end())
+            {
+                continue;
+            }
+
+            const auto key = buildGlyphCacheKey(c, scale, aspectRatio);
+            auto cachedGlyph = glyphGeometryCache.find(key);
+            if (cachedGlyph == glyphGeometryCache.end())
+            {
+                GRAPHX_PROFILE_SCOPE("text.generateTextMesh.cacheMissBuild");
+                cachedGlyph = glyphGeometryCache.emplace(key, buildGlyphGeometry(c, scale, aspectRatio)).first;
+            }
+
+            auto mesh = cachedGlyph->second;
+            mesh.hasMeshTransform = true;
+            mesh.meshTransform = buildTranslationTransform(x + penX, y);
+            meshes.push_back(std::move(mesh));
+
+            penX += result->second.advance / 64.0 * scale / aspectRatio;
         }
-
-        FontCharacter ch{result->second};
-        float xpos{static_cast<float>(x + ch.bearingX * scale)};
-        float ypos{static_cast<float>(y - (ch.height - ch.bearingY) * scale)};
-
-        float w{static_cast<float>(ch.width * scale / aspectRatio)};
-        float h{static_cast<float>(ch.height * scale)};
-
-        auto vao{std::make_shared<staplegl::vertex_array>()};
-
-        std::array vertices{
-            xpos, ypos + h, 0.0f, 0.0f,
-            xpos, ypos, 0.0f, 1.0f,
-            xpos + w, ypos, 1.0f, 1.0f,
-            xpos + w, ypos + h, 1.0f, 0.0f
-        };
-
-        std::array<unsigned int, 6> indices{
-            0, 1, 2,
-            0, 2, 3
-        };
-
-        staplegl::vertex_buffer vbo{vertices, staplegl::driver_draw_hint::STATIC_DRAW};
-        staplegl::index_buffer ebo{indices};
-
-        staplegl::vertex_buffer_layout const layout{
-            {staplegl::shader_data_type::u_type::vec2, "aPos"},
-            {staplegl::shader_data_type::u_type::vec2, "aTexCoord"}
-        };
-
-        vbo.set_layout(layout);
-
-        vao->add_vertex_buffer(std::move(vbo));
-        vao->set_index_buffer(std::move(ebo));
-
-        x += ch.advance / 64 * scale / aspectRatio;
-
-        meshes.push_back(Mesh{shader, vao, {ch.texture}, MeshPrimitive::Triangles, static_cast<int>(indices.size())});
     }
 
     return meshes;

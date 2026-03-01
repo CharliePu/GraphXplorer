@@ -110,11 +110,17 @@ void InputBox::beginInput()
 void InputBox::updateTextDisplay()
 {
     auto &textGenerator = TextMeshesGenerator::getInstance();
+    const auto windowWidth = window->getWidth();
+    const auto windowHeight = window->getHeight();
+    if (windowWidth <= 0 || windowHeight <= 0)
+    {
+        return;
+    }
 
     textMeshes.clear();
 
     textMeshes = textGenerator.generateTextMesh(line, -0.95, -0.95, 0.003, TextAlign::LEFT,
-                                                static_cast<double>(window->getWidth()) / window->getHeight());
+                                                static_cast<double>(windowWidth) / static_cast<double>(windowHeight));
 
     updateMeshes();
 }

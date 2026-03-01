@@ -11,6 +11,7 @@
 #include "../UI/Grid.h"
 #include "../UI/AxisLabels.h"
 #include "../UI/InputBox.h"
+#include "../Util/PerformanceProfiler.h"
 
 MainScene::MainScene(const std::shared_ptr<ComputeEngine> &engine,
                      const std::shared_ptr<Renderer> &renderer,
@@ -34,8 +35,15 @@ MainScene::MainScene(const std::shared_ptr<ComputeEngine> &engine,
     });
 
     plot->setPlotRangeChangedCallback([this, renderer](const Interval &xRange, const Interval &yRange) {
-        grid->updatePosition(xRange, yRange);
-        axisLabels->updateLabels(xRange, yRange);
+        GRAPHX_PROFILE_SCOPE("scene.onPlotRangeChanged");
+        {
+            GRAPHX_PROFILE_SCOPE("scene.onPlotRangeChanged.grid");
+            grid->updatePosition(xRange, yRange);
+        }
+        {
+            GRAPHX_PROFILE_SCOPE("scene.onPlotRangeChanged.axisLabels");
+            axisLabels->updateLabels(xRange, yRange);
+        }
     });
 
     plot->setPlotCompleteCallback([this, renderer](const std::vector<Mesh> &meshes) {
@@ -94,11 +102,27 @@ void MainScene::onCursorDrag(const double x, const double y)
 
 void MainScene::onWindowSizeChanged(const int width, const int height)
 {
-    plot->onWindowSizeChanged(width, height);
-    grid->onWindowSizeChanged(width, height);
-    axisLabels->onWindowSizeChanged(width, height);
-    cmd->onWindowSizeChanged(width, height);
-    inputBox->onWindowSizeChanged(width, height);
+    GRAPHX_PROFILE_SCOPE("scene.onWindowSizeChanged");
+    {
+        GRAPHX_PROFILE_SCOPE("scene.onWindowSizeChanged.plot");
+        plot->onWindowSizeChanged(width, height);
+    }
+    {
+        GRAPHX_PROFILE_SCOPE("scene.onWindowSizeChanged.grid");
+        grid->onWindowSizeChanged(width, height);
+    }
+    {
+        GRAPHX_PROFILE_SCOPE("scene.onWindowSizeChanged.axisLabels");
+        axisLabels->onWindowSizeChanged(width, height);
+    }
+    {
+        GRAPHX_PROFILE_SCOPE("scene.onWindowSizeChanged.console");
+        cmd->onWindowSizeChanged(width, height);
+    }
+    {
+        GRAPHX_PROFILE_SCOPE("scene.onWindowSizeChanged.inputBox");
+        inputBox->onWindowSizeChanged(width, height);
+    }
 }
 
 void MainScene::onTextEntered(unsigned int codepoint)

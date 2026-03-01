@@ -21,6 +21,14 @@
 #include "../Render/Mesh.h"
 #include "../Util/PerformanceProfiler.h"
 
+namespace
+{
+bool hasValidViewportSize(const int width, const int height)
+{
+    return width > 0 && height > 0;
+}
+}
+
 Plot::SolidChunkRenderItem::SolidChunkRenderItem(std::optional<Mesh> normalMesh, std::optional<Mesh> contourMesh,
                                                  Mesh debugMesh): normalMesh{
                                                                                                        std::move(
@@ -696,19 +704,19 @@ void Plot::applyChunkRenderData(const ChunkRenderData &chunkRenderData)
     {
         if (chunkRenderData.region.has_value() && chunkRenderData.region->width > 0 && chunkRenderData.region->height > 0)
         {
-            std::vector<float> textureData;
+            std::vector<unsigned char> textureData;
             textureData.reserve(chunkRenderData.region->pixels.size());
             for (const auto value : chunkRenderData.region->pixels)
             {
-                textureData.push_back(value > 0 ? 1.0f : 0.0f);
+                textureData.push_back(value > 0 ? static_cast<unsigned char>(255) : static_cast<unsigned char>(0));
             }
 
             const auto resolution = staplegl::resolution{chunkRenderData.region->width, chunkRenderData.region->height};
-            constexpr auto textureColor = staplegl::texture_color{GL_RED, GL_RED, GL_FLOAT};
+            constexpr auto textureColor = staplegl::texture_color{GL_R8, GL_RED, GL_UNSIGNED_BYTE};
             constexpr auto textureFilter = staplegl::texture_filter{GL_NEAREST, GL_NEAREST};
 
             auto texture = std::make_shared<staplegl::texture_2d>(
-                std::span<const float>{textureData}, resolution, textureColor, textureFilter);
+                std::span<const unsigned char>{textureData}, resolution, textureColor, textureFilter);
             chunkRegionTextureCache.insert_or_assign(key, texture);
         }
         else
@@ -1118,6 +1126,10 @@ void Plot::onCursorDrag(const double x, const double y)
     GRAPHX_PROFILE_SCOPE("plot.onCursorDrag");
     const auto windowWidth{window->getWidth()};
     const auto windowHeight{window->getHeight()};
+    if (!hasValidViewportSize(windowWidth, windowHeight))
+    {
+        return;
+    }
 
     const auto deltaX{viewXRange.size() / windowWidth};
     const auto deltaY{viewYRange.size() / windowHeight};
@@ -1127,13 +1139,18 @@ void Plot::onCursorDrag(const double x, const double y)
 
     if (plotRangeChangedCallback)
     {
+        GRAPHX_PROFILE_SCOPE("plot.onCursorDrag.rangeChangedCallback");
         plotRangeChangedCallback(viewXRange, viewYRange);
     }
 
-    updateModelMat();
+    {
+        GRAPHX_PROFILE_SCOPE("plot.onCursorDrag.updateModelMat");
+        updateModelMat();
+    }
 
     if (formula)
     {
+        GRAPHX_PROFILE_SCOPE("plot.onCursorDrag.addTask");
         computeEngine->addTask({graph, formula, viewXRange, viewYRange, windowWidth, windowHeight});
     }
 }
@@ -1141,6 +1158,11 @@ void Plot::onCursorDrag(const double x, const double y)
 void Plot::onWindowSizeChanged(const int width, const int height)
 {
     GRAPHX_PROFILE_SCOPE("plot.onWindowSizeChanged");
+    if (!hasValidViewportSize(width, height))
+    {
+        return;
+    }
+
     auto ratio = width / static_cast<double>(height);
 
     double xRangeSize = viewYRange.size() * ratio;
@@ -1177,15 +1199,35 @@ void Plot::onMouseScrolled(const double offset)
     GRAPHX_PROFILE_SCOPE("plot.onMouseScrolled");
     const auto windowWidth{window->getWidth()};
     const auto windowHeight{window->getHeight()};
+    if (!hasValidViewportSize(windowWidth, windowHeight))
+    {
+        return;
+    }
 
-    const auto xRangeMid = viewXRange.mid();
-    const auto yRangeMid = viewYRange.mid();
+    const auto zoomFactor = std::clamp(1.0 - offset * 0.1, 0.1, 10.0);
+    const auto nextXRangeSize = viewXRange.size() * zoomFactor;
+    const auto nextYRangeSize = viewYRange.size() * zoomFactor;
 
-    const auto xRangeSize = viewXRange.size() * (1.0 - offset * 0.1);
-    const auto yRangeSize = viewYRange.size() * (1.0 - offset * 0.1);
+    const auto glfwWindow = window->getGlfwWindow();
+    const auto [windowCoordWidth, windowCoordHeight] = glfwWindow->getSize();
+    const auto [cursorX, cursorY] = glfwWindow->getCursorPos();
 
-    viewXRange = {xRangeMid - xRangeSize / 2.0, xRangeMid + xRangeSize / 2.0};
-    viewYRange = {yRangeMid - yRangeSize / 2.0, yRangeMid + yRangeSize / 2.0};
+    auto xPercent = 0.5;
+    auto yPercentFromTop = 0.5;
+    if (windowCoordWidth > 0 && windowCoordHeight > 0)
+    {
+        xPercent = std::clamp(cursorX / static_cast<double>(windowCoordWidth), 0.0, 1.0);
+        yPercentFromTop = std::clamp(cursorY / static_cast<double>(windowCoordHeight), 0.0, 1.0);
+    }
+
+    const auto anchorX = viewXRange.lower + xPercent * viewXRange.size();
+    const auto anchorY = viewYRange.upper - yPercentFromTop * viewYRange.size();
+
+    const auto nextXLower = anchorX - xPercent * nextXRangeSize;
+    const auto nextYLower = anchorY - (1.0 - yPercentFromTop) * nextYRangeSize;
+
+    viewXRange = {nextXLower, nextXLower + nextXRangeSize};
+    viewYRange = {nextYLower, nextYLower + nextYRangeSize};
 
     if (plotRangeChangedCallback)
     {
@@ -1219,6 +1261,10 @@ void Plot::onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action, 
     {
         const auto windowWidth{window->getWidth()};
         const auto windowHeight{window->getHeight()};
+        if (!hasValidViewportSize(windowWidth, windowHeight))
+        {
+            return;
+        }
 
         viewYRange = {-20.0, 20.0};
         const auto ratio = windowWidth / static_cast<double>(windowHeight);

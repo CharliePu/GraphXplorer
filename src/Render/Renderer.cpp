@@ -5,6 +5,7 @@
 #include "Renderer.h"
 
 #include <iostream>
+#include <span>
 #include <glad/glad.h>
 #include <staplegl/staplegl.hpp>
 
@@ -50,6 +51,12 @@ void Renderer::draw(const std::vector<Mesh> &meshes)
     for (const auto &mesh: meshes)
     {
         mesh.shader->bind();
+        if (mesh.hasMeshTransform)
+        {
+            auto transformData = mesh.meshTransform;
+            mesh.shader->upload_uniform_mat4f(
+                "meshTransform", std::span<float, 16>{transformData.data(), 16});
+        }
         mesh.vao->bind();
         for (int i = 0; i < mesh.textures.size(); i++)
         {

@@ -53,6 +53,8 @@ add_library(GraphXplorerLib
         src/Math/RasterizedPlot.h
         src/Util/ThreadPool.cpp
         src/Util/ThreadPool.h
+        src/Util/InputScenarioRunner.cpp
+        src/Util/InputScenarioRunner.h
         src/Core/Window.cpp
         src/Core/Window.h
         src/UI/Grid.h

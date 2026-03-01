@@ -45,10 +45,8 @@ void ComputeEngine::addTask(const Task &task)
     auto queuedTask = task;
     queuedTask.requestId = latestRequestedTaskId.fetch_add(1) + 1;
     currentTask = std::make_shared<Task>(queuedTask);
-    {
-        std::lock_guard lock(rasterizedDataMutex);
-        rasterizedDataDeque.clear();
-    }
+    // Keep enqueue path lock-free for interactive input; stale queued results
+    // are filtered by requestId in pollAsyncStates().
     currentTask.notify_one();
 }
 
@@ -80,13 +78,12 @@ void ComputeEngine::pollAsyncStates()
     }
 
     auto hasBatchedUpdate = false;
-    uint64_t batchedRequestId = 0;
+    auto targetRequestId = latestRequestedTaskId.load();
     Interval batchedXRange{};
     Interval batchedYRange{};
     auto batchedWindowWidth = 0;
     auto batchedWindowHeight = 0;
     std::vector<ChunkRenderData> batchedChunkRenderData;
-    std::shared_ptr<RasterizedData> deferredUpdate;
 
     while (true)
     {
@@ -107,21 +104,28 @@ void ComputeEngine::pollAsyncStates()
             continue;
         }
 
+        if (data->requestId < targetRequestId)
+        {
+            // Drop stale work for superseded view requests.
+            continue;
+        }
+
+        if (data->requestId > targetRequestId)
+        {
+            // If a newer request already produced results, switch to it and
+            // discard any older partial batch.
+            targetRequestId = data->requestId;
+            hasBatchedUpdate = false;
+            batchedChunkRenderData.clear();
+        }
+
         if (!hasBatchedUpdate)
         {
             hasBatchedUpdate = true;
-            batchedRequestId = data->requestId;
             batchedXRange = data->xRange;
             batchedYRange = data->yRange;
             batchedWindowWidth = data->windowWidth;
             batchedWindowHeight = data->windowHeight;
-        }
-        else if (data->requestId != batchedRequestId)
-        {
-            // Keep callback data request-consistent. If a newer request appears
-            // mid-drain, defer it to the next poll cycle.
-            deferredUpdate = std::move(data);
-            break;
         }
 
         batchedXRange = data->xRange;
@@ -137,16 +141,14 @@ void ComputeEngine::pollAsyncStates()
         }
     }
 
-    if (deferredUpdate)
-    {
-        std::lock_guard lock(rasterizedDataMutex);
-        rasterizedDataDeque.push_front(std::move(deferredUpdate));
-    }
-
-    if (hasBatchedUpdate)
+    if (hasBatchedUpdate && targetRequestId == latestRequestedTaskId.load())
     {
         computeCompleteCallback(std::move(batchedChunkRenderData),
-                                batchedXRange, batchedYRange, batchedWindowWidth, batchedWindowHeight, batchedRequestId);
+                                batchedXRange,
+                                batchedYRange,
+                                batchedWindowWidth,
+                                batchedWindowHeight,
+                                targetRequestId);
     }
 
     // Keep driving incremental streaming even when there is no user input event.

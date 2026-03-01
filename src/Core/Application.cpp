@@ -5,6 +5,7 @@
 #include "Application.h"
 
 #include <iostream>
+#include <utility>
 
 #include "Window.h"
 #include "../Render/Renderer.h"
@@ -12,10 +13,9 @@
 
 #include <glad/glad.h>
 
-#include <utility>
-
 #include "../Math/ComputeEngine.h"
 #include "../Math/GraphRasterizer.h"
+#include "../Util/InputScenarioRunner.h"
 #include "../Util/PerformanceProfiler.h"
 #include "../Util/ThreadPool.h"
 
@@ -28,18 +28,36 @@ Application::Application(const int width, const int height, const std::string &n
     computeEngine{std::make_shared<ComputeEngine>(window, threadPool)},
     sceneManager{std::make_shared<SceneManager>(computeEngine, renderer, window)}
 {
+    pendingWindowSize = std::make_pair(width, height);
 }
 
 void Application::run()
 {
     input->setInputHandlers({shared_from_this()});
+    auto inputScenarioRunner = InputScenarioRunner::fromEnvironment();
+    if (inputScenarioRunner)
+    {
+        std::cout << "[InputScenarioRunner] Scripted input enabled via GRAPHX_INPUT_SCRIPT.\n";
+    }
 
     while (!window->shouldClose())
     {
+        if (inputScenarioRunner && inputScenarioRunner->isActive())
+        {
+            GRAPHX_PROFILE_SCOPE("main.scriptedInput");
+            inputScenarioRunner->tick(
+                [this](const double dx, const double dy) { onCursorDrag(dx, dy); },
+                [this](const double offset) { onMouseScrolled(offset); },
+                [this](const int width, const int height) { onWindowSizeChanged(width, height); }
+            );
+        }
+
         {
             GRAPHX_PROFILE_SCOPE("main.pollAsyncStates");
             computeEngine->pollAsyncStates();
         }
+
+        applyPendingWindowSizeChange();
 
         {
             GRAPHX_PROFILE_SCOPE("main.render");
@@ -49,8 +67,25 @@ void Application::run()
 
         GRAPHX_PROFILE_FLUSH_IF_DUE();
 
-        glfw::waitEvents();
         window->swapBuffers();
+        if (inputScenarioRunner && inputScenarioRunner->shouldCloseOnComplete())
+        {
+            window->getGlfwWindow()->setShouldClose(true);
+        }
+
+        if (window->shouldClose())
+        {
+            break;
+        }
+
+        if (inputScenarioRunner && inputScenarioRunner->isActive())
+        {
+            glfw::waitEvents(inputScenarioRunner->waitTimeoutSeconds());
+        }
+        else
+        {
+            glfw::waitEvents();
+        }
     }
 
     GRAPHX_PROFILE_FLUSH_NOW();
@@ -58,12 +93,8 @@ void Application::run()
 
 void Application::onWindowSizeChanged(const int width, const int height)
 {
-    // Swap buffers to allow smooth resizing
-    window->swapBuffers();
-
-    window->onWindowSizeChanged(width, height);
-    renderer->onWindowSizeChanged(width, height);
-    sceneManager->onWindowSizeChanged(width, height);
+    GRAPHX_PROFILE_SCOPE("app.onWindowSizeChanged");
+    pendingWindowSize = std::make_pair(width, height);
 }
 
 void Application::onKeyPressed(const glfw::KeyCode key, const int scancode, const glfw::KeyState action,
@@ -93,5 +124,46 @@ void Application::onMouseScrolled(double offset)
     window->onMouseScrolled(offset);
     renderer->onMouseScrolled(offset);
     sceneManager->onMouseScrolled(offset);
+}
+
+void Application::applyPendingWindowSizeChange()
+{
+    if (!pendingWindowSize.has_value())
+    {
+        return;
+    }
+
+    const auto [width, height] = *pendingWindowSize;
+    pendingWindowSize.reset();
+
+    if (!isValidFramebufferSize(width, height))
+    {
+        return;
+    }
+
+    if (appliedWindowSize.has_value() && *appliedWindowSize == std::make_pair(width, height))
+    {
+        return;
+    }
+
+    {
+        GRAPHX_PROFILE_SCOPE("app.applyWindowSize.window");
+        window->onWindowSizeChanged(width, height);
+    }
+    {
+        GRAPHX_PROFILE_SCOPE("app.applyWindowSize.renderer");
+        renderer->onWindowSizeChanged(width, height);
+    }
+    {
+        GRAPHX_PROFILE_SCOPE("app.applyWindowSize.sceneManager");
+        sceneManager->onWindowSizeChanged(width, height);
+    }
+
+    appliedWindowSize = std::make_pair(width, height);
+}
+
+bool Application::isValidFramebufferSize(const int width, const int height)
+{
+    return width > 0 && height > 0;
 }
 

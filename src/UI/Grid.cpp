@@ -68,6 +68,13 @@ void Grid::prepareMesh()
 
 void Grid::updatePosition(Interval xInterval, Interval yInterval)
 {
+    const auto viewportWidth = window->getWidth();
+    const auto viewportHeight = window->getHeight();
+    if (viewportWidth <= 0 || viewportHeight <= 0)
+    {
+        return;
+    }
+
     // To keep the grid looks square-like, we use aspect ratio in calculation
     const auto xLog = std::floor(std::log10(xInterval.size() / window->getAspectRatio()));
     const auto yLog = std::floor(std::log10(yInterval.size()));
@@ -81,7 +88,7 @@ void Grid::updatePosition(Interval xInterval, Interval yInterval)
     mesh.shader->upload_uniform2f("yRange", yInterval.lower, yInterval.upper);
     mesh.shader->upload_uniform2f("majorGrid", xMajorGrid, yMajorGrid);
     mesh.shader->upload_uniform2f("minorGrid", xMinorGrid, yMinorGrid);
-    mesh.shader->upload_uniform2f("viewportSize", window->getWidth(), window->getHeight());
+    mesh.shader->upload_uniform2f("viewportSize", viewportWidth, viewportHeight);
     updatePositionCallback({mesh});
 }
 

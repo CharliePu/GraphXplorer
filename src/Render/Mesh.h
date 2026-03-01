@@ -5,6 +5,7 @@
 #ifndef MESH_H
 #define MESH_H
 
+#include <array>
 #include <memory>
 #include <vector>
 
@@ -30,6 +31,13 @@ struct Mesh {
     float lineWidth{1.0f};
     bool indexed{true};
     int vertexCount{0};
+    bool hasMeshTransform{false};
+    std::array<float, 16> meshTransform{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
 };
 
 

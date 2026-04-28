@@ -126,8 +126,17 @@ void Application::onMouseScrolled(double offset)
     sceneManager->onMouseScrolled(offset);
 }
 
+void Application::onWindowRefresh()
+{
+    applyPendingWindowSizeChange();
+    renderer->clear();
+    renderer->draw();
+    window->swapBuffers();
+}
+
 void Application::applyPendingWindowSizeChange()
 {
+    return; // DIAGNOSTIC: skip all resize handling
     if (!pendingWindowSize.has_value())
     {
         return;

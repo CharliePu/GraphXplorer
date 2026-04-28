@@ -62,6 +62,10 @@ mouseButtonState{glfw::MouseButtonState::Release}, window{window}
     glfwWindow->scrollEvent.setCallback([this](glfw::Window &window, double xOffset, double yOffset) {
         scrollCallback(window, xOffset, yOffset);
     });
+
+    glfwWindow->refreshEvent.setCallback([this](glfw::Window &window) {
+        windowRefreshCallback(window);
+    });
 }
 
 void Input::setInputHandlers(const std::shared_ptr<UserInputHandler> &handler)

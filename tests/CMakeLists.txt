@@ -1,4 +1,5 @@
 add_executable(GraphXplorerTests
+        AsyncFrameInboxTests.cpp
         EvaluatorTests.cpp
         FormulaTests.cpp
         GraphGenerationTests.cpp

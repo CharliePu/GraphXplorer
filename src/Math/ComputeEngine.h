@@ -5,15 +5,15 @@
 #ifndef COMPUTEENGINE_H
 #define COMPUTEENGINE_H
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <future>
 #include <memory>
-#include <mutex>
 
 #include "Interval.h"
 #include "RasterizedPlot.h"
+#include "../Util/AsyncFrameInbox.h"
 #include "../Util/ThreadPool.h"
 
 class Window;
@@ -51,6 +51,22 @@ public:
 
     void setComputeCompleteCallback(const ComputeCompleteCallBack &callback);
 
+    enum class UpdateDrainMode
+    {
+        HandleAll,
+        HandleN,
+        LatestOnly
+    };
+
+    struct UpdateDrainPolicy
+    {
+        UpdateDrainMode mode{UpdateDrainMode::HandleN};
+        size_t handleCount{8};
+    };
+
+    void setUpdateDrainPolicy(const UpdateDrainPolicy &policy);
+    [[nodiscard]] UpdateDrainPolicy getUpdateDrainPolicy() const;
+
     void pollAsyncStates();
 
     void processTasks();
@@ -64,6 +80,7 @@ private:
         int windowWidth;
         int windowHeight;
     };
+    using RasterizedInbox = AsyncFrameInbox<std::shared_ptr<RasterizedData>>;
 
     std::shared_ptr<GraphProcessor> graphProcessor;
     std::shared_ptr<GraphRasterizer> graphRasterizer;
@@ -76,9 +93,7 @@ private:
     std::atomic<uint64_t> latestRequestedTaskId;
     std::atomic<bool> running;
     std::future<void> future;
-
-    std::mutex rasterizedDataMutex;
-    std::deque<std::shared_ptr<RasterizedData>> rasterizedDataDeque;
+    RasterizedInbox rasterizedDataInbox;
 };
 
 

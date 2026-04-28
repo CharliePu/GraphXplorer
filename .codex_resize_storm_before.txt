@@ -1,0 +1,3 @@
+[GraphRasterizer] Mixed chunk renderer backend: OpenCL device
+[GraphRasterizer] Contour renderer backend: OpenCL device
+[InputScenarioRunner] Scripted input enabled via GRAPHX_INPUT_SCRIPT.

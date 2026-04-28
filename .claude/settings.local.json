@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls /d/GraphXplorer/build/*.sln)",
+      "Bash(ls /d/GraphXplorer/build/*.ninja)"
+    ]
+  }
+}

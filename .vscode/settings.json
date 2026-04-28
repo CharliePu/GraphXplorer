@@ -1,0 +1,9 @@
+{
+  "cmake.cmakePath": "C:/Program Files/Microsoft Visual Studio/18/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe",
+  "cmake.configureOnOpen": true,
+  "cmake.buildDirectory": "${workspaceFolder}/out/build/x64-${buildType}",
+  "cmake.configureSettings": {
+    "CMAKE_TOOLCHAIN_FILE": "C:/Program Files/Microsoft Visual Studio/18/Community/VC/vcpkg/scripts/buildsystems/vcpkg.cmake"
+  },
+  "cmake.generator": "Ninja"
+}

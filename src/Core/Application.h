@@ -43,6 +43,8 @@ public:
 
     void onMouseScrolled(double offset) override;
 
+    void onWindowRefresh() override;
+
 private:
     void applyPendingWindowSizeChange();
     static bool isValidFramebufferSize(int width, int height);

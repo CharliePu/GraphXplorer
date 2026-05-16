@@ -13,9 +13,10 @@
 
 namespace gx
 {
-inline constexpr int MinChunkPixels = 16;
-inline constexpr int RootRefinementLevels = 3;
-inline constexpr int LeafRefinementLevels = 2;
+inline constexpr int RasterTileScreenPixels = 256;
+inline constexpr int RasterTexturePixels = 256;
+inline constexpr int RootRefinementLevels = 2;
+inline constexpr int LeafRefinementLevels = 0;
 inline constexpr int MinTileLevel = -30;
 inline constexpr int MaxTileLevel = 30;
 
@@ -107,7 +108,7 @@ inline constexpr int MaxTileLevel = 30;
         return 0;
     }
     const auto rangePerPixel = minRangeSize / static_cast<double>(maxFramebufferSize);
-    const auto rangePerTile = rangePerPixel * static_cast<double>(MinChunkPixels);
+    const auto rangePerTile = rangePerPixel * static_cast<double>(RasterTileScreenPixels);
     return clampTileLevel(static_cast<int>(std::floor(std::log2(rangePerTile))));
 }
 

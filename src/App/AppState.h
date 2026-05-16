@@ -14,6 +14,31 @@ struct FormulaInputEvent
     std::string expression{};
 };
 
+struct BeginFormulaInputEvent
+{
+};
+
+struct AppendFormulaInputEvent
+{
+    std::string text{};
+};
+
+struct BackspaceFormulaInputEvent
+{
+};
+
+struct CancelFormulaInputEvent
+{
+};
+
+struct SubmitFormulaInputEvent
+{
+};
+
+struct RenderTickEvent
+{
+};
+
 struct ViewportChangedEvent
 {
     Interval xRange{};
@@ -27,11 +52,29 @@ struct DebugToggleEvent
     bool enabled{false};
 };
 
-using InputEvent = std::variant<FormulaInputEvent, ViewportChangedEvent, DebugToggleEvent>;
+using InputEvent = std::variant<
+    FormulaInputEvent,
+    BeginFormulaInputEvent,
+    AppendFormulaInputEvent,
+    BackspaceFormulaInputEvent,
+    CancelFormulaInputEvent,
+    SubmitFormulaInputEvent,
+    RenderTickEvent,
+    ViewportChangedEvent,
+    DebugToggleEvent>;
+
+struct FormulaInputState
+{
+    bool active{false};
+    std::string buffer{};
+    size_t cursor{0};
+    bool operator==(const FormulaInputState &) const = default;
+};
 
 struct AppState
 {
     std::string formulaExpression{"x<=y"};
+    FormulaInputState formulaInput{};
     Interval xRange{-20.0, 20.0};
     Interval yRange{-20.0, 20.0};
     int framebufferWidth{800};

@@ -71,3 +71,23 @@ TEST_CASE("Architecture boundary cut forbids core subsystem back edges", "[Archi
     requireNoInclude(root / "src" / "Compute", {"../Render/", "/Render/", "../UI/", "/UI/"});
     requireNoInclude(root / "src" / "Formula", {"../Tile/", "../Compute/", "../Render/", "../UI/", "../App/"});
 }
+
+TEST_CASE("Executable target has no legacy scene or mesh-render path", "[Architecture]")
+{
+    const auto root = repoRoot();
+    const auto cmake = readFile(root / "CMakeLists.txt");
+    CHECK(cmake.find("src/Scene/") == std::string::npos);
+    CHECK(cmake.find("src/UI/Plot.cpp") == std::string::npos);
+    CHECK(cmake.find("src/UI/Grid.cpp") == std::string::npos);
+    CHECK(cmake.find("src/UI/AxisLabels.cpp") == std::string::npos);
+    CHECK(cmake.find("src/UI/InputBox.cpp") == std::string::npos);
+    CHECK(cmake.find("src/Render/Mesh.cpp") == std::string::npos);
+
+    const auto application = readFile(root / "src" / "Core" / "Application.cpp");
+    CHECK(application.find("SceneManager") == std::string::npos);
+    CHECK(application.find("ComputeEngine") == std::string::npos);
+
+    const auto rendererHeader = readFile(root / "src" / "Render" / "Renderer.h");
+    CHECK(rendererHeader.find("updateMeshes") == std::string::npos);
+    CHECK(rendererHeader.find("std::vector<Mesh>") == std::string::npos);
+}

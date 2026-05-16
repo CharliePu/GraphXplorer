@@ -77,15 +77,11 @@ target_link_libraries(GraphXplorerCompute PUBLIC GraphXplorerFormula GraphXplore
 add_library(GraphXplorerRender
         src/Render/FrameCommandBuffer.cpp
         src/Render/FrameCommandBuffer.h
-        src/Render/Mesh.cpp
-        src/Render/Mesh.h
         src/Render/Renderer.cpp
         src/Render/Renderer.h
         src/Render/RenderResourceManager.cpp
         src/Render/RenderResourceManager.h
         src/Render/TextAtlas.h
-        src/Render/TextMeshesGenerator.cpp
-        src/Render/TextMeshesGenerator.h
         src/Render/UploadPlanner.cpp
         src/Render/UploadPlanner.h
 )
@@ -97,35 +93,19 @@ add_library(GraphXplorerUI
         src/Core/Input.h
         src/Core/Window.cpp
         src/Core/Window.h
-        src/UI/AxisLabels.cpp
-        src/UI/AxisLabels.h
-        src/UI/ConsoleInput.cpp
-        src/UI/ConsoleInput.h
-        src/UI/Grid.cpp
-        src/UI/Grid.h
-        src/UI/InputBox.cpp
-        src/UI/InputBox.h
-        src/UI/Plot.cpp
-        src/UI/Plot.h
-        src/UI/UIComponent.cpp
-        src/UI/UIComponent.h
 )
 target_include_directories(GraphXplorerUI PRIVATE ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(GraphXplorerUI PUBLIC GraphXplorerCompute GraphXplorerRender glfw glad::glad glm::glm)
+target_link_libraries(GraphXplorerUI PUBLIC glfw)
 
 add_library(GraphXplorerApp
         src/App/AppState.cpp
         src/App/AppState.h
         src/App/FramePipeline.cpp
         src/App/FramePipeline.h
+        src/App/InteractionController.cpp
+        src/App/InteractionController.h
         src/Core/Application.cpp
         src/Core/Application.h
-        src/Scene/MainScene.cpp
-        src/Scene/MainScene.h
-        src/Scene/Scene.cpp
-        src/Scene/Scene.h
-        src/Scene/SceneManager.cpp
-        src/Scene/SceneManager.h
 )
 target_include_directories(GraphXplorerApp PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(GraphXplorerApp PUBLIC GraphXplorerUI GraphXplorerCompute GraphXplorerRender GraphXplorerFormula GraphXplorerTile GraphXplorerUtil glfw glad::glad glm::glm Freetype::Freetype)

@@ -5,26 +5,34 @@
 #include "Application.h"
 
 #include <algorithm>
-#include <chrono>
+#include <cctype>
 #include <iostream>
+#include <optional>
+#include <span>
+#include <string>
 #include <utility>
 
 #include "Window.h"
+#include "../App/FramePipeline.h"
+#include "../App/InteractionController.h"
 #include "../Render/Renderer.h"
-#include "../Scene/SceneManager.h"
 
 #include <glad/glad.h>
 
-#include "../Math/ComputeEngine.h"
-#include "../Math/GraphRasterizer.h"
 #include "../Util/InputScenarioRunner.h"
 #include "../Util/PerformanceProfiler.h"
 #include "../Util/PipelineLog.h"
-#include "../Util/ThreadPool.h"
 
 namespace
 {
-constexpr auto kResizeSettleDelay = std::chrono::milliseconds{120};
+std::string normalizedUpper(std::string value)
+{
+    std::ranges::transform(value, value.begin(), [](const unsigned char ch)
+    {
+        return static_cast<char>(std::toupper(ch));
+    });
+    return value;
+}
 }
 
 Application::Application(const int width, const int height, const std::string &name) :
@@ -32,12 +40,18 @@ Application::Application(const int width, const int height, const std::string &n
     window{std::make_shared<Window>(width, height, name)},
     renderer{std::make_shared<Renderer>(reinterpret_cast<GLADloadproc>(glfw::getProcAddress))},
     input{std::make_shared<Input>(window)},
-    threadPool{std::make_shared<ThreadPool>()},
-    computeEngine{std::make_shared<ComputeEngine>(window, threadPool)},
-    sceneManager{std::make_shared<SceneManager>(computeEngine, renderer, window)}
+    framePipeline{std::make_shared<gx::FramePipeline>()},
+    interactionController{std::make_shared<gx::InteractionController>()}
 {
     PipelineLog::init();
+    renderer->setResourceManager(&framePipeline->renderResources());
     pendingWindowSize = std::make_pair(width, height);
+    latestFrameSnapshot = framePipeline->process(gx::ViewportChangedEvent{
+        Interval{-20.0, 20.0},
+        Interval{-20.0, 20.0},
+        width,
+        height
+    });
 }
 
 void Application::run()
@@ -57,25 +71,32 @@ void Application::run()
             inputScenarioRunner->tick(
                 [this](const double dx, const double dy) { onCursorDrag(dx, dy); },
                 [this](const double offset) { onMouseScrolled(offset); },
-                [this](const int width, const int height) { onWindowSizeChanged(width, height); }
+                [this](const int width, const int height) { onWindowSizeChanged(width, height); },
+                [this](const std::string &key, const std::string &state) { onScenarioKey(key, state); },
+                [this](const std::string &path) { requestFrameCapture(path); }
             );
         }
 
         applyPendingWindowSizeChange();
-
-        {
-            GRAPHX_PROFILE_SCOPE("main.pollAsyncStates");
-            computeEngine->pollAsyncStates();
-        }
-
-        applySettledResizeWork();
-
-        sceneManager->flushPendingMeshes();
+        processFrameEvent(gx::RenderTickEvent{});
 
         {
             GRAPHX_PROFILE_SCOPE("main.render");
             renderer->clear();
-            renderer->draw();
+            if (latestFrameSnapshot)
+            {
+                renderer->draw(std::span<const gx::DrawCommand>{
+                    latestFrameSnapshot->drawCommands.data(),
+                    latestFrameSnapshot->drawCommands.size()
+                });
+            }
+            if (pendingCapturePath)
+            {
+                const auto saved = renderer->saveBackbufferPng(*pendingCapturePath);
+                std::cout << "[FrameCapture] " << (saved ? "Saved " : "Failed ")
+                    << pendingCapturePath->string() << "\n";
+                pendingCapturePath.reset();
+            }
         }
 
         GRAPHX_PROFILE_FLUSH_IF_DUE();
@@ -91,23 +112,13 @@ void Application::run()
             break;
         }
 
-        const auto resizeTimeout = resizeWaitTimeoutSeconds();
         if (inputScenarioRunner && inputScenarioRunner->isActive())
         {
-            auto waitTimeout = inputScenarioRunner->waitTimeoutSeconds();
-            if (resizeTimeout.has_value())
-            {
-                waitTimeout = std::min(waitTimeout, *resizeTimeout);
-            }
-            glfw::waitEvents(waitTimeout);
-        }
-        else if (resizeTimeout.has_value())
-        {
-            glfw::waitEvents(*resizeTimeout);
+            glfw::waitEvents(std::min(inputScenarioRunner->waitTimeoutSeconds(), 1.0 / 60.0));
         }
         else
         {
-            glfw::waitEvents();
+            glfw::waitEvents(1.0 / 60.0);
         }
     }
 
@@ -124,26 +135,37 @@ void Application::onWindowSizeChanged(const int width, const int height)
 void Application::onKeyPressed(const glfw::KeyCode key, const int scancode, const glfw::KeyState action,
                                const glfw::ModifierKeyBit mods)
 {
+    (void)scancode;
+    (void)mods;
     window->onKeyPressed(key, scancode, action, mods);
-    sceneManager->onKeyPressed(key, scancode, action, mods);
+    for (const auto &event : interactionController->handleKey(key, action, framePipeline->state()))
+    {
+        processFrameEvent(event);
+    }
 }
 
 void Application::onCursorDrag(double x, double y)
 {
-    window->onCursorDrag(x, y);
-    sceneManager->onCursorDrag(x, y);
+    for (const auto &event : interactionController->handleDrag(x, y, framePipeline->state()))
+    {
+        processFrameEvent(event);
+    }
 }
 
 void Application::onTextEntered(unsigned int codepoint)
 {
-    window->onTextEntered(codepoint);
-    sceneManager->onTextEntered(codepoint);
+    for (const auto &event : interactionController->handleText(codepoint, framePipeline->state()))
+    {
+        processFrameEvent(event);
+    }
 }
 
 void Application::onMouseScrolled(double offset)
 {
-    window->onMouseScrolled(offset);
-    sceneManager->onMouseScrolled(offset);
+    for (const auto &event : interactionController->handleScroll(offset, framePipeline->state()))
+    {
+        processFrameEvent(event);
+    }
 }
 
 void Application::onWindowRefresh()
@@ -179,59 +201,46 @@ void Application::applyPendingWindowSizeChange()
         GRAPHX_PROFILE_SCOPE("app.applyWindowSize.renderer");
         renderer->onWindowSizeChanged(width, height);
     }
+    for (const auto &event : interactionController->handleResize(width, height, framePipeline->state()))
     {
-        GRAPHX_PROFILE_SCOPE("app.applyWindowSize.framebufferScene");
-        sceneManager->onFramebufferResized(width, height);
+        processFrameEvent(event);
     }
-
-    pendingSettledWindowSize = std::make_pair(width, height);
-    lastResizeEventTime = std::chrono::steady_clock::now();
     appliedWindowSize = std::make_pair(width, height);
 }
 
-void Application::applySettledResizeWork()
+void Application::processFrameEvent(const gx::InputEvent &event)
 {
-    if (!pendingSettledWindowSize.has_value())
-    {
-        return;
-    }
-
-    const auto now = std::chrono::steady_clock::now();
-    if (now - lastResizeEventTime < kResizeSettleDelay)
-    {
-        return;
-    }
-
-    const auto [width, height] = *pendingSettledWindowSize;
-    pendingSettledWindowSize.reset();
-
-    if (!isValidFramebufferSize(width, height))
-    {
-        return;
-    }
-
-    {
-        GRAPHX_PROFILE_SCOPE("app.applyWindowSize.settledScene");
-        sceneManager->onResizeSettled(width, height);
-    }
+    latestFrameSnapshot = framePipeline->process(event);
 }
 
-std::optional<double> Application::resizeWaitTimeoutSeconds() const
+void Application::onScenarioKey(const std::string &keyName, const std::string &stateName)
 {
-    if (!pendingSettledWindowSize.has_value())
+    const auto key = keyCodeForScenarioName(keyName);
+    if (!key)
     {
-        return std::nullopt;
+        std::cerr << "[InputScenarioRunner] Unknown key: " << keyName << "\n";
+        return;
     }
 
-    const auto now = std::chrono::steady_clock::now();
-    const auto elapsed = now - lastResizeEventTime;
-    if (elapsed >= kResizeSettleDelay)
-    {
-        return 0.001;
-    }
+    const auto state = stateName == "release" ? glfw::KeyState::Release : glfw::KeyState::Press;
+    onKeyPressed(*key, 0, state, static_cast<glfw::ModifierKeyBit>(0));
+}
 
-    const auto remaining = kResizeSettleDelay - elapsed;
-    return std::max(0.001, std::chrono::duration<double>(remaining).count());
+void Application::requestFrameCapture(const std::string &path)
+{
+    pendingCapturePath = std::filesystem::path{path};
+}
+
+std::optional<glfw::KeyCode> Application::keyCodeForScenarioName(const std::string &keyName)
+{
+    const auto key = normalizedUpper(keyName);
+    if (key == "D") return glfw::KeyCode::D;
+    if (key == "H") return glfw::KeyCode::H;
+    if (key == "I") return glfw::KeyCode::I;
+    if (key == "ENTER") return glfw::KeyCode::Enter;
+    if (key == "BACKSPACE") return glfw::KeyCode::Backspace;
+    if (key == "ESC" || key == "ESCAPE") return glfw::KeyCode::Escape;
+    return std::nullopt;
 }
 
 bool Application::isValidFramebufferSize(const int width, const int height)

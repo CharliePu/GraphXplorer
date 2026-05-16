@@ -9,9 +9,10 @@
 
 TEST_CASE("InputScenarioRunner parses valid script", "[InputScenarioRunner]")
 {
-    const auto config = InputScenarioRunner::parseScript("drag(2.5,-1.0,3); resize(1280,720,1); scroll(0.5,2); pause(4)");
+    const auto config = InputScenarioRunner::parseScript(
+        "drag(2.5,-1.0,3); resize(1280,720,1); scroll(0.5,2); pause(4); key(D,press); capture(D:\\GraphXplorer\\frame.png)");
     REQUIRE(config.has_value());
-    REQUIRE(config->actions.size() == 4);
+    REQUIRE(config->actions.size() == 6);
 
     REQUIRE(config->actions[0].type == InputScenarioRunner::ActionType::Drag);
     REQUIRE(std::abs(config->actions[0].x - 2.5) < 1e-9);
@@ -29,6 +30,13 @@ TEST_CASE("InputScenarioRunner parses valid script", "[InputScenarioRunner]")
 
     REQUIRE(config->actions[3].type == InputScenarioRunner::ActionType::Pause);
     REQUIRE(config->actions[3].frames == 4);
+
+    REQUIRE(config->actions[4].type == InputScenarioRunner::ActionType::Key);
+    REQUIRE(config->actions[4].text == "D");
+    REQUIRE(config->actions[4].state == "press");
+
+    REQUIRE(config->actions[5].type == InputScenarioRunner::ActionType::Capture);
+    REQUIRE(config->actions[5].text == "D:\\GraphXplorer\\frame.png");
 }
 
 TEST_CASE("InputScenarioRunner rejects invalid script", "[InputScenarioRunner]")
@@ -36,6 +44,8 @@ TEST_CASE("InputScenarioRunner rejects invalid script", "[InputScenarioRunner]")
     REQUIRE_FALSE(InputScenarioRunner::parseScript("drag(1,2)").has_value());
     REQUIRE_FALSE(InputScenarioRunner::parseScript("scroll(1,0)").has_value());
     REQUIRE_FALSE(InputScenarioRunner::parseScript("resize(0,100,1)").has_value());
+    REQUIRE_FALSE(InputScenarioRunner::parseScript("key(D,hold)").has_value());
+    REQUIRE_FALSE(InputScenarioRunner::parseScript("capture()").has_value());
     REQUIRE_FALSE(InputScenarioRunner::parseScript("unknown(1,2,3)").has_value());
 }
 
@@ -56,6 +66,8 @@ TEST_CASE("InputScenarioRunner ticks actions deterministically", "[InputScenario
     int dragCount = 0;
     int scrollCount = 0;
     int resizeCount = 0;
+    int keyCount = 0;
+    int captureCount = 0;
     double totalDragX = 0.0;
     double totalDragY = 0.0;
     double totalScroll = 0.0;
@@ -81,6 +93,14 @@ TEST_CASE("InputScenarioRunner ticks actions deterministically", "[InputScenario
                 resizeCount += 1;
                 lastResizeW = width;
                 lastResizeH = height;
+            },
+            [&](const std::string &, const std::string &)
+            {
+                keyCount += 1;
+            },
+            [&](const std::string &)
+            {
+                captureCount += 1;
             });
     }
 
@@ -89,10 +109,45 @@ TEST_CASE("InputScenarioRunner ticks actions deterministically", "[InputScenario
     REQUIRE(lastResizeW == 1920);
     REQUIRE(lastResizeH == 1080);
     REQUIRE(scrollCount == 3);
+    REQUIRE(keyCount == 0);
+    REQUIRE(captureCount == 0);
     REQUIRE(std::abs(totalDragX - 2.0) < 1e-9);
     REQUIRE(std::abs(totalDragY + 4.0) < 1e-9);
     REQUIRE(std::abs(totalScroll - 2.25) < 1e-9);
     REQUIRE(runner.isComplete());
     REQUIRE(runner.shouldCloseOnComplete());
     REQUIRE_FALSE(runner.isActive());
+}
+
+TEST_CASE("InputScenarioRunner ticks key and capture actions", "[InputScenarioRunner]")
+{
+    const auto config = InputScenarioRunner::parseScript("key(D,press);capture(D:\\GraphXplorer\\debug.png)");
+    REQUIRE(config.has_value());
+    InputScenarioRunner runner{*config};
+
+    std::string keyName;
+    std::string keyState;
+    std::string capturePath;
+
+    for (int i = 0; i < 2; ++i)
+    {
+        runner.tick(
+            [](double, double) {},
+            [](double) {},
+            [](int, int) {},
+            [&](const std::string &key, const std::string &state)
+            {
+                keyName = key;
+                keyState = state;
+            },
+            [&](const std::string &path)
+            {
+                capturePath = path;
+            });
+    }
+
+    REQUIRE(keyName == "D");
+    REQUIRE(keyState == "press");
+    REQUIRE(capturePath == "D:\\GraphXplorer\\debug.png");
+    REQUIRE(runner.isComplete());
 }

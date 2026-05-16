@@ -16,6 +16,15 @@ constexpr char ScriptEnvName[] = "GRAPHX_INPUT_SCRIPT";
 constexpr char ScriptLoopEnvName[] = "GRAPHX_INPUT_LOOP";
 constexpr char ScriptCloseOnCompleteEnvName[] = "GRAPHX_INPUT_EXIT_ON_COMPLETE";
 constexpr char ScriptWaitMsEnvName[] = "GRAPHX_INPUT_WAIT_MS";
+
+std::string normalizedLower(std::string value)
+{
+    std::ranges::transform(value, value.begin(), [](const unsigned char ch)
+    {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
 }
 
 std::string InputScenarioRunner::trim(const std::string &value)
@@ -121,6 +130,48 @@ std::optional<InputScenarioRunner::Action> InputScenarioRunner::parseAction(cons
             if (action.frames <= 0)
             {
                 return std::nullopt;
+            }
+            return action;
+        }
+
+        if (name == "key" && (args.size() == 2 || args.size() == 3))
+        {
+            Action action;
+            action.type = ActionType::Key;
+            action.text = args[0];
+            action.state = normalizedLower(args[1]);
+            if (action.text.empty()
+                || (action.state != "press" && action.state != "release"))
+            {
+                return std::nullopt;
+            }
+            if (args.size() == 3)
+            {
+                action.frames = std::stoi(args[2]);
+                if (action.frames <= 0)
+                {
+                    return std::nullopt;
+                }
+            }
+            return action;
+        }
+
+        if (name == "capture" && (args.size() == 1 || args.size() == 2))
+        {
+            Action action;
+            action.type = ActionType::Capture;
+            action.text = args[0];
+            if (action.text.empty())
+            {
+                return std::nullopt;
+            }
+            if (args.size() == 2)
+            {
+                action.frames = std::stoi(args[1]);
+                if (action.frames <= 0)
+                {
+                    return std::nullopt;
+                }
             }
             return action;
         }
@@ -250,6 +301,19 @@ void InputScenarioRunner::tick(const DragCallback &onDrag,
                                const ScrollCallback &onScroll,
                                const ResizeCallback &onResize)
 {
+    tick(onDrag,
+         onScroll,
+         onResize,
+         [](const std::string &, const std::string &) {},
+         [](const std::string &) {});
+}
+
+void InputScenarioRunner::tick(const DragCallback &onDrag,
+                               const ScrollCallback &onScroll,
+                               const ResizeCallback &onResize,
+                               const KeyCallback &onKey,
+                               const CaptureCallback &onCapture)
+{
     if (!isActive())
     {
         return;
@@ -267,6 +331,14 @@ void InputScenarioRunner::tick(const DragCallback &onDrag,
     else if (action.type == ActionType::Resize)
     {
         onResize(static_cast<int>(action.x), static_cast<int>(action.y));
+    }
+    else if (action.type == ActionType::Key)
+    {
+        onKey(action.text, action.state);
+    }
+    else if (action.type == ActionType::Capture)
+    {
+        onCapture(action.text);
     }
 
     frameInAction += 1;

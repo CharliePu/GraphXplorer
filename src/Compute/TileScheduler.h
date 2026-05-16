@@ -73,6 +73,12 @@ private:
                                       const TileKey &key,
                                       TileStage stage,
                                       int priority);
+    static void appendRecursiveJobs(std::vector<TileJob> &jobs,
+                                    const ViewportRequest &request,
+                                    const TileCache &tileCache,
+                                    const TileKey &key,
+                                    int leafLevel,
+                                    int priority);
     [[nodiscard]] static int priorityFor(const ViewportRequest &request, const TileKey &key);
 };
 }

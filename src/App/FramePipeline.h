@@ -46,6 +46,7 @@ private:
                                                      const std::vector<TileJob> &jobs);
     [[nodiscard]] FrameCommandBuffer buildCommands(const std::vector<TileKey> &visibleCover,
                                                    const ViewportRequest &request);
+    [[nodiscard]] std::vector<OverlayRect> buildOverlayRects() const;
 
     AppState appState{};
     AppStateReducer reducer{};

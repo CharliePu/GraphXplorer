@@ -252,7 +252,10 @@ enum class TileVisualState
     UniformTrue,
     MixedRegion,
     ContourOnly,
-    DebugOverlay
+    DebugOverlay,
+    DebugUniform,
+    DebugMixed,
+    DebugMissing
 };
 
 struct RenderTileInstance
@@ -268,8 +271,8 @@ struct RenderTileInstance
 enum class RenderLayer
 {
     Background,
-    Grid,
     Plot,
+    Grid,
     Contour,
     Text,
     Overlay

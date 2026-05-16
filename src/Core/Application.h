@@ -8,6 +8,7 @@
 #include <chrono>
 #include <optional>
 #include <memory>
+#include <string>
 
 #define GLFW_INCLUDE_NONE
 #include <glfwpp/glfwpp.h>
@@ -23,10 +24,8 @@ namespace glfw
 class ComputeEngine;
 class ThreadPool;
 class Window;
-class GraphRasterizer;
-class GraphProcessor;
-class SceneManager;
 class Renderer;
+class SceneManager;
 
 class Application : public UserInputHandler {
 public:

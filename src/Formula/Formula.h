@@ -8,10 +8,10 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <memory>
 #include "Token.h"
-#include "Tokenizer.h"
 #include "Parser.h"
-#include "Evaluator.h"
+#include "FormulaCompiler.h"
 
 class Formula {
 public:
@@ -20,17 +20,13 @@ public:
     Interval evaluate(const std::unordered_map<std::string, Interval>& variables);
     [[nodiscard]] const std::string &getExpression() const;
     [[nodiscard]] const RPN &getRPN() const;
+    [[nodiscard]] const gx::CompiledFormula &getCompiledFormula() const;
     [[nodiscard]] bool hasOperatorContainingEqualSign() const;
     [[nodiscard]] bool isTopLevelOperator(const std::string &op) const;
 
 private:
     std::string expressionStr;
-    std::vector<Token> tokens;
-    RPN rpn;
-    Tokenizer tokenizer;
-    Parser parser;
-    Evaluator<double> pointEvaluator;
-    Evaluator<Interval> intervalEvaluator;
+    std::shared_ptr<gx::CompiledFormula> compiled;
 };
 
 #endif //FORMULA_H

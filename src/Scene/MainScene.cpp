@@ -27,7 +27,7 @@ MainScene::MainScene(const std::shared_ptr<ComputeEngine> &engine,
     });
 
     inputBox->setUpdateStateCallback([this, renderer](const std::vector<Mesh> &meshes) {
-        renderer->updateMeshes(inputBox, meshes);
+        renderer->updateMeshes(inputBox->getDepth(), meshes);
     });
 
     inputBox->setInputCompleteCallback([this](const std::string &input) {
@@ -47,15 +47,15 @@ MainScene::MainScene(const std::shared_ptr<ComputeEngine> &engine,
     });
 
     plot->setPlotCompleteCallback([this, renderer](const std::vector<Mesh> &meshes) {
-        renderer->updateMeshes(plot, meshes);
+        renderer->updateMeshes(plot->getDepth(), meshes);
     });
 
     grid->setUpdatePositionCallback([this, renderer](const std::vector<Mesh> &meshes) {
-        renderer->updateMeshes(grid, meshes);
+        renderer->updateMeshes(grid->getDepth(), meshes);
     });
 
     axisLabels->setUpdateLabelsCallback([this, renderer](const std::vector<Mesh> &meshes) {
-        renderer->updateMeshes(axisLabels, meshes);
+        renderer->updateMeshes(axisLabels->getDepth(), meshes);
     });
 
     plot->requestNewPlot("x<=y");

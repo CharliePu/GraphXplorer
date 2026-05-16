@@ -4,6 +4,7 @@
 
 #include "Window.h"
 
+#include <algorithm>
 #include <memory>
 #include <glfwpp/window.h>
 
@@ -46,6 +47,12 @@ double Window::getAspectRatio() const
     return static_cast<double>(getWidth()) / static_cast<double>(height);
 }
 
+double Window::getContentScaleFactor() const
+{
+    const auto [xScale, yScale] = window->getContentScale();
+    return std::max(1.0, static_cast<double>(std::max(xScale, yScale)));
+}
+
 std::shared_ptr<glfw::Window> Window::getGlfwWindow()
 {
     return window;
@@ -57,4 +64,19 @@ void Window::onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action
     {
         window->setShouldClose(true);
     }
+}
+
+void Window::onWindowSizeChanged(const int width, const int height)
+{
+    if (width <= 0 || height <= 0)
+    {
+        return;
+    }
+
+    if (getWidth() == width && getHeight() == height)
+    {
+        return;
+    }
+
+    window->setSize(width, height);
 }

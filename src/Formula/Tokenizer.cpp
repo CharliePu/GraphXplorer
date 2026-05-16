@@ -80,7 +80,16 @@ std::vector<Token> Tokenizer::tokenize() {
         }
         else {
             // Handle operators, parentheses, commas
-            if (currentChar == '=') {
+            if (currentChar == '!') {
+                if (i + 1 < expr.length() && expr[i + 1] == '=') {
+                    currentToken = Token{TokenType::OPERATOR, "!="};
+                    i += 2;
+                }
+                else {
+                    throw std::invalid_argument("Use '!=' for not-equal comparison.");
+                }
+            }
+            else if (currentChar == '=') {
                 if (i + 1 < expr.length() && expr[i + 1] == '=') {
                     throw std::invalid_argument("Use single '=' for equality.");
                 }

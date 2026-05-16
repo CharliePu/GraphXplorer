@@ -1,22 +1,23 @@
 add_executable(GraphXplorerTests
         ArchitectureBoundaryTests.cpp
         AsyncFrameInboxTests.cpp
-        ChunkTreeTests.cpp
         ContractTests.cpp
-        ComputeCancellationTests.cpp
         FormulaCompilerTests.cpp
         EvaluatorTests.cpp
         FramePipelineTests.cpp
         FormulaTests.cpp
-        GraphGenerationTests.cpp
         InputScenarioRunnerTests.cpp
+        InteractionControllerTests.cpp
         ParserTests.cpp
         RenderCommandTests.cpp
-        SchedulerBackendTests.cpp
+        TilePlannerBackendTests.cpp
+        VisualCoverBuilderTests.cpp
         TileCacheTests.cpp
         TrigSupportTests.cpp
         TokenizerTests.cpp
 )
+
+target_include_directories(GraphXplorerTests PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
 target_link_libraries(GraphXplorerTests PRIVATE
         GraphXplorerApp

@@ -175,6 +175,47 @@ std::optional<InputScenarioRunner::Action> InputScenarioRunner::parseAction(cons
             }
             return action;
         }
+
+        if (name == "formula" && args.size() == 1)
+        {
+            Action action;
+            action.type = ActionType::Formula;
+            action.text = args[0];
+            if (action.text.empty())
+            {
+                return std::nullopt;
+            }
+            return action;
+        }
+
+        if (name == "text" && args.size() == 1)
+        {
+            Action action;
+            action.type = ActionType::Text;
+            action.text = args[0];
+            if (action.text.empty())
+            {
+                return std::nullopt;
+            }
+            return action;
+        }
+
+        if (name == "click" && (args.size() == 2 || args.size() == 3))
+        {
+            Action action;
+            action.type = ActionType::Click;
+            action.x = std::stod(args[0]);
+            action.y = std::stod(args[1]);
+            if (args.size() == 3)
+            {
+                action.frames = std::stoi(args[2]);
+                if (action.frames <= 0)
+                {
+                    return std::nullopt;
+                }
+            }
+            return action;
+        }
     }
     catch (const std::exception &)
     {
@@ -312,7 +353,10 @@ void InputScenarioRunner::tick(const DragCallback &onDrag,
                                const ScrollCallback &onScroll,
                                const ResizeCallback &onResize,
                                const KeyCallback &onKey,
-                               const CaptureCallback &onCapture)
+                               const CaptureCallback &onCapture,
+                               const FormulaCallback &onFormula,
+                               const TextCallback &onText,
+                               const ClickCallback &onClick)
 {
     if (!isActive())
     {
@@ -339,6 +383,18 @@ void InputScenarioRunner::tick(const DragCallback &onDrag,
     else if (action.type == ActionType::Capture)
     {
         onCapture(action.text);
+    }
+    else if (action.type == ActionType::Formula)
+    {
+        onFormula(action.text);
+    }
+    else if (action.type == ActionType::Text)
+    {
+        onText(action.text);
+    }
+    else if (action.type == ActionType::Click)
+    {
+        onClick(action.x, action.y);
     }
 
     frameInAction += 1;

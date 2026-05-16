@@ -17,6 +17,7 @@ public:
 
     virtual void onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action, glfw::ModifierKeyBit mods);
     virtual void onCursorDrag(double x, double y);
+    virtual void onMouseClicked(double x, double y);
     virtual void onWindowSizeChanged(int width, int height);
     virtual void onTextEntered(unsigned int codepoint);
     virtual void onMouseScrolled(double offset);
@@ -39,6 +40,8 @@ private:
 
     glfw::MouseButtonState mouseButtonState;
     double mouseX{}, mouseY{};
+    double pressMouseX{}, pressMouseY{};
+    double dragDistanceSquared{};
 
     std::shared_ptr<Window> window;
     std::shared_ptr<UserInputHandler> inputHandler;

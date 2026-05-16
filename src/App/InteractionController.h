@@ -23,11 +23,20 @@ public:
                                                      const AppState &state) const;
     [[nodiscard]] std::vector<InputEvent> handleScroll(double offset,
                                                        const AppState &state) const;
+    [[nodiscard]] std::vector<InputEvent> handleClick(double x,
+                                                      double y,
+                                                      const AppState &state) const;
     [[nodiscard]] std::vector<InputEvent> handleResize(int width,
                                                        int height,
-                                                       const AppState &state) const;
+                                                       const AppState &state,
+                                                       double devicePixelRatio = 1.0) const;
 
 private:
+    [[nodiscard]] static ViewportChangedEvent resizeViewportEvent(int width,
+                                                                  int height,
+                                                                  const AppState &state,
+                                                                  double devicePixelRatio);
+    [[nodiscard]] static ViewportChangedEvent resetViewportEvent(const AppState &state);
     [[nodiscard]] static bool printableAscii(unsigned int codepoint);
 };
 }

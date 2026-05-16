@@ -27,6 +27,28 @@ struct BackspaceFormulaInputEvent
 {
 };
 
+enum class FormulaCursorMotion
+{
+    Left,
+    Right,
+    Home,
+    End
+};
+
+struct MoveFormulaCursorEvent
+{
+    FormulaCursorMotion motion{FormulaCursorMotion::End};
+};
+
+struct DeleteFormulaInputEvent
+{
+};
+
+struct RejectFormulaInputEvent
+{
+    std::string message{};
+};
+
 struct CancelFormulaInputEvent
 {
 };
@@ -45,6 +67,7 @@ struct ViewportChangedEvent
     Interval yRange{};
     int framebufferWidth{0};
     int framebufferHeight{0};
+    double devicePixelRatio{1.0};
 };
 
 struct DebugToggleEvent
@@ -57,6 +80,9 @@ using InputEvent = std::variant<
     BeginFormulaInputEvent,
     AppendFormulaInputEvent,
     BackspaceFormulaInputEvent,
+    MoveFormulaCursorEvent,
+    DeleteFormulaInputEvent,
+    RejectFormulaInputEvent,
     CancelFormulaInputEvent,
     SubmitFormulaInputEvent,
     RenderTickEvent,
@@ -68,6 +94,7 @@ struct FormulaInputState
     bool active{false};
     std::string buffer{};
     size_t cursor{0};
+    std::string error{};
     bool operator==(const FormulaInputState &) const = default;
 };
 
@@ -79,6 +106,7 @@ struct AppState
     Interval yRange{-20.0, 20.0};
     int framebufferWidth{800};
     int framebufferHeight{800};
+    double devicePixelRatio{1.0};
     bool debug{false};
     uint64_t requestId{1};
     uint64_t generation{1};

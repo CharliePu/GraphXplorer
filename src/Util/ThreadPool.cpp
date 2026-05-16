@@ -13,6 +13,10 @@ ThreadPool::~ThreadPool()
     {
         std::scoped_lock lock(queueMutex);
         threadsShouldStop = true;
+        while (!tasks.empty())
+        {
+            tasks.pop();
+        }
     }
     cv.notify_all();
     for (auto &thread : threads)
@@ -30,8 +34,10 @@ void ThreadPool::threadLoop()
         {
             std::unique_lock lock(queueMutex);
             cv.wait(lock, [this] { return threadsShouldStop || !tasks.empty(); });
-            if (threadsShouldStop && tasks.empty())
+            if (threadsShouldStop)
+            {
                 return;
+            }
             task = tasks.top();
             tasks.pop();
         }

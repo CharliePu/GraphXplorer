@@ -221,6 +221,14 @@ std::unique_ptr<FormulaCompiler::AstNode> cloneAst(const FormulaCompiler::AstNod
     return clone;
 }
 
+std::unique_ptr<FormulaCompiler::AstNode> makeNumberNode(const double value)
+{
+    auto node = std::make_unique<FormulaCompiler::AstNode>();
+    node->token = Token{TokenType::NUMBER, FormulaCompiler::normalizeNumber(std::to_string(value))};
+    node->canonical = FormulaCompiler::normalizeNumber(node->token.value);
+    return node;
+}
+
 std::string buildCanonical(FormulaCompiler::AstNode &node)
 {
     if (node.token.type == TokenType::NUMBER)
@@ -260,6 +268,45 @@ std::string buildCanonical(FormulaCompiler::AstNode &node)
     }
 
     throw std::invalid_argument("Unsupported AST token in canonicalization");
+}
+
+std::unique_ptr<FormulaCompiler::AstNode> simplifyIdentityComparisons(
+    std::unique_ptr<FormulaCompiler::AstNode> node)
+{
+    for (auto &child : node->children)
+    {
+        child = simplifyIdentityComparisons(std::move(child));
+    }
+
+    buildCanonical(*node);
+
+    if (node->token.type != TokenType::OPERATOR || node->children.size() != 2)
+    {
+        return node;
+    }
+
+    const auto &op = node->token.value;
+    const auto sameOperands = node->children[0]->canonical == node->children[1]->canonical;
+    if (op == "-" && sameOperands)
+    {
+        return makeNumberNode(0.0);
+    }
+
+    if (!sameOperands)
+    {
+        return node;
+    }
+
+    if (op == "=" || op == "<=" || op == ">=")
+    {
+        return makeNumberNode(1.0);
+    }
+    if (op == "!=" || op == "<" || op == ">")
+    {
+        return makeNumberNode(0.0);
+    }
+
+    return node;
 }
 
 std::unique_ptr<FormulaCompiler::AstNode> buildAstFromRpn(const RPN &rpn)
@@ -319,7 +366,9 @@ std::unique_ptr<FormulaCompiler::AstNode> buildAstFromRpn(const RPN &rpn)
     }
 
     buildCanonical(*stack.back());
-    return std::move(stack.back());
+    auto root = simplifyIdentityComparisons(std::move(stack.back()));
+    buildCanonical(*root);
+    return root;
 }
 }
 

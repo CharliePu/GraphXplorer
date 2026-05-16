@@ -10,9 +10,9 @@
 TEST_CASE("InputScenarioRunner parses valid script", "[InputScenarioRunner]")
 {
     const auto config = InputScenarioRunner::parseScript(
-        "drag(2.5,-1.0,3); resize(1280,720,1); scroll(0.5,2); pause(4); key(D,press); capture(D:\\GraphXplorer\\frame.png)");
+        "drag(2.5,-1.0,3); resize(1280,720,1); scroll(0.5,2); pause(4); key(D,press); capture(D:\\GraphXplorer\\frame.png); formula(x<y); text(+1); click(32,24)");
     REQUIRE(config.has_value());
-    REQUIRE(config->actions.size() == 6);
+    REQUIRE(config->actions.size() == 9);
 
     REQUIRE(config->actions[0].type == InputScenarioRunner::ActionType::Drag);
     REQUIRE(std::abs(config->actions[0].x - 2.5) < 1e-9);
@@ -37,6 +37,16 @@ TEST_CASE("InputScenarioRunner parses valid script", "[InputScenarioRunner]")
 
     REQUIRE(config->actions[5].type == InputScenarioRunner::ActionType::Capture);
     REQUIRE(config->actions[5].text == "D:\\GraphXplorer\\frame.png");
+
+    REQUIRE(config->actions[6].type == InputScenarioRunner::ActionType::Formula);
+    REQUIRE(config->actions[6].text == "x<y");
+
+    REQUIRE(config->actions[7].type == InputScenarioRunner::ActionType::Text);
+    REQUIRE(config->actions[7].text == "+1");
+
+    REQUIRE(config->actions[8].type == InputScenarioRunner::ActionType::Click);
+    REQUIRE(std::abs(config->actions[8].x - 32.0) < 1e-9);
+    REQUIRE(std::abs(config->actions[8].y - 24.0) < 1e-9);
 }
 
 TEST_CASE("InputScenarioRunner rejects invalid script", "[InputScenarioRunner]")
@@ -46,6 +56,9 @@ TEST_CASE("InputScenarioRunner rejects invalid script", "[InputScenarioRunner]")
     REQUIRE_FALSE(InputScenarioRunner::parseScript("resize(0,100,1)").has_value());
     REQUIRE_FALSE(InputScenarioRunner::parseScript("key(D,hold)").has_value());
     REQUIRE_FALSE(InputScenarioRunner::parseScript("capture()").has_value());
+    REQUIRE_FALSE(InputScenarioRunner::parseScript("formula()").has_value());
+    REQUIRE_FALSE(InputScenarioRunner::parseScript("text()").has_value());
+    REQUIRE_FALSE(InputScenarioRunner::parseScript("click(1)").has_value());
     REQUIRE_FALSE(InputScenarioRunner::parseScript("unknown(1,2,3)").has_value());
 }
 
@@ -68,6 +81,7 @@ TEST_CASE("InputScenarioRunner ticks actions deterministically", "[InputScenario
     int resizeCount = 0;
     int keyCount = 0;
     int captureCount = 0;
+    int clickCount = 0;
     double totalDragX = 0.0;
     double totalDragY = 0.0;
     double totalScroll = 0.0;
@@ -101,6 +115,12 @@ TEST_CASE("InputScenarioRunner ticks actions deterministically", "[InputScenario
             [&](const std::string &)
             {
                 captureCount += 1;
+            },
+            [](const std::string &) {},
+            [](const std::string &) {},
+            [&](double, double)
+            {
+                clickCount += 1;
             });
     }
 
@@ -111,6 +131,7 @@ TEST_CASE("InputScenarioRunner ticks actions deterministically", "[InputScenario
     REQUIRE(scrollCount == 3);
     REQUIRE(keyCount == 0);
     REQUIRE(captureCount == 0);
+    REQUIRE(clickCount == 0);
     REQUIRE(std::abs(totalDragX - 2.0) < 1e-9);
     REQUIRE(std::abs(totalDragY + 4.0) < 1e-9);
     REQUIRE(std::abs(totalScroll - 2.25) < 1e-9);
@@ -121,15 +142,20 @@ TEST_CASE("InputScenarioRunner ticks actions deterministically", "[InputScenario
 
 TEST_CASE("InputScenarioRunner ticks key and capture actions", "[InputScenarioRunner]")
 {
-    const auto config = InputScenarioRunner::parseScript("key(D,press);capture(D:\\GraphXplorer\\debug.png)");
+    const auto config = InputScenarioRunner::parseScript(
+        "key(D,press);formula(x^2+y^2<25);text(+1);click(44,22);capture(D:\\GraphXplorer\\debug.png)");
     REQUIRE(config.has_value());
     InputScenarioRunner runner{*config};
 
     std::string keyName;
     std::string keyState;
     std::string capturePath;
+    std::string formulaExpression;
+    std::string textInput;
+    double clickX = 0.0;
+    double clickY = 0.0;
 
-    for (int i = 0; i < 2; ++i)
+    for (int i = 0; i < 5; ++i)
     {
         runner.tick(
             [](double, double) {},
@@ -143,11 +169,28 @@ TEST_CASE("InputScenarioRunner ticks key and capture actions", "[InputScenarioRu
             [&](const std::string &path)
             {
                 capturePath = path;
+            },
+            [&](const std::string &expression)
+            {
+                formulaExpression = expression;
+            },
+            [&](const std::string &text)
+            {
+                textInput = text;
+            },
+            [&](const double x, const double y)
+            {
+                clickX = x;
+                clickY = y;
             });
     }
 
     REQUIRE(keyName == "D");
     REQUIRE(keyState == "press");
+    REQUIRE(formulaExpression == "x^2+y^2<25");
+    REQUIRE(textInput == "+1");
+    REQUIRE(std::abs(clickX - 44.0) < 1e-9);
+    REQUIRE(std::abs(clickY - 22.0) < 1e-9);
     REQUIRE(capturePath == "D:\\GraphXplorer\\debug.png");
     REQUIRE(runner.isComplete());
 }

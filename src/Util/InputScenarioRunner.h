@@ -20,7 +20,10 @@ public:
         Resize,
         Pause,
         Key,
-        Capture
+        Capture,
+        Formula,
+        Text,
+        Click
     };
 
     struct Action
@@ -47,6 +50,9 @@ public:
     using ResizeCallback = std::function<void(int, int)>;
     using KeyCallback = std::function<void(const std::string &, const std::string &)>;
     using CaptureCallback = std::function<void(const std::string &)>;
+    using FormulaCallback = std::function<void(const std::string &)>;
+    using TextCallback = std::function<void(const std::string &)>;
+    using ClickCallback = std::function<void(double, double)>;
 
     static std::optional<Config> parseScript(const std::string &script);
     static std::optional<InputScenarioRunner> fromEnvironment();
@@ -63,7 +69,10 @@ public:
               const ScrollCallback &onScroll,
               const ResizeCallback &onResize,
               const KeyCallback &onKey,
-              const CaptureCallback &onCapture);
+              const CaptureCallback &onCapture,
+              const FormulaCallback &onFormula = [](const std::string &) {},
+              const TextCallback &onText = [](const std::string &) {},
+              const ClickCallback &onClick = [](double, double) {});
 
 private:
     static std::string trim(const std::string &value);

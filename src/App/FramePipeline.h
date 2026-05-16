@@ -5,9 +5,12 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "../Compute/ComputeBackend.h"
-#include "../Compute/TileScheduler.h"
+#include "../Compute/TilePlanner.h"
+#include "../Compute/TileRuntime.h"
+#include "../Compute/VisualCoverBuilder.h"
 #include "../Formula/FormulaCompiler.h"
 #include "../Render/FrameCommandBuffer.h"
 #include "../Render/RenderResourceManager.h"
@@ -42,26 +45,27 @@ public:
 
 private:
     [[nodiscard]] ViewportRequest makeViewportRequest(const StateDiff &diff) const;
-    [[nodiscard]] TileTransaction executeVisibleJobs(const ViewportRequest &request,
-                                                     const std::vector<TileJob> &jobs);
-    [[nodiscard]] FrameCommandBuffer buildCommands(const std::vector<TileKey> &visibleCover,
-                                                   const ViewportRequest &request);
+    [[nodiscard]] FrameCommandBuffer buildCommands(std::vector<DisplayTile> &displayTiles,
+                                                   const ViewportRequest &request,
+                                                   const UploadPlan &uploadPlan);
     [[nodiscard]] std::vector<OverlayRect> buildOverlayRects() const;
+    [[nodiscard]] std::vector<OverlayTextRun> buildOverlayTextRuns() const;
 
     AppState appState{};
     AppStateReducer reducer{};
     EffectPlanner effectPlanner{};
     FormulaCompiler formulaCompiler{};
     std::optional<CompiledFormula> compiledFormula{};
-    TileScheduler scheduler{};
-    std::unique_ptr<ComputeBackend> backend;
+    TilePlanner tilePlanner{};
+    VisualCoverBuilder visualCoverBuilder{};
+    TileRuntime tileRuntime;
     TileCache tileCache{};
     UploadPlanner uploadPlanner{};
     RenderResourceManager resources{};
     std::unordered_map<uint64_t, RegionOutput> regionPayloads;
+    std::optional<CommittedVisualFrame> committedVisualFrame{};
     FramePipelineCounters pipelineCounters{};
     uint64_t frameId{0};
-    uint64_t nextRegionPayloadId{1};
     bool hasRequestedTiles{false};
 };
 }

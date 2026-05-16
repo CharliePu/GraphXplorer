@@ -1,8 +1,6 @@
 #include "TileCache.h"
 
 #include <algorithm>
-#include <tuple>
-#include <unordered_set>
 #include <utility>
 
 #include "TileMath.h"
@@ -53,6 +51,479 @@ bool TileCache::validTransition(const TileStage from, const TileStage to)
     return false;
 }
 
+TileCache::XYKey TileCache::xyKeyFor(const TileKey &key)
+{
+    return {key.x, key.y};
+}
+
+TileKey TileCache::ancestorAtLevel(const TileKey &key, const int level)
+{
+    if (level <= key.level)
+    {
+        return key;
+    }
+    const auto shift = level - key.level;
+    return {floorDivByPow2(key.x, shift), floorDivByPow2(key.y, shift), level};
+}
+
+bool TileCache::renderReadyUniform(const TileRecord &record)
+{
+    return record.valueState == TileValueState::UniformTrue
+        || record.valueState == TileValueState::UniformFalse;
+}
+
+TileClassification TileCache::classificationForValueState(const TileValueState valueState)
+{
+    switch (valueState)
+    {
+    case TileValueState::UniformFalse:
+        return TileClassification::UniformFalse;
+    case TileValueState::UniformTrue:
+        return TileClassification::UniformTrue;
+    case TileValueState::Mixed:
+        return TileClassification::Mixed;
+    case TileValueState::Unknown:
+    default:
+        return TileClassification::Unknown;
+    }
+}
+
+TileValueState TileCache::valueStateForClassification(const TileClassification classification)
+{
+    switch (classification)
+    {
+    case TileClassification::UniformFalse:
+        return TileValueState::UniformFalse;
+    case TileClassification::UniformTrue:
+        return TileValueState::UniformTrue;
+    case TileClassification::Mixed:
+        return TileValueState::Mixed;
+    case TileClassification::Unknown:
+    default:
+        return TileValueState::Unknown;
+    }
+}
+
+TileStage TileCache::stageForRecord(const TileRecord &record)
+{
+    if (record.valueState == TileValueState::UniformTrue)
+    {
+        if (record.workState == TileWorkState::UploadQueued)
+        {
+            return TileStage::UploadQueued;
+        }
+        if (record.workState == TileWorkState::GpuResident)
+        {
+            return TileStage::GpuResident;
+        }
+        if (record.workState == TileWorkState::Presented)
+        {
+            return TileStage::Presented;
+        }
+        return TileStage::UniformTrue;
+    }
+    if (record.valueState == TileValueState::UniformFalse)
+    {
+        if (record.workState == TileWorkState::UploadQueued)
+        {
+            return TileStage::UploadQueued;
+        }
+        if (record.workState == TileWorkState::GpuResident)
+        {
+            return TileStage::GpuResident;
+        }
+        if (record.workState == TileWorkState::Presented)
+        {
+            return TileStage::Presented;
+        }
+        return TileStage::UniformFalse;
+    }
+    if (record.valueState == TileValueState::Mixed)
+    {
+        switch (record.workState)
+        {
+        case TileWorkState::RegionQueued:
+            return TileStage::RegionQueued;
+        case TileWorkState::RegionReady:
+            return TileStage::RegionReady;
+        case TileWorkState::ContourQueued:
+            return TileStage::ContourQueued;
+        case TileWorkState::ContourReady:
+            return TileStage::ContourReady;
+        case TileWorkState::UploadQueued:
+            return TileStage::UploadQueued;
+        case TileWorkState::GpuResident:
+            return TileStage::GpuResident;
+        case TileWorkState::Presented:
+            return TileStage::Presented;
+        case TileWorkState::Idle:
+        case TileWorkState::IntervalQueued:
+        default:
+            return TileStage::MixedNeedsRegion;
+        }
+    }
+
+    if (record.workState == TileWorkState::IntervalQueued)
+    {
+        return TileStage::IntervalQueued;
+    }
+    return TileStage::Unknown;
+}
+
+void TileCache::applyDeltaToRecord(TileRecord &record, const TileDelta &delta)
+{
+    switch (delta.stage)
+    {
+    case TileStage::Unknown:
+        record.valueState = TileValueState::Unknown;
+        record.workState = TileWorkState::Idle;
+        break;
+    case TileStage::IntervalQueued:
+        record.workState = TileWorkState::IntervalQueued;
+        break;
+    case TileStage::IntervalReady:
+        record.valueState = valueStateForClassification(delta.classification);
+        record.workState = TileWorkState::Idle;
+        break;
+    case TileStage::UniformTrue:
+        record.valueState = TileValueState::UniformTrue;
+        record.workState = TileWorkState::Idle;
+        break;
+    case TileStage::UniformFalse:
+        record.valueState = TileValueState::UniformFalse;
+        record.workState = TileWorkState::Idle;
+        break;
+    case TileStage::MixedNeedsRegion:
+        record.valueState = TileValueState::Mixed;
+        record.workState = TileWorkState::Idle;
+        break;
+    case TileStage::RegionQueued:
+        record.valueState = TileValueState::Mixed;
+        record.workState = TileWorkState::RegionQueued;
+        break;
+    case TileStage::RegionReady:
+        record.valueState = TileValueState::Mixed;
+        record.workState = TileWorkState::RegionReady;
+        break;
+    case TileStage::ContourQueued:
+        if (record.valueState == TileValueState::Unknown)
+        {
+            record.valueState = valueStateForClassification(delta.classification);
+        }
+        record.workState = TileWorkState::ContourQueued;
+        break;
+    case TileStage::ContourReady:
+        if (record.valueState == TileValueState::Unknown)
+        {
+            record.valueState = valueStateForClassification(delta.classification);
+        }
+        record.workState = TileWorkState::ContourReady;
+        break;
+    case TileStage::UploadQueued:
+        if (delta.classification != TileClassification::Unknown)
+        {
+            record.valueState = valueStateForClassification(delta.classification);
+        }
+        record.workState = TileWorkState::UploadQueued;
+        break;
+    case TileStage::GpuResident:
+        if (delta.classification != TileClassification::Unknown)
+        {
+            record.valueState = valueStateForClassification(delta.classification);
+        }
+        record.workState = TileWorkState::GpuResident;
+        break;
+    case TileStage::Presented:
+        if (delta.classification != TileClassification::Unknown)
+        {
+            record.valueState = valueStateForClassification(delta.classification);
+        }
+        record.workState = TileWorkState::Presented;
+        break;
+    case TileStage::Evicted:
+        record.valueState = TileValueState::Unknown;
+        record.workState = TileWorkState::Idle;
+        break;
+    }
+
+    if (delta.interval)
+    {
+        record.interval = delta.interval;
+    }
+    if (record.valueState == TileValueState::UniformTrue
+        || record.valueState == TileValueState::UniformFalse)
+    {
+        record.regionPixels.reset();
+        record.contourSegments.reset();
+        record.gpuResidency = {};
+    }
+    if (delta.region)
+    {
+        record.regionPixels = delta.region;
+    }
+    if (delta.contours)
+    {
+        record.contourSegments = delta.contours;
+    }
+}
+
+void TileCache::applyTransitionToRecord(TileRecord &record, const TileStage to)
+{
+    TileDelta delta;
+    delta.header = {};
+    delta.semanticsHash = record.semanticsHash;
+    delta.key = record.key;
+    delta.stage = to;
+    delta.classification = classificationForValueState(record.valueState);
+    applyDeltaToRecord(record, delta);
+}
+
+const TileRecord *TileCache::findInIndex(const FormulaTileIndex &index, const TileKey &key)
+{
+    const auto levelIt = index.levels.find(key.level);
+    if (levelIt == index.levels.end())
+    {
+        return nullptr;
+    }
+
+    const auto recordIt = levelIt->second.records.find(xyKeyFor(key));
+    if (recordIt == levelIt->second.records.end())
+    {
+        return nullptr;
+    }
+    return &recordIt->second;
+}
+
+TileRecord *TileCache::findMutableInIndex(FormulaTileIndex &index, const TileKey &key)
+{
+    auto levelIt = index.levels.find(key.level);
+    if (levelIt == index.levels.end())
+    {
+        return nullptr;
+    }
+
+    auto recordIt = levelIt->second.records.find(xyKeyFor(key));
+    if (recordIt == levelIt->second.records.end())
+    {
+        return nullptr;
+    }
+    return &recordIt->second;
+}
+
+const TileRecord *TileCache::findUniformAncestorInIndex(
+    const FormulaTileIndex &index,
+    const TileKey &key,
+    const bool includeSelf)
+{
+    for (auto levelIt = index.occupiedLevels.rbegin(); levelIt != index.occupiedLevels.rend(); ++levelIt)
+    {
+        const auto level = *levelIt;
+        if (level < key.level || (!includeSelf && level == key.level))
+        {
+            continue;
+        }
+
+        const auto ancestor = ancestorAtLevel(key, level);
+        const auto *record = findInIndex(index, ancestor);
+        if (record && renderReadyUniform(*record))
+        {
+            return record;
+        }
+    }
+    return nullptr;
+}
+
+const TileRecord *TileCache::findRenderableMixedAncestorInIndex(
+    const FormulaTileIndex &index,
+    const TileKey &key)
+{
+    for (auto levelIt = index.occupiedLevels.upper_bound(key.level);
+         levelIt != index.occupiedLevels.end();
+         ++levelIt)
+    {
+        const auto ancestor = ancestorAtLevel(key, *levelIt);
+        const auto *record = findInIndex(index, ancestor);
+        if (record && record->valueState == TileValueState::Mixed && record->regionPixels)
+        {
+            return record;
+        }
+    }
+    return nullptr;
+}
+
+bool TileCache::hasDescendantRecordInIndex(const FormulaTileIndex &index, const TileKey &key)
+{
+    for (auto levelIt = index.occupiedLevels.begin();
+         levelIt != index.occupiedLevels.end() && *levelIt < key.level;
+         ++levelIt)
+    {
+        const auto bucketIt = index.levels.find(*levelIt);
+        if (bucketIt == index.levels.end())
+        {
+            continue;
+        }
+
+        for (const auto &[xy, record] : bucketIt->second.records)
+        {
+            (void)xy;
+            if (parentCoversChild(key, record.key))
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+TileRecord &TileCache::putRecord(FormulaTileIndex &index, TileRecord record)
+{
+    auto &bucket = index.levels[record.key.level];
+    const auto [it, inserted] = bucket.records.insert_or_assign(xyKeyFor(record.key), std::move(record));
+    if (inserted)
+    {
+        ++index.recordCount;
+    }
+    index.occupiedLevels.insert(it->second.key.level);
+    return it->second;
+}
+
+bool TileCache::eraseRecord(FormulaTileIndex &index, const TileKey &key)
+{
+    auto levelIt = index.levels.find(key.level);
+    if (levelIt == index.levels.end())
+    {
+        return false;
+    }
+
+    const auto erased = levelIt->second.records.erase(xyKeyFor(key)) > 0;
+    if (!erased)
+    {
+        return false;
+    }
+
+    --index.recordCount;
+    if (levelIt->second.records.empty())
+    {
+        index.levels.erase(levelIt);
+        index.occupiedLevels.erase(key.level);
+    }
+    return true;
+}
+
+void TileCache::pruneDescendants(FormulaTileIndex &index, const TileKey &parent)
+{
+    std::vector<TileKey> toErase;
+    for (auto levelIt = index.occupiedLevels.begin();
+         levelIt != index.occupiedLevels.end() && *levelIt < parent.level;
+         ++levelIt)
+    {
+        const auto bucketIt = index.levels.find(*levelIt);
+        if (bucketIt == index.levels.end())
+        {
+            continue;
+        }
+
+        for (const auto &[xy, record] : bucketIt->second.records)
+        {
+            (void)xy;
+            if (parentCoversChild(parent, record.key))
+            {
+                toErase.push_back(record.key);
+            }
+        }
+    }
+
+    for (const auto &key : toErase)
+    {
+        eraseRecord(index, key);
+    }
+}
+
+bool TileCache::promoteParentIfChildrenAgree(
+    FormulaTileIndex &index,
+    const TileKey &parent,
+    const FormulaSemanticsHash semanticsHash)
+{
+    std::optional<TileValueState> valueState;
+    for (const auto &child : tileChildren(parent))
+    {
+        const auto *childRecord = findInIndex(index, child);
+        if (!childRecord || !renderReadyUniform(*childRecord))
+        {
+            return false;
+        }
+
+        if (!valueState)
+        {
+            valueState = childRecord->valueState;
+        }
+        else if (*valueState != childRecord->valueState)
+        {
+            return false;
+        }
+    }
+
+    if (!valueState)
+    {
+        return false;
+    }
+
+    const auto interval = *valueState == TileValueState::UniformTrue
+        ? Interval{1.0, 1.0}
+        : Interval{0.0, 0.0};
+
+    TileRecord parentRecord;
+    if (const auto *existing = findInIndex(index, parent))
+    {
+        parentRecord = *existing;
+    }
+    parentRecord.key = parent;
+    parentRecord.semanticsHash = semanticsHash;
+    parentRecord.valueState = *valueState;
+    parentRecord.workState = TileWorkState::Idle;
+    parentRecord.interval = interval;
+    parentRecord.regionPixels.reset();
+    parentRecord.contourSegments.reset();
+    parentRecord.gpuResidency = {};
+    putRecord(index, std::move(parentRecord));
+    return true;
+}
+
+void TileCache::normalizeUniformAuthority(
+    FormulaTileIndex &index,
+    const TileKey &key,
+    const FormulaSemanticsHash semanticsHash)
+{
+    if (const auto *ancestor = findUniformAncestorInIndex(index, key, false))
+    {
+        pruneDescendants(index, ancestor->key);
+        return;
+    }
+
+    auto current = key;
+    while (true)
+    {
+        if (const auto *record = findInIndex(index, current); record && renderReadyUniform(*record))
+        {
+            pruneDescendants(index, current);
+        }
+
+        if (current.level >= MaxTileLevel)
+        {
+            return;
+        }
+
+        const auto parent = tileParent(current);
+        if (!promoteParentIfChildrenAgree(index, parent, semanticsHash))
+        {
+            return;
+        }
+
+        pruneDescendants(index, parent);
+        current = parent;
+    }
+}
+
 TileApplyResult TileCache::apply(const TileTransaction &transaction)
 {
     if (!transaction.valid())
@@ -60,180 +531,259 @@ TileApplyResult TileCache::apply(const TileTransaction &transaction)
         return {.applied = 0, .rejected = transaction.deltas.size()};
     }
 
-    auto stagedRecords = records;
+    auto staged = formulas;
+    auto &index = staged[transaction.semanticsHash.value];
+    std::vector<TileKey> touchedKeys;
+    touchedKeys.reserve(transaction.deltas.size());
+    size_t applied = 0;
+    size_t rejected = 0;
+
     for (const auto &delta : transaction.deltas)
     {
-        CacheKey key{delta.key, delta.semanticsHash};
-        auto [it, inserted] = stagedRecords.try_emplace(key);
-        auto &record = it->second;
+        if (const auto *ancestor = findUniformAncestorInIndex(index, delta.key, false))
+        {
+            pruneDescendants(index, ancestor->key);
+            ++rejected;
+            continue;
+        }
 
-        if (inserted)
+        TileRecord record;
+        if (const auto *existing = findInIndex(index, delta.key))
+        {
+            record = *existing;
+        }
+        else
         {
             record.key = delta.key;
             record.semanticsHash = delta.semanticsHash;
-            record.generation = delta.header.generation;
         }
 
-        if (delta.header.generation < record.generation
-            || delta.semanticsHash != record.semanticsHash
-            || !validTransition(record.stage, delta.stage))
+        if (delta.semanticsHash != record.semanticsHash
+            || !validTransition(stageForRecord(record), delta.stage))
         {
             return {.applied = 0, .rejected = transaction.deltas.size()};
         }
 
-        record.generation = delta.header.generation;
-        record.stage = delta.stage;
-        record.classification = delta.classification;
-        if (delta.interval)
+        if (delta.stage == TileStage::Evicted)
         {
-            record.interval = delta.interval;
-        }
-        if (delta.region)
-        {
-            record.regionPixels = delta.region;
-        }
-        if (delta.contours)
-        {
-            record.contourSegments = delta.contours;
+            eraseRecord(index, delta.key);
+            touchedKeys.push_back(delta.key);
+            ++applied;
+            continue;
         }
 
+        applyDeltaToRecord(record, delta);
+
+        putRecord(index, std::move(record));
+        touchedKeys.push_back(delta.key);
+        ++applied;
     }
 
-    records = std::move(stagedRecords);
-    return {.applied = transaction.deltas.size(), .rejected = 0};
+    for (const auto &key : touchedKeys)
+    {
+        normalizeUniformAuthority(index, key, transaction.semanticsHash);
+    }
+
+    if (index.recordCount == 0)
+    {
+        staged.erase(transaction.semanticsHash.value);
+    }
+    formulas = std::move(staged);
+    return {.applied = applied, .rejected = rejected};
 }
 
 bool TileCache::transition(const TileKey &key,
                            const FormulaSemanticsHash semanticsHash,
-                           const uint64_t generation,
                            const TileStage to)
 {
-    CacheKey cacheKey{key, semanticsHash};
-    auto [it, inserted] = records.try_emplace(cacheKey);
-    auto &record = it->second;
-    if (inserted)
+    auto &index = formulas[semanticsHash.value];
+    if (const auto *ancestor = findUniformAncestorInIndex(index, key, false))
+    {
+        pruneDescendants(index, ancestor->key);
+        return false;
+    }
+
+    TileRecord record;
+    if (const auto *existing = findInIndex(index, key))
+    {
+        record = *existing;
+    }
+    else
     {
         record.key = key;
         record.semanticsHash = semanticsHash;
-        record.generation = generation;
     }
 
-    if (generation < record.generation || !validTransition(record.stage, to))
+    if (!validTransition(stageForRecord(record), to))
     {
         return false;
     }
 
-    record.generation = generation;
-    record.stage = to;
+    if (to == TileStage::Evicted)
+    {
+        eraseRecord(index, key);
+        if (index.recordCount == 0)
+        {
+            formulas.erase(semanticsHash.value);
+        }
+        return true;
+    }
+
+    applyTransitionToRecord(record, to);
+    putRecord(index, std::move(record));
+    normalizeUniformAuthority(index, key, semanticsHash);
     return true;
+}
+
+bool TileCache::erase(const TileKey &key, const FormulaSemanticsHash semanticsHash)
+{
+    auto formulaIt = formulas.find(semanticsHash.value);
+    if (formulaIt == formulas.end())
+    {
+        return false;
+    }
+
+    const auto erased = eraseRecord(formulaIt->second, key);
+    if (formulaIt->second.recordCount == 0)
+    {
+        formulas.erase(formulaIt);
+    }
+    return erased;
+}
+
+TileRecord &TileCache::getOrCreate(
+    const TileKey &key,
+    const FormulaSemanticsHash semanticsHash)
+{
+    auto &index = formulas[semanticsHash.value];
+    if (auto *existing = findMutableInIndex(index, key))
+    {
+        return *existing;
+    }
+
+    TileRecord record;
+    record.key = key;
+    record.semanticsHash = semanticsHash;
+    return putRecord(index, std::move(record));
 }
 
 const TileRecord *TileCache::find(const TileKey &key, const FormulaSemanticsHash semanticsHash) const
 {
-    const auto it = records.find(CacheKey{key, semanticsHash});
-    if (it == records.end())
+    const auto formulaIt = formulas.find(semanticsHash.value);
+    if (formulaIt == formulas.end())
     {
         return nullptr;
     }
-    return &it->second;
+    return findInIndex(formulaIt->second, key);
+}
+
+const TileRecord *TileCache::findNearestUniformAncestorOrSelf(
+    const TileKey &key,
+    const FormulaSemanticsHash semanticsHash) const
+{
+    const auto formulaIt = formulas.find(semanticsHash.value);
+    if (formulaIt == formulas.end())
+    {
+        return nullptr;
+    }
+    return findUniformAncestorInIndex(formulaIt->second, key, true);
+}
+
+const TileRecord *TileCache::findNearestRenderableMixedAncestor(
+    const TileKey &key,
+    const FormulaSemanticsHash semanticsHash) const
+{
+    const auto formulaIt = formulas.find(semanticsHash.value);
+    if (formulaIt == formulas.end())
+    {
+        return nullptr;
+    }
+    return findRenderableMixedAncestorInIndex(formulaIt->second, key);
+}
+
+bool TileCache::hasDescendantRecord(const TileKey &key, const FormulaSemanticsHash semanticsHash) const
+{
+    const auto formulaIt = formulas.find(semanticsHash.value);
+    if (formulaIt == formulas.end())
+    {
+        return false;
+    }
+    return hasDescendantRecordInIndex(formulaIt->second, key);
+}
+
+std::vector<int> TileCache::occupiedLevelsForFormula(const FormulaSemanticsHash semanticsHash) const
+{
+    const auto formulaIt = formulas.find(semanticsHash.value);
+    if (formulaIt == formulas.end())
+    {
+        return {};
+    }
+    return {formulaIt->second.occupiedLevels.begin(), formulaIt->second.occupiedLevels.end()};
 }
 
 std::vector<TileRecord> TileCache::recordsForFormula(const FormulaSemanticsHash semanticsHash) const
 {
     std::vector<TileRecord> result;
-    for (const auto &[key, record] : records)
+    const auto formulaIt = formulas.find(semanticsHash.value);
+    if (formulaIt == formulas.end())
     {
-        if (key.semanticsHash == semanticsHash)
+        return result;
+    }
+
+    result.reserve(formulaIt->second.recordCount);
+    for (const auto &[level, bucket] : formulaIt->second.levels)
+    {
+        (void)level;
+        for (const auto &[xy, record] : bucket.records)
         {
+            (void)xy;
             result.push_back(record);
         }
     }
     return result;
 }
 
+TileDebugCounts TileCache::debugCountsForFormula(const FormulaSemanticsHash semanticsHash) const
+{
+    TileDebugCounts counts;
+    const auto formulaIt = formulas.find(semanticsHash.value);
+    if (formulaIt == formulas.end())
+    {
+        return counts;
+    }
+
+    for (const auto &[level, bucket] : formulaIt->second.levels)
+    {
+        (void)level;
+        for (const auto &[xy, record] : bucket.records)
+        {
+            (void)xy;
+            if (record.workState == TileWorkState::IntervalQueued)
+            {
+                ++counts.intervalQueued;
+            }
+            else if (record.workState == TileWorkState::RegionQueued)
+            {
+                ++counts.regionQueued;
+            }
+        }
+    }
+    return counts;
+}
+
 size_t TileCache::size() const
 {
-    return records.size();
+    size_t total = 0;
+    for (const auto &[semantics, index] : formulas)
+    {
+        (void)semantics;
+        total += index.recordCount;
+    }
+    return total;
 }
 
 void TileCache::clear()
 {
-    records.clear();
-}
-
-TileCoverageIndex::TileCoverageIndex(const TileCache &cache): cache{cache}
-{
-}
-
-std::vector<TileKey> TileCoverageIndex::visibleCover(const ViewportRequest &request, const int maxCells) const
-{
-    std::vector<TileKey> keys;
-    if (!request.valid() || maxCells <= 0)
-    {
-        return keys;
-    }
-
-    const auto level = rootTileLevel(request);
-    const auto [minX, maxX] = tileIndexBounds(request.xRange, level);
-    const auto [minY, maxY] = tileIndexBounds(request.yRange, level);
-    const auto width = maxX - minX + 1;
-    const auto height = maxY - minY + 1;
-    if (width <= 0 || height <= 0 || width * height > maxCells)
-    {
-        return keys;
-    }
-
-    keys.reserve(static_cast<size_t>(width * height));
-    std::unordered_set<TileKey, TileKeyHash> selected;
-    const auto collectLeaves = [&](const auto &self, const TileKey &key) -> void
-    {
-        if (!intersects(tileBounds(key), request.xRange, request.yRange))
-        {
-            return;
-        }
-
-        const auto *record = cache.find(key, request.formula.semanticsHash);
-        if (!record)
-        {
-            return;
-        }
-
-        auto descended = false;
-        if (record->stage == TileStage::MixedNeedsRegion
-            || record->stage == TileStage::RegionQueued
-            || record->stage == TileStage::RegionReady)
-        {
-            for (const auto &child : tileChildren(key))
-            {
-                if (cache.find(child, request.formula.semanticsHash))
-                {
-                    descended = true;
-                    self(self, child);
-                }
-            }
-        }
-
-        if (!descended)
-        {
-            selected.insert(key);
-        }
-    };
-
-    for (auto y = minY; y <= maxY; ++y)
-    {
-        for (auto x = minX; x <= maxX; ++x)
-        {
-            TileKey key{x, y, level};
-            collectLeaves(collectLeaves, key);
-        }
-    }
-
-    keys.assign(selected.begin(), selected.end());
-
-    std::ranges::sort(keys, [](const TileKey &lhs, const TileKey &rhs)
-    {
-        return std::tie(lhs.level, lhs.y, lhs.x) < std::tie(rhs.level, rhs.y, rhs.x);
-    });
-    return keys;
+    formulas.clear();
 }
 }

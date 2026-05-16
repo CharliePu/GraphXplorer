@@ -2,7 +2,7 @@
 
 This project supports scripted input playback for repeatable interaction tests and profiling.
 
-The runner reuses existing `Application` input handlers (`onCursorDrag`, `onMouseScrolled`) and is enabled by environment variables.
+The runner reuses existing `Application` input handlers and is enabled by environment variables.
 
 ## Why
 
@@ -28,12 +28,16 @@ Supported actions:
 
 - `drag(dx,dy,frames)`
 - `scroll(offset,frames)`
+- `resize(width,height,frames)`
+- `key(name,press|release[,frames])`
+- `capture(path[,frames])`
 - `pause(frames)`
 
 Rules:
 
 - `frames` must be a positive integer.
 - `drag`/`scroll` values are doubles.
+- `capture` saves the current OpenGL backbuffer to a PNG after that frame renders and before buffer swap.
 - Whitespace is allowed.
 
 Example:
@@ -57,6 +61,14 @@ $env:GRAPHX_INPUT_EXIT_ON_COMPLETE='1'
 $env:GRAPHX_INPUT_WAIT_MS='8'
 & D:\GraphXplorer\out\build\x64-Release\GraphXplorer.exe
 rg -n "main.scriptedInput|plot.onCursorDrag|scene.onPlotRangeChanged" D:\GraphXplorer\graphx_profile.log
+```
+
+## Debug Capture Example (PowerShell)
+
+```powershell
+$env:GRAPHX_INPUT_SCRIPT='key(D,press);pause(30);capture(D:\GraphXplorer\.codex_debug_frame.png);pause(1)'
+$env:GRAPHX_INPUT_EXIT_ON_COMPLETE='1'
+& D:\GraphXplorer\build\GraphXplorer.exe
 ```
 
 ## Agent Quick Start

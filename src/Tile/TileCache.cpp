@@ -173,11 +173,7 @@ std::vector<TileKey> TileCoverageIndex::visibleCover(const ViewportRequest &requ
         return keys;
     }
 
-    const auto level = targetTileLevel(
-        request.xRange,
-        request.yRange,
-        request.framebufferWidth,
-        request.framebufferHeight);
+    const auto level = rootTileLevel(request);
     const auto [minX, maxX] = tileIndexBounds(request.xRange, level);
     const auto [minY, maxY] = tileIndexBounds(request.yRange, level);
     const auto width = maxX - minX + 1;
@@ -188,36 +184,47 @@ std::vector<TileKey> TileCoverageIndex::visibleCover(const ViewportRequest &requ
     }
 
     keys.reserve(static_cast<size_t>(width * height));
-    const auto availableRecords = cache.recordsForFormula(request.formula.semanticsHash);
     std::unordered_set<TileKey, TileKeyHash> selected;
+    const auto collectLeaves = [&](const auto &self, const TileKey &key) -> void
+    {
+        if (!intersects(tileBounds(key), request.xRange, request.yRange))
+        {
+            return;
+        }
+
+        const auto *record = cache.find(key, request.formula.semanticsHash);
+        if (!record)
+        {
+            return;
+        }
+
+        auto descended = false;
+        if (record->stage == TileStage::MixedNeedsRegion
+            || record->stage == TileStage::RegionQueued
+            || record->stage == TileStage::RegionReady)
+        {
+            for (const auto &child : tileChildren(key))
+            {
+                if (cache.find(child, request.formula.semanticsHash))
+                {
+                    descended = true;
+                    self(self, child);
+                }
+            }
+        }
+
+        if (!descended)
+        {
+            selected.insert(key);
+        }
+    };
+
     for (auto y = minY; y <= maxY; ++y)
     {
         for (auto x = minX; x <= maxX; ++x)
         {
             TileKey key{x, y, level};
-            if (cache.find(key, request.formula.semanticsHash))
-            {
-                selected.insert(key);
-                continue;
-            }
-
-            const TileKey targetCell{x, y, level};
-            const TileRecord *bestParent = nullptr;
-            for (const auto &record : availableRecords)
-            {
-                if (!parentCoversChild(record.key, targetCell))
-                {
-                    continue;
-                }
-                if (!bestParent || record.key.level < bestParent->key.level)
-                {
-                    bestParent = &record;
-                }
-            }
-            if (bestParent)
-            {
-                selected.insert(bestParent->key);
-            }
+            collectLeaves(collectLeaves, key);
         }
     }
 

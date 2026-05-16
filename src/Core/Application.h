@@ -13,7 +13,11 @@
 #define GLFW_INCLUDE_NONE
 #include <glfwpp/glfwpp.h>
 
+#include <filesystem>
+
 #include "Input.h"
+#include "../App/AppState.h"
+#include "../Util/Contracts.h"
 
 
 namespace glfw
@@ -25,7 +29,12 @@ class ComputeEngine;
 class ThreadPool;
 class Window;
 class Renderer;
-class SceneManager;
+
+namespace gx
+{
+class FramePipeline;
+class InteractionController;
+}
 
 class Application : public UserInputHandler {
 public:
@@ -47,8 +56,10 @@ public:
 
 private:
     void applyPendingWindowSizeChange();
-    void applySettledResizeWork();
-    [[nodiscard]] std::optional<double> resizeWaitTimeoutSeconds() const;
+    void processFrameEvent(const gx::InputEvent &event);
+    void onScenarioKey(const std::string &keyName, const std::string &stateName);
+    void requestFrameCapture(const std::string &path);
+    [[nodiscard]] static std::optional<glfw::KeyCode> keyCodeForScenarioName(const std::string &keyName);
     static bool isValidFramebufferSize(int width, int height);
 
     std::string name;
@@ -56,13 +67,12 @@ private:
     std::shared_ptr<Window> window;
     std::shared_ptr<Renderer> renderer;
     std::shared_ptr<Input> input;
-    std::shared_ptr<ThreadPool> threadPool;
-    std::shared_ptr<ComputeEngine> computeEngine;
-    std::shared_ptr<SceneManager> sceneManager;
+    std::shared_ptr<gx::FramePipeline> framePipeline;
+    std::shared_ptr<gx::InteractionController> interactionController;
+    std::optional<gx::FrameSnapshot> latestFrameSnapshot;
     std::optional<std::pair<int, int>> pendingWindowSize;
-    std::optional<std::pair<int, int>> pendingSettledWindowSize;
     std::optional<std::pair<int, int>> appliedWindowSize;
-    std::chrono::steady_clock::time_point lastResizeEventTime{};
+    std::optional<std::filesystem::path> pendingCapturePath;
 };
 
 

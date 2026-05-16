@@ -167,6 +167,32 @@ void TileScheduler::appendNextJobForStage(std::vector<TileJob> &jobs,
     }
 }
 
+void TileScheduler::appendRecursiveJobs(std::vector<TileJob> &jobs,
+                                        const ViewportRequest &request,
+                                        const TileCache &tileCache,
+                                        const TileKey &key,
+                                        const int leafLevel,
+                                        const int priority)
+{
+    if (!intersects(tileBounds(key), request.xRange, request.yRange))
+    {
+        return;
+    }
+
+    const auto *record = tileCache.find(key, request.formula.semanticsHash);
+    const auto stage = record ? record->stage : TileStage::Unknown;
+    if (stage == TileStage::MixedNeedsRegion && key.level > leafLevel)
+    {
+        for (const auto &child : tileChildren(key))
+        {
+            appendRecursiveJobs(jobs, request, tileCache, child, leafLevel, priorityFor(request, child));
+        }
+        return;
+    }
+
+    appendNextJobForStage(jobs, request, key, stage, priority);
+}
+
 std::vector<TileJob> TileScheduler::buildJobs(const ViewportRequest &request,
                                               const TileCache &tileCache,
                                               const SchedulerBudget &budget) const
@@ -177,15 +203,8 @@ std::vector<TileJob> TileScheduler::buildJobs(const ViewportRequest &request,
         return jobs;
     }
 
-    auto intervalBudget = budget.maxIntervalJobsPerFrame;
-    auto rasterBudget = budget.maxRasterJobsPerFrame;
-    auto uploadBudget = budget.maxUploadJobsPerFrame;
-
-    const auto level = targetTileLevel(
-        request.xRange,
-        request.yRange,
-        request.framebufferWidth,
-        request.framebufferHeight);
+    const auto level = rootTileLevel(request);
+    const auto leafLevel = leafTileLevel(request);
     const auto [minX, maxX] = tileIndexBounds(request.xRange, level);
     const auto [minY, maxY] = tileIndexBounds(request.yRange, level);
 
@@ -194,28 +213,7 @@ std::vector<TileJob> TileScheduler::buildJobs(const ViewportRequest &request,
         for (auto x = minX; x <= maxX; ++x)
         {
             const TileKey key{x, y, level};
-            const auto *record = tileCache.find(key, request.formula.semanticsHash);
-            const auto stage = record ? record->stage : TileStage::Unknown;
-            const auto before = jobs.size();
-            appendNextJobForStage(jobs, request, key, stage, priorityFor(request, key));
-            if (jobs.size() == before)
-            {
-                continue;
-            }
-
-            const auto kind = jobs.back().kind;
-            if (kind == JobKind::ClassifyInterval && --intervalBudget < 0)
-            {
-                jobs.pop_back();
-            }
-            else if (kind == JobKind::RasterizeRegion && --rasterBudget < 0)
-            {
-                jobs.pop_back();
-            }
-            else if ((kind == JobKind::StageUpload || kind == JobKind::PublishDelta) && --uploadBudget < 0)
-            {
-                jobs.pop_back();
-            }
+            appendRecursiveJobs(jobs, request, tileCache, key, leafLevel, priorityFor(request, key));
         }
     }
 
@@ -228,6 +226,45 @@ std::vector<TileJob> TileScheduler::buildJobs(const ViewportRequest &request,
         return static_cast<int>(lhs.kind) < static_cast<int>(rhs.kind);
     });
 
-    return jobs;
+    auto intervalBudget = budget.maxIntervalJobsPerFrame;
+    auto rasterBudget = budget.maxRasterJobsPerFrame;
+    auto contourBudget = budget.maxContourJobsPerFrame;
+    auto uploadBudget = budget.maxUploadJobsPerFrame;
+    std::vector<TileJob> filtered;
+    filtered.reserve(jobs.size());
+    for (const auto &job : jobs)
+    {
+        switch (job.kind)
+        {
+        case JobKind::ClassifyInterval:
+            if (intervalBudget-- <= 0)
+            {
+                continue;
+            }
+            break;
+        case JobKind::RasterizeRegion:
+            if (rasterBudget-- <= 0)
+            {
+                continue;
+            }
+            break;
+        case JobKind::ExtractContour:
+            if (contourBudget-- <= 0)
+            {
+                continue;
+            }
+            break;
+        case JobKind::StageUpload:
+        case JobKind::PublishDelta:
+            if (uploadBudget-- <= 0)
+            {
+                continue;
+            }
+            break;
+        }
+        filtered.push_back(job);
+    }
+
+    return filtered;
 }
 }

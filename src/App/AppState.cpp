@@ -17,12 +17,66 @@ StateDiff AppStateReducer::reduce(AppState &state, const InputEvent &event) cons
             if (state.formulaExpression != typedEvent.expression)
             {
                 state.formulaExpression = typedEvent.expression;
+                state.formulaInput = {};
                 ++state.requestId;
                 ++state.generation;
                 diff.formulaChanged = true;
                 diff.viewportChanged = true;
                 diff.renderInvalidated = true;
             }
+        }
+        else if constexpr (std::is_same_v<Event, BeginFormulaInputEvent>)
+        {
+            state.formulaInput.active = true;
+            state.formulaInput.buffer = state.formulaExpression;
+            state.formulaInput.cursor = state.formulaInput.buffer.size();
+            diff.renderInvalidated = true;
+        }
+        else if constexpr (std::is_same_v<Event, AppendFormulaInputEvent>)
+        {
+            if (state.formulaInput.active && !typedEvent.text.empty())
+            {
+                state.formulaInput.buffer.insert(state.formulaInput.cursor, typedEvent.text);
+                state.formulaInput.cursor += typedEvent.text.size();
+                diff.renderInvalidated = true;
+            }
+        }
+        else if constexpr (std::is_same_v<Event, BackspaceFormulaInputEvent>)
+        {
+            if (state.formulaInput.active && state.formulaInput.cursor > 0)
+            {
+                state.formulaInput.buffer.erase(state.formulaInput.cursor - 1, 1);
+                --state.formulaInput.cursor;
+                diff.renderInvalidated = true;
+            }
+        }
+        else if constexpr (std::is_same_v<Event, CancelFormulaInputEvent>)
+        {
+            if (state.formulaInput.active)
+            {
+                state.formulaInput = {};
+                diff.renderInvalidated = true;
+            }
+        }
+        else if constexpr (std::is_same_v<Event, SubmitFormulaInputEvent>)
+        {
+            if (state.formulaInput.active)
+            {
+                const auto nextExpression = state.formulaInput.buffer;
+                state.formulaInput = {};
+                diff.renderInvalidated = true;
+                if (!nextExpression.empty() && state.formulaExpression != nextExpression)
+                {
+                    state.formulaExpression = nextExpression;
+                    ++state.requestId;
+                    ++state.generation;
+                    diff.formulaChanged = true;
+                    diff.viewportChanged = true;
+                }
+            }
+        }
+        else if constexpr (std::is_same_v<Event, RenderTickEvent>)
+        {
         }
         else if constexpr (std::is_same_v<Event, ViewportChangedEvent>)
         {
@@ -70,7 +124,7 @@ EffectPlan EffectPlanner::plan(const StateDiff &diff) const
         .compileFormula = diff.formulaChanged,
         .requestTiles = diff.formulaChanged || diff.viewportChanged,
         .invalidateRender = diff.renderInvalidated,
-        .invalidateTextLayout = diff.viewportChanged
+        .invalidateTextLayout = diff.viewportChanged || diff.renderInvalidated
     };
 }
 }

@@ -4,11 +4,10 @@
 
 #ifndef RENDERER_H
 #define RENDERER_H
-#include <map>
+#include <filesystem>
 #include <span>
 #include <glad/glad.h>
 
-#include "Mesh.h"
 #include "FrameCommandBuffer.h"
 
 namespace gx
@@ -21,19 +20,17 @@ public:
     explicit Renderer(const GLADloadproc &gladLoader);
 
     void clear();
-    void draw();
     void draw(const gx::FrameCommandBuffer &commands);
     void draw(std::span<const gx::DrawCommand> commands);
     void setResourceManager(gx::RenderResourceManager *resources);
 
-    void updateMeshes(int layer, const std::vector<Mesh>& meshes);
-
     void onWindowSizeChanged(int width, int height);
-private:
-    void draw(const std::vector<Mesh> &meshes);
+    [[nodiscard]] bool saveBackbufferPng(const std::filesystem::path &path) const;
 
-    std::map<int, std::vector<Mesh>> layerMeshes;
+private:
     gx::RenderResourceManager *resources{nullptr};
+    int viewportWidth{0};
+    int viewportHeight{0};
 };
 
 

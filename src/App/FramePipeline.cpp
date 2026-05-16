@@ -2,11 +2,195 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
+#include <cmath>
+#include <iomanip>
 #include <sstream>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 
 #include "../Tile/TileMath.h"
+
+namespace
+{
+using GlyphRows = std::array<const char *, 7>;
+
+GlyphRows glyphFor(const char input)
+{
+    const auto c = static_cast<char>(std::tolower(static_cast<unsigned char>(input)));
+    switch (c)
+    {
+    case '0': return {"111", "101", "101", "101", "101", "101", "111"};
+    case '1': return {"010", "110", "010", "010", "010", "010", "111"};
+    case '2': return {"111", "001", "001", "111", "100", "100", "111"};
+    case '3': return {"111", "001", "001", "111", "001", "001", "111"};
+    case '4': return {"101", "101", "101", "111", "001", "001", "001"};
+    case '5': return {"111", "100", "100", "111", "001", "001", "111"};
+    case '6': return {"111", "100", "100", "111", "101", "101", "111"};
+    case '7': return {"111", "001", "001", "010", "010", "100", "100"};
+    case '8': return {"111", "101", "101", "111", "101", "101", "111"};
+    case '9': return {"111", "101", "101", "111", "001", "001", "111"};
+    case 'a': return {"010", "101", "101", "111", "101", "101", "101"};
+    case 'b': return {"110", "101", "101", "110", "101", "101", "110"};
+    case 'c': return {"111", "100", "100", "100", "100", "100", "111"};
+    case 'd': return {"110", "101", "101", "101", "101", "101", "110"};
+    case 'e': return {"111", "100", "100", "111", "100", "100", "111"};
+    case 'f': return {"111", "100", "100", "111", "100", "100", "100"};
+    case 'g': return {"111", "100", "100", "101", "101", "101", "111"};
+    case 'h': return {"101", "101", "101", "111", "101", "101", "101"};
+    case 'i': return {"111", "010", "010", "010", "010", "010", "111"};
+    case 'j': return {"001", "001", "001", "001", "101", "101", "111"};
+    case 'k': return {"101", "101", "110", "100", "110", "101", "101"};
+    case 'l': return {"100", "100", "100", "100", "100", "100", "111"};
+    case 'm': return {"101", "111", "111", "101", "101", "101", "101"};
+    case 'n': return {"101", "111", "111", "111", "101", "101", "101"};
+    case 'o': return {"111", "101", "101", "101", "101", "101", "111"};
+    case 'p': return {"111", "101", "101", "111", "100", "100", "100"};
+    case 'q': return {"111", "101", "101", "101", "111", "001", "001"};
+    case 'r': return {"110", "101", "101", "110", "101", "101", "101"};
+    case 's': return {"111", "100", "100", "111", "001", "001", "111"};
+    case 't': return {"111", "010", "010", "010", "010", "010", "010"};
+    case 'u': return {"101", "101", "101", "101", "101", "101", "111"};
+    case 'v': return {"101", "101", "101", "101", "101", "101", "010"};
+    case 'w': return {"101", "101", "101", "101", "111", "111", "101"};
+    case 'x': return {"101", "101", "010", "010", "010", "101", "101"};
+    case 'y': return {"101", "101", "101", "010", "010", "010", "010"};
+    case 'z': return {"111", "001", "001", "010", "100", "100", "111"};
+    case '+': return {"000", "010", "010", "111", "010", "010", "000"};
+    case '-': return {"000", "000", "000", "111", "000", "000", "000"};
+    case '*': return {"000", "101", "010", "111", "010", "101", "000"};
+    case '/': return {"001", "001", "001", "010", "100", "100", "100"};
+    case '^': return {"010", "101", "000", "000", "000", "000", "000"};
+    case '<': return {"001", "010", "100", "100", "100", "010", "001"};
+    case '>': return {"100", "010", "001", "001", "001", "010", "100"};
+    case '=': return {"000", "000", "111", "000", "111", "000", "000"};
+    case '(': return {"001", "010", "100", "100", "100", "010", "001"};
+    case ')': return {"100", "010", "001", "001", "001", "010", "100"};
+    case '.': return {"000", "000", "000", "000", "000", "110", "110"};
+    case ',': return {"000", "000", "000", "000", "010", "010", "100"};
+    case ':': return {"000", "010", "010", "000", "010", "010", "000"};
+    case '|': return {"010", "010", "010", "010", "010", "010", "010"};
+    case ' ': return {"000", "000", "000", "000", "000", "000", "000"};
+    default: return {"111", "001", "010", "010", "000", "010", "000"};
+    }
+}
+
+void appendTextRects(std::vector<gx::OverlayRect> &rects,
+                     const std::string_view text,
+                     const float x,
+                     const float y,
+                     const float pixel,
+                     const std::array<float, 4> &color)
+{
+    auto penX = x;
+    constexpr auto glyphWidth = 3;
+    constexpr auto glyphHeight = 7;
+    for (const auto c : text)
+    {
+        const auto rows = glyphFor(c);
+        for (auto row = 0; row < glyphHeight; ++row)
+        {
+            for (auto col = 0; col < glyphWidth; ++col)
+            {
+                if (rows[row][col] != '1')
+                {
+                    continue;
+                }
+                const auto xMin = penX + static_cast<float>(col) * pixel;
+                const auto yMax = y - static_cast<float>(row) * pixel;
+                rects.push_back({xMin, xMin + pixel * 0.82f, yMax - pixel * 0.82f, yMax, color});
+            }
+        }
+        penX += static_cast<float>(glyphWidth + 1) * pixel;
+    }
+}
+
+double pickNiceStep(const double span, const int desiredTickCount)
+{
+    if (span <= 0.0 || desiredTickCount <= 0)
+    {
+        return 1.0;
+    }
+
+    const auto roughStep = span / static_cast<double>(desiredTickCount);
+    const auto power = std::pow(10.0, std::floor(std::log10(roughStep)));
+    const auto normalized = roughStep / power;
+    auto niceNormalized = 10.0;
+    if (normalized <= 1.0)
+    {
+        niceNormalized = 1.0;
+    }
+    else if (normalized <= 2.0)
+    {
+        niceNormalized = 2.0;
+    }
+    else if (normalized <= 5.0)
+    {
+        niceNormalized = 5.0;
+    }
+    return niceNormalized * power;
+}
+
+double firstTickAtOrAbove(const double lowerBound, const double step)
+{
+    constexpr auto epsilon = 1e-9;
+    return std::ceil((lowerBound - epsilon) / step) * step;
+}
+
+float toNdc(const double value, const Interval &range)
+{
+    return static_cast<float>(((value - range.lower) / range.size() - 0.5) * 2.0);
+}
+
+std::string formatTick(const double value)
+{
+    std::ostringstream out;
+    out << std::setprecision(4) << std::defaultfloat << value;
+    return out.str();
+}
+
+gx::TileVisualState normalVisualStateForRecord(const gx::TileRecord *record)
+{
+    if (!record)
+    {
+        return gx::TileVisualState::Missing;
+    }
+
+    switch (record->classification)
+    {
+    case gx::TileClassification::UniformTrue:
+        return gx::TileVisualState::UniformTrue;
+    case gx::TileClassification::UniformFalse:
+        return gx::TileVisualState::UniformFalse;
+    case gx::TileClassification::Mixed:
+        return gx::TileVisualState::MixedRegion;
+    case gx::TileClassification::Unknown:
+    default:
+        return gx::TileVisualState::Missing;
+    }
+}
+
+gx::TileVisualState debugVisualStateForRecord(const gx::TileRecord *record)
+{
+    if (!record)
+    {
+        return gx::TileVisualState::DebugMissing;
+    }
+
+    switch (record->classification)
+    {
+    case gx::TileClassification::Mixed:
+        return gx::TileVisualState::DebugMixed;
+    case gx::TileClassification::UniformTrue:
+    case gx::TileClassification::UniformFalse:
+        return gx::TileVisualState::DebugUniform;
+    case gx::TileClassification::Unknown:
+    default:
+        return gx::TileVisualState::DebugMissing;
+    }
+}
+}
 
 namespace gx
 {
@@ -69,17 +253,19 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
     snapshot.viewportRequest = request;
 
     std::vector<TileJob> jobs;
-    const auto shouldRequestTiles = effects.requestTiles || !hasRequestedTiles;
-    if (shouldRequestTiles)
+    if (effects.requestTiles || !hasRequestedTiles || std::holds_alternative<RenderTickEvent>(event))
     {
         jobs = scheduler.buildJobs(request, tileCache, SchedulerBudget{});
         pipelineCounters.tileJobsScheduled += jobs.size();
 
-        auto transaction = executeVisibleJobs(request, jobs);
-        const auto applyResult = tileCache.apply(transaction);
-        pipelineCounters.tileDeltasApplied += applyResult.applied;
-        pipelineCounters.tileDeltasRejected += applyResult.rejected;
-        snapshot.appliedTransactions.push_back(std::move(transaction));
+        if (!jobs.empty())
+        {
+            auto transaction = executeVisibleJobs(request, jobs);
+            const auto applyResult = tileCache.apply(transaction);
+            pipelineCounters.tileDeltasApplied += applyResult.applied;
+            pipelineCounters.tileDeltasRejected += applyResult.rejected;
+            snapshot.appliedTransactions.push_back(std::move(transaction));
+        }
         hasRequestedTiles = true;
     }
 
@@ -192,9 +378,11 @@ TileTransaction FramePipeline::executeVisibleJobs(const ViewportRequest &request
     }
 
     std::vector<TileKey> mixedRasterKeys = rasterKeys;
+    const auto rasterLeafLevel = leafTileLevel(request);
     for (const auto &classification : classifications)
     {
-        if (classification.classification == TileClassification::Mixed)
+        if (classification.classification == TileClassification::Mixed
+            && classification.key.level <= rasterLeafLevel)
         {
             mixedRasterKeys.push_back(classification.key);
         }
@@ -335,32 +523,18 @@ FrameCommandBuffer FramePipeline::buildCommands(const std::vector<TileKey> &visi
                                                 const ViewportRequest &request)
 {
     resources.setPlotViewport(request.xRange, request.yRange);
+    resources.setGridState(request.xRange, request.yRange, request.framebufferWidth, request.framebufferHeight);
 
     std::vector<RenderTileInstance> instances;
     instances.reserve(visibleCover.size());
+    std::vector<RenderTileInstance> debugInstances;
+    debugInstances.reserve(appState.debug ? visibleCover.size() : 0);
     for (const auto &key : visibleCover)
     {
-        auto visualState = TileVisualState::Missing;
         TextureSlice regionSlice{};
-        if (const auto *record = tileCache.find(key, request.formula.semanticsHash))
+        const auto *record = tileCache.find(key, request.formula.semanticsHash);
+        if (record)
         {
-            switch (record->classification)
-            {
-            case TileClassification::UniformTrue:
-                visualState = TileVisualState::UniformTrue;
-                break;
-            case TileClassification::UniformFalse:
-                visualState = TileVisualState::UniformFalse;
-                break;
-            case TileClassification::Mixed:
-                visualState = TileVisualState::MixedRegion;
-                break;
-            case TileClassification::Unknown:
-            default:
-                visualState = TileVisualState::Missing;
-                break;
-            }
-
             if (record->regionPixels)
             {
                 if (const auto payloadIt = regionPayloads.find(record->regionPixels->id);
@@ -374,13 +548,33 @@ FrameCommandBuffer FramePipeline::buildCommands(const std::vector<TileKey> &visi
         instances.push_back({
             .key = key,
             .worldBounds = tileBounds(key),
-            .visualState = visualState,
+            .visualState = normalVisualStateForRecord(record),
             .regionSlice = regionSlice
         });
+        if (appState.debug)
+        {
+            debugInstances.push_back({
+                .key = key,
+                .worldBounds = tileBounds(key),
+                .visualState = debugVisualStateForRecord(record)
+            });
+        }
     }
+
+    const auto plotInstanceCount = instances.size();
     resources.setPlotInstances(std::move(instances));
+    const auto debugPlotInstanceCount = debugInstances.size();
+    resources.setDebugPlotInstances(std::move(debugInstances));
+    resources.setOverlayRects(buildOverlayRects());
 
     FrameCommandBuffer buffer;
+    buffer.add({
+        .layer = RenderLayer::Grid,
+        .pipeline = resources.gridPipeline(),
+        .geometry = resources.staticQuadGeometry(),
+        .material = resources.gridMaterial(),
+        .sortKey = 10
+    });
     if (!visibleCover.empty())
     {
         buffer.add({
@@ -389,11 +583,113 @@ FrameCommandBuffer FramePipeline::buildCommands(const std::vector<TileKey> &visi
             .geometry = resources.staticQuadGeometry(),
             .material = resources.plotMaterial(),
             .textures = resources.regionTextureSet(),
-            .instanceRange = BufferRange{1, 0, static_cast<uint32_t>(visibleCover.size())},
+            .instanceRange = BufferRange{1, 0, static_cast<uint32_t>(plotInstanceCount)},
+            .sortKey = 0
+        });
+    }
+    if (debugPlotInstanceCount > 0)
+    {
+        buffer.add({
+            .layer = RenderLayer::Contour,
+            .pipeline = resources.debugPlotPipeline(),
+            .geometry = resources.staticQuadGeometry(),
+            .material = resources.plotMaterial(),
+            .instanceRange = BufferRange{3, 0, static_cast<uint32_t>(debugPlotInstanceCount)},
+            .sortKey = 0
+        });
+    }
+    if (resources.overlayRectCount() > 0)
+    {
+        buffer.add({
+            .layer = RenderLayer::Text,
+            .pipeline = resources.overlayPipeline(),
+            .geometry = resources.staticQuadGeometry(),
+            .material = resources.overlayMaterial(),
+            .instanceRange = BufferRange{2, 0, static_cast<uint32_t>(resources.overlayRectCount())},
             .sortKey = 0
         });
     }
     buffer.freezeAndSort();
     return buffer;
+}
+
+std::vector<OverlayRect> FramePipeline::buildOverlayRects() const
+{
+    std::vector<OverlayRect> rects;
+    const std::array white{0.92f, 0.96f, 1.0f, 1.0f};
+    const std::array muted{0.78f, 0.84f, 0.92f, 0.9f};
+    const std::array dark{0.06f, 0.07f, 0.09f, 0.88f};
+    const std::array border{0.70f, 0.76f, 0.84f, 0.85f};
+    const std::array label{0.80f, 0.84f, 0.90f, 0.74f};
+
+    const auto xAxisY = std::clamp(toNdc(0.0, appState.yRange), -0.93f, 0.93f);
+    const auto yAxisX = std::clamp(toNdc(0.0, appState.xRange), -0.93f, 0.93f);
+    const auto xStep = pickNiceStep(appState.xRange.size(), 8);
+    const auto yStep = pickNiceStep(appState.yRange.size(), 8);
+    constexpr auto loopEpsilon = 1e-9;
+    auto tickCount = 0;
+    for (auto x = firstTickAtOrAbove(appState.xRange.lower, xStep);
+         x <= appState.xRange.upper + loopEpsilon && tickCount < 24;
+         x += xStep, ++tickCount)
+    {
+        if (std::abs(x) < 1e-9)
+        {
+            continue;
+        }
+        appendTextRects(rects, formatTick(x), toNdc(x, appState.xRange) - 0.035f, xAxisY - 0.035f, 0.006f, label);
+    }
+    tickCount = 0;
+    for (auto y = firstTickAtOrAbove(appState.yRange.lower, yStep);
+         y <= appState.yRange.upper + loopEpsilon && tickCount < 24;
+         y += yStep, ++tickCount)
+    {
+        if (std::abs(y) < 1e-9)
+        {
+            continue;
+        }
+        appendTextRects(rects, formatTick(y), yAxisX + 0.012f, toNdc(y, appState.yRange) + 0.020f, 0.006f, label);
+    }
+
+    if (appState.formulaInput.active)
+    {
+        rects.push_back({-0.96f, 0.96f, 0.80f, 0.97f, dark});
+        rects.push_back({-0.96f, 0.96f, 0.965f, 0.97f, border});
+        rects.push_back({-0.96f, 0.96f, 0.80f, 0.805f, border});
+        rects.push_back({-0.96f, -0.955f, 0.80f, 0.97f, border});
+        rects.push_back({0.955f, 0.96f, 0.80f, 0.97f, border});
+        appendTextRects(rects, "f(x,y)=", -0.92f, 0.925f, 0.012f, muted);
+        appendTextRects(rects, appState.formulaInput.buffer, -0.70f, 0.925f, 0.012f, white);
+
+        const auto cursorX = -0.70f + static_cast<float>(appState.formulaInput.cursor) * 0.048f;
+        rects.push_back({cursorX, cursorX + 0.006f, 0.825f, 0.925f, white});
+    }
+
+    if (appState.debug)
+    {
+        rects.push_back({-0.98f, -0.34f, -0.98f, -0.72f, dark});
+        rects.push_back({-0.98f, -0.34f, -0.725f, -0.72f, border});
+        appendTextRects(rects, "debug frames", -0.95f, -0.76f, 0.007f, white);
+        appendTextRects(rects,
+                        "compiled:" + std::to_string(pipelineCounters.formulasCompiled),
+                        -0.95f,
+                        -0.82f,
+                        0.006f,
+                        muted);
+        appendTextRects(rects,
+                        "jobs:" + std::to_string(pipelineCounters.tileJobsScheduled),
+                        -0.95f,
+                        -0.87f,
+                        0.006f,
+                        muted);
+        appendTextRects(rects,
+                        "applied:" + std::to_string(pipelineCounters.tileDeltasApplied)
+                            + "/" + std::to_string(pipelineCounters.tileDeltasRejected),
+                        -0.95f,
+                        -0.92f,
+                        0.006f,
+                        muted);
+    }
+
+    return rects;
 }
 }

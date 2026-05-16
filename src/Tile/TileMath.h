@@ -2,6 +2,7 @@
 #define TILEMATH_H
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -12,7 +13,9 @@
 
 namespace gx
 {
-inline constexpr int MinChunkPixels = 128;
+inline constexpr int MinChunkPixels = 16;
+inline constexpr int RootRefinementLevels = 3;
+inline constexpr int LeafRefinementLevels = 2;
 inline constexpr int MinTileLevel = -30;
 inline constexpr int MaxTileLevel = 30;
 
@@ -43,6 +46,24 @@ inline constexpr int MaxTileLevel = 30;
     const auto xRange = tileIndexToRange(key.x, key.level);
     const auto yRange = tileIndexToRange(key.y, key.level);
     return {xRange.lower, xRange.upper, yRange.lower, yRange.upper};
+}
+
+[[nodiscard]] inline bool intersects(const Rect &rect, const Interval &xRange, const Interval &yRange)
+{
+    return rect.xMax > xRange.lower
+        && rect.xMin < xRange.upper
+        && rect.yMax > yRange.lower
+        && rect.yMin < yRange.upper;
+}
+
+[[nodiscard]] inline std::array<TileKey, 4> tileChildren(const TileKey &key)
+{
+    return {
+        TileKey{key.x * 2, key.y * 2, key.level - 1},
+        TileKey{key.x * 2 + 1, key.y * 2, key.level - 1},
+        TileKey{key.x * 2, key.y * 2 + 1, key.level - 1},
+        TileKey{key.x * 2 + 1, key.y * 2 + 1, key.level - 1}
+    };
 }
 
 [[nodiscard]] inline int64_t floorDivByPow2(const int64_t value, const int shift)
@@ -88,6 +109,24 @@ inline constexpr int MaxTileLevel = 30;
     const auto rangePerPixel = minRangeSize / static_cast<double>(maxFramebufferSize);
     const auto rangePerTile = rangePerPixel * static_cast<double>(MinChunkPixels);
     return clampTileLevel(static_cast<int>(std::floor(std::log2(rangePerTile))));
+}
+
+[[nodiscard]] inline int rootTileLevel(const ViewportRequest &request)
+{
+    return clampTileLevel(targetTileLevel(
+        request.xRange,
+        request.yRange,
+        request.framebufferWidth,
+        request.framebufferHeight) + RootRefinementLevels);
+}
+
+[[nodiscard]] inline int leafTileLevel(const ViewportRequest &request)
+{
+    return clampTileLevel(targetTileLevel(
+        request.xRange,
+        request.yRange,
+        request.framebufferWidth,
+        request.framebufferHeight) - LeafRefinementLevels);
 }
 
 [[nodiscard]] inline std::pair<int64_t, int64_t> tileIndexBounds(const Interval &range, const int level)

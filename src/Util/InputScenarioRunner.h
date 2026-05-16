@@ -18,7 +18,9 @@ public:
         Drag,
         Scroll,
         Resize,
-        Pause
+        Pause,
+        Key,
+        Capture
     };
 
     struct Action
@@ -28,6 +30,8 @@ public:
         double y{0.0};
         double value{0.0};
         int frames{1};
+        std::string text{};
+        std::string state{};
     };
 
     struct Config
@@ -41,6 +45,8 @@ public:
     using DragCallback = std::function<void(double, double)>;
     using ScrollCallback = std::function<void(double)>;
     using ResizeCallback = std::function<void(int, int)>;
+    using KeyCallback = std::function<void(const std::string &, const std::string &)>;
+    using CaptureCallback = std::function<void(const std::string &)>;
 
     static std::optional<Config> parseScript(const std::string &script);
     static std::optional<InputScenarioRunner> fromEnvironment();
@@ -53,6 +59,11 @@ public:
     double waitTimeoutSeconds() const;
 
     void tick(const DragCallback &onDrag, const ScrollCallback &onScroll, const ResizeCallback &onResize);
+    void tick(const DragCallback &onDrag,
+              const ScrollCallback &onScroll,
+              const ResizeCallback &onResize,
+              const KeyCallback &onKey,
+              const CaptureCallback &onCapture);
 
 private:
     static std::string trim(const std::string &value);

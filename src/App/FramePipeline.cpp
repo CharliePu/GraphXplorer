@@ -405,7 +405,7 @@ TileTransaction FramePipeline::executeVisibleJobs(const ViewportRequest &request
         rasterXMax.push_back(bounds.xMax);
         rasterYMin.push_back(bounds.yMin);
         rasterYMax.push_back(bounds.yMax);
-        rasterOffsets.push_back(static_cast<uint32_t>(rasterOffsets.size() * MinChunkPixels * MinChunkPixels));
+        rasterOffsets.push_back(static_cast<uint32_t>(rasterOffsets.size() * RasterTexturePixels * RasterTexturePixels));
     }
 
     std::unordered_map<TileKey, RegionImageRef, TileKeyHash> regionRefs;
@@ -421,7 +421,7 @@ TileTransaction FramePipeline::executeVisibleJobs(const ViewportRequest &request
                 rasterYMin,
                 rasterYMax,
                 rasterOffsets,
-                MinChunkPixels
+                RasterTexturePixels
             },
             rasterOutputs);
 

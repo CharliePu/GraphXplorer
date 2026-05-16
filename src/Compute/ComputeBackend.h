@@ -46,7 +46,7 @@ struct RasterBatchView
     std::span<const double> yMin{};
     std::span<const double> yMax{};
     std::span<const uint32_t> outputOffsets{};
-    uint32_t pixelsPerAxis{MinChunkPixels};
+    uint32_t pixelsPerAxis{RasterTexturePixels};
 };
 
 struct TileClassificationResult

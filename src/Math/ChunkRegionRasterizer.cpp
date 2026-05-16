@@ -35,9 +35,9 @@ void ChunkRegionRasterizer::clearCache()
 }
 
 std::optional<RasterChunkTexture> ChunkRegionRasterizer::rasterizeChunkRegion(const int64_t chunkX,
-                                                                               const int64_t chunkY,
-                                                                               const int level,
-                                                                               const std::shared_ptr<Formula> &formula)
+                                                                              const int64_t chunkY,
+                                                                              const int level,
+                                                                              const std::shared_ptr<Formula> &formula)
 {
     if (!formula)
     {

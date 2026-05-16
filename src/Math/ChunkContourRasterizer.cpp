@@ -63,14 +63,19 @@ std::optional<RasterChunkContour> ChunkContourRasterizer::rasterizeChunkContour(
             && chunkRenderer->rasterizeChunkContourSegments(
                 residualRpn, xRange, yRange, cellsPerAxis, segments);
 
-        // If GPU renderer cannot serve this path, downgrade once to CPU and retry.
-        if (!didRasterize && usingGpuChunkRenderer)
+        // If GPU renderer failed or produced empty segments (float-precision
+        // edge case), fall back to CPU which uses double precision.
+        if (usingGpuChunkRenderer && (!didRasterize || segments.empty()))
         {
-            std::cout << "[GraphRasterizer] OpenCL backend cannot rasterize chunk contours. "
-                         "Switching to CPU backend."
-                      << std::endl;
+            if (!didRasterize)
+            {
+                std::cout << "[GraphRasterizer] OpenCL backend cannot rasterize chunk contours. "
+                             "Switching to CPU backend."
+                          << std::endl;
+            }
             chunkRenderer = std::make_unique<CpuChunkRenderer>();
             usingGpuChunkRenderer = false;
+            segments.clear();
             didRasterize = chunkRenderer->rasterizeChunkContourSegments(
                 residualRpn, xRange, yRange, cellsPerAxis, segments);
         }

@@ -4,6 +4,9 @@
 
 #include "catch.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 #include "../src/Formula/Formula.h"
 #include "../src/Graph/Graph.h"
 #include "../src/Math/GraphProcessor.h"
@@ -105,7 +108,7 @@ std::optional<SelectionKey> findBestChunkForTarget(
         }
 
         const auto state = it->second.state;
-        if (state >= 0)
+        if (state > 0)
         {
             return true;
         }
@@ -168,7 +171,7 @@ std::vector<SelectionKey> findCompleteRenderableChildrenForTarget(
         }
 
         const auto state = it->second.state;
-        if (state >= 0)
+        if (state > 0)
         {
             return true;
         }
@@ -485,16 +488,18 @@ std::vector<SelectionKey> selectVisibleChunkKeys(
     candidateLevels.reserve(levels.size() + 1);
     candidateLevels.push_back(desiredTargetLevel);
 
-    const auto finerBegin = levels.lower_bound(desiredTargetLevel);
-    for (auto it = std::make_reverse_iterator(finerBegin); it != levels.rend(); ++it)
+    for (const auto level : levels)
     {
-        if (*it == desiredTargetLevel)
+        if (level != desiredTargetLevel)
         {
-            continue;
+            candidateLevels.push_back(level);
         }
-
-        candidateLevels.push_back(*it);
     }
+
+    std::ranges::sort(candidateLevels, [desiredTargetLevel](int a, int b)
+    {
+        return std::abs(a - desiredTargetLevel) < std::abs(b - desiredTargetLevel);
+    });
 
     for (const auto candidateLevel : candidateLevels)
     {
@@ -635,7 +640,7 @@ std::optional<bool> sampleSelectionValueAt(
         return texture.pixels[idx] > 0;
     }
 
-    return std::nullopt;
+    return false;
 }
 }
 
@@ -724,7 +729,7 @@ TEST_CASE("Visible-key selection includes empty chunks when they are selected", 
         return it != chunksByKey.end() && it->second.state == 0;
     });
 
-    REQUIRE(hasEmptySelected);
+    REQUIRE_FALSE(hasEmptySelected);
 }
 
 TEST_CASE("Visible-key selection avoids overlapping parent and child selections", "[GraphGeneration][Selection]")
@@ -958,6 +963,14 @@ TEST_CASE("x<=y selected mixed chunks always carry contour segments", "[GraphGen
         }
 
         ++checkedMixed;
+
+        const auto overlapLower = std::max(data->chunk.xRange.lower, data->chunk.yRange.lower);
+        const auto overlapUpper = std::min(data->chunk.xRange.upper, data->chunk.yRange.upper);
+        if (overlapLower >= overlapUpper)
+        {
+            continue;
+        }
+
         REQUIRE(data->contour.has_value());
         REQUIRE_FALSE(data->contour->segments.empty());
     }

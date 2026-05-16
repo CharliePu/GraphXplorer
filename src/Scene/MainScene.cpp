@@ -103,25 +103,38 @@ void MainScene::onCursorDrag(const double x, const double y)
 void MainScene::onWindowSizeChanged(const int width, const int height)
 {
     GRAPHX_PROFILE_SCOPE("scene.onWindowSizeChanged");
+    onFramebufferResized(width, height);
+    onResizeSettled(width, height);
+}
+
+void MainScene::onFramebufferResized(const int width, const int height)
+{
+    GRAPHX_PROFILE_SCOPE("scene.onFramebufferResized");
     {
-        GRAPHX_PROFILE_SCOPE("scene.onWindowSizeChanged.plot");
-        plot->onWindowSizeChanged(width, height);
+        GRAPHX_PROFILE_SCOPE("scene.onFramebufferResized.plot");
+        plot->onFramebufferResized(width, height);
     }
     {
-        GRAPHX_PROFILE_SCOPE("scene.onWindowSizeChanged.grid");
-        grid->onWindowSizeChanged(width, height);
+        GRAPHX_PROFILE_SCOPE("scene.onFramebufferResized.grid");
+        grid->updatePosition(plot->getXRanges(), plot->getYRanges());
     }
+    if (inputBox->isCapturingInput())
     {
-        GRAPHX_PROFILE_SCOPE("scene.onWindowSizeChanged.axisLabels");
-        axisLabels->onWindowSizeChanged(width, height);
-    }
-    {
-        GRAPHX_PROFILE_SCOPE("scene.onWindowSizeChanged.console");
-        cmd->onWindowSizeChanged(width, height);
-    }
-    {
-        GRAPHX_PROFILE_SCOPE("scene.onWindowSizeChanged.inputBox");
+        GRAPHX_PROFILE_SCOPE("scene.onFramebufferResized.inputBox");
         inputBox->onWindowSizeChanged(width, height);
+    }
+}
+
+void MainScene::onResizeSettled(const int width, const int height)
+{
+    GRAPHX_PROFILE_SCOPE("scene.onResizeSettled");
+    {
+        GRAPHX_PROFILE_SCOPE("scene.onResizeSettled.plot");
+        plot->onResizeSettled(width, height);
+    }
+    {
+        GRAPHX_PROFILE_SCOPE("scene.onResizeSettled.axisLabels");
+        axisLabels->updateLabels(plot->getXRanges(), plot->getYRanges());
     }
 }
 
@@ -165,4 +178,9 @@ void MainScene::transitionToState(const InteractionState nextState)
     {
         inputBox->beginInput();
     }
+}
+
+void MainScene::flushPendingMeshes()
+{
+    plot->flushPendingMeshes();
 }

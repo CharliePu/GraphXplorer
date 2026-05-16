@@ -20,7 +20,7 @@ GraphProcessor::GraphProcessor(const std::shared_ptr<Window> &window,
 
 void GraphProcessor::process(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula,
                              const Interval &xRange, const Interval &yRange, const int windowWidth,
-                             const int windowHeight)
+                             const int windowHeight, const CancelFn &cancelled)
 {
     if (!graph)
     {
@@ -32,37 +32,36 @@ void GraphProcessor::process(const std::shared_ptr<Graph> &graph, const std::sha
         throw std::invalid_argument("Formula must not be null");
     }
 
-    const auto targetLevel = getTargetLevel(xRange, yRange, windowWidth, windowHeight);
+    if (cancelled && cancelled())
+    {
+        return;
+    }
 
-    auto rootLevel = getCoarsestViewportLevel(xRange, yRange);
-    rootLevel = std::max(rootLevel, targetLevel);
+    const auto level = targetLevel(xRange, yRange, windowWidth, windowHeight);
 
-    const auto [minChunkX, maxChunkX] = getChunkIndexBounds(xRange, rootLevel);
-    const auto [minChunkY, maxChunkY] = getChunkIndexBounds(yRange, rootLevel);
+    auto rootLevel = clampChunkLevel(getCoarsestViewportLevel(xRange, yRange));
+    rootLevel = std::max(rootLevel, level);
+
+    const auto [minChunkX, maxChunkX] = chunkIndexBounds(xRange, rootLevel);
+    const auto [minChunkY, maxChunkY] = chunkIndexBounds(yRange, rootLevel);
 
     for (auto chunkY = minChunkY; chunkY <= maxChunkY; ++chunkY)
     {
+        if (cancelled && cancelled())
+        {
+            return;
+        }
+
         for (auto chunkX = minChunkX; chunkX <= maxChunkX; ++chunkX)
         {
-            refineTile(graph, formula, chunkX, chunkY, rootLevel, targetLevel, xRange, yRange);
+            if (cancelled && cancelled())
+            {
+                return;
+            }
+
+            refineTile(graph, formula, chunkX, chunkY, rootLevel, level, xRange, yRange, cancelled);
         }
     }
-}
-
-int GraphProcessor::getTargetLevel(const Interval &xRange, const Interval &yRange, const int windowWidth,
-                                   const int windowHeight)
-{
-    const auto minRangeSize = std::min(xRange.size(), yRange.size());
-    const auto maxWindowSize = std::max(windowWidth, windowHeight);
-
-    if (minRangeSize <= 0.0 || maxWindowSize <= 0)
-    {
-        return 0;
-    }
-
-    const auto rangePerPixel = minRangeSize / static_cast<double>(maxWindowSize);
-    const auto rangePerChunk = rangePerPixel * static_cast<double>(MIN_CHUNK_PIXELS);
-    return static_cast<int>(std::floor(std::log2(rangePerChunk)));
 }
 
 int GraphProcessor::getCoarsestViewportLevel(const Interval &xRange, const Interval &yRange)
@@ -74,24 +73,7 @@ int GraphProcessor::getCoarsestViewportLevel(const Interval &xRange, const Inter
         return 0;
     }
 
-    return static_cast<int>(std::ceil(std::log2(maxRangeSize)));
-}
-
-std::pair<int64_t, int64_t> GraphProcessor::getChunkIndexBounds(const Interval &range, const int level)
-{
-    if (range.upper <= range.lower)
-    {
-        const auto chunkIndex = worldToChunkIndex(range.lower, level);
-        return {chunkIndex, chunkIndex};
-    }
-
-    const auto chunkSize = chunkSizeForLevel(level);
-    const auto minIndex = worldToChunkIndex(range.lower, level);
-    const auto scaledUpper = range.upper / chunkSize;
-    const auto upperInclusiveScaled = std::nextafter(scaledUpper, -std::numeric_limits<double>::infinity());
-    const auto maxIndex = static_cast<int64_t>(std::floor(upperInclusiveScaled));
-
-    return {minIndex, maxIndex};
+    return clampChunkLevel(static_cast<int>(std::ceil(std::log2(maxRangeSize))));
 }
 
 bool GraphProcessor::intersects(const Interval &lhs, const Interval &rhs)
@@ -119,8 +101,14 @@ Tile &GraphProcessor::getOrComputeTile(const std::shared_ptr<Graph> &graph, cons
 
 void GraphProcessor::refineTile(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula,
                                 const int64_t chunkX, const int64_t chunkY, const int level, const int targetLevel,
-                                const Interval &viewXRange, const Interval &viewYRange) const
+                                const Interval &viewXRange, const Interval &viewYRange,
+                                const CancelFn &cancelled) const
 {
+    if (cancelled && cancelled())
+    {
+        return;
+    }
+
     auto &tile = getOrComputeTile(graph, formula, chunkX, chunkY, level);
 
     if (tile.solution.allTrue() || tile.solution.allFalse() || level <= targetLevel)
@@ -134,8 +122,18 @@ void GraphProcessor::refineTile(const std::shared_ptr<Graph> &graph, const std::
 
     for (auto yOffset = int64_t{0}; yOffset < 2; ++yOffset)
     {
+        if (cancelled && cancelled())
+        {
+            return;
+        }
+
         for (auto xOffset = int64_t{0}; xOffset < 2; ++xOffset)
         {
+            if (cancelled && cancelled())
+            {
+                return;
+            }
+
             const auto childX = firstChildX + xOffset;
             const auto childY = firstChildY + yOffset;
 
@@ -147,7 +145,7 @@ void GraphProcessor::refineTile(const std::shared_ptr<Graph> &graph, const std::
                 continue;
             }
 
-            refineTile(graph, formula, childX, childY, childLevel, targetLevel, viewXRange, viewYRange);
+            refineTile(graph, formula, childX, childY, childLevel, targetLevel, viewXRange, viewYRange, cancelled);
         }
     }
 }

@@ -4,6 +4,7 @@
 
 #ifndef MAINSCENE_H
 #define MAINSCENE_H
+
 #include "Scene.h"
 
 
@@ -25,9 +26,15 @@ public:
 
     void onWindowSizeChanged(int width, int height) override;
 
+    void onFramebufferResized(int width, int height) override;
+
+    void onResizeSettled(int width, int height) override;
+
     void onTextEntered(unsigned int codepoint) override;
 
     void onMouseScrolled(double offset) override;
+
+    void flushPendingMeshes();
 
 private:
     enum class InteractionState

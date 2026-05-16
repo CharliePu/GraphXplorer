@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <span>
@@ -20,12 +21,68 @@
 #include "../Math/ComputeEngine.h"
 #include "../Render/Mesh.h"
 #include "../Util/PerformanceProfiler.h"
+#include "../Util/PipelineLog.h"
 
 namespace
 {
 bool hasValidViewportSize(const int width, const int height)
 {
     return width > 0 && height > 0;
+}
+
+bool hasFinitePositiveRange(const Interval &range)
+{
+    return std::isfinite(range.lower)
+        && std::isfinite(range.upper)
+        && range.upper > range.lower
+        && std::isfinite(range.size());
+}
+
+Interval clampViewportRange(const Interval &range, const Interval &fallback)
+{
+    auto size = range.size();
+    if (!std::isfinite(size) || size <= 0.0)
+    {
+        size = fallback.size();
+    }
+
+    if (!std::isfinite(size) || size <= 0.0)
+    {
+        size = 40.0;
+    }
+
+    size = std::clamp(size, MIN_VIEWPORT_WORLD_SPAN, MAX_VIEWPORT_WORLD_SPAN);
+
+    auto mid = range.mid();
+    if (!std::isfinite(mid))
+    {
+        mid = fallback.mid();
+    }
+    if (!std::isfinite(mid))
+    {
+        mid = 0.0;
+    }
+
+    const auto halfSize = size * 0.5;
+    const auto centerLimit = MAX_VIEWPORT_WORLD_SPAN - halfSize;
+    if (centerLimit > 0.0)
+    {
+        mid = std::clamp(mid, -centerLimit, centerLimit);
+    }
+    else
+    {
+        mid = 0.0;
+    }
+
+    return {mid - halfSize, mid + halfSize};
+}
+
+bool normalizeViewport(Interval &xRange, Interval &yRange,
+                       const Interval &fallbackXRange, const Interval &fallbackYRange)
+{
+    xRange = clampViewportRange(xRange, fallbackXRange);
+    yRange = clampViewportRange(yRange, fallbackYRange);
+    return hasFinitePositiveRange(xRange) && hasFinitePositiveRange(yRange);
 }
 }
 
@@ -113,39 +170,7 @@ bool Plot::TexturedChunkRenderItem::hasNormalMesh() const
     return true;
 }
 
-int Plot::getTargetLevel(const Interval &xRange, const Interval &yRange, const int windowWidth,
-                         const int windowHeight)
-{
-    const auto minRangeSize = std::min(xRange.size(), yRange.size());
-    const auto maxWindowSize = std::max(windowWidth, windowHeight);
-
-    if (minRangeSize <= 0.0 || maxWindowSize <= 0)
-    {
-        return 0;
-    }
-
-    const auto rangePerPixel = minRangeSize / static_cast<double>(maxWindowSize);
-    const auto rangePerChunk = rangePerPixel * static_cast<double>(MIN_CHUNK_PIXELS);
-    return static_cast<int>(std::floor(std::log2(rangePerChunk)));
-}
-
-std::pair<int64_t, int64_t> Plot::getChunkIndexBounds(const Interval &range, const int level)
-{
-    if (range.upper <= range.lower)
-    {
-        const auto chunkIndex = worldToChunkIndex(range.lower, level);
-        return {chunkIndex, chunkIndex};
-    }
-
-    const auto chunkSize = chunkSizeForLevel(level);
-    const auto minIndex = worldToChunkIndex(range.lower, level);
-    const auto scaledUpper = range.upper / chunkSize;
-    const auto upperInclusiveScaled = std::nextafter(scaledUpper, -std::numeric_limits<double>::infinity());
-    const auto maxIndex = static_cast<int64_t>(std::floor(upperInclusiveScaled));
-    return {minIndex, maxIndex};
-}
-
-PlotChunkKey Plot::toChunkKey(const RasterChunk &chunk)
+ChunkKey Plot::toChunkKey(const RasterChunk &chunk)
 {
     return {chunk.chunkX, chunk.chunkY, chunk.level};
 }
@@ -198,14 +223,13 @@ Plot::Plot(const std::shared_ptr<ComputeEngine> &engine,
                                                    },
                                                    visibleChunkMeshes{},
                                                    meshes{},
-                                                   sampledChunkCache{},
                                                    chunkRegionTextureCache{},
                                                    chunkContourCache{},
                                                    chunkRenderItems{},
-                                                   sampledChunkLevels{},
                                                    chunkModel{1.0f},
                                                    shouldRenderRegionForFormula{true},
-                                                   debug{false}
+                                                   debug{false},
+                                                   pendingMeshesDirty{false}
 {
     computeEngine->setComputeCompleteCallback(
         [this](std::vector<ChunkRenderData> chunkRenderDataBatch,
@@ -219,9 +243,12 @@ Plot::Plot(const std::shared_ptr<ComputeEngine> &engine,
             (void)height;
             (void)requestId;
 
+            PipelineLog::log("plot.callback: reqId=%llu chunks=%zu treeSize=%zu",
+                requestId, chunkRenderDataBatch.size(), chunkTree.size());
             applyChunkRenderDataBatch(chunkRenderDataBatch);
-            updateModelMat();
-            rebuildAndPublishMeshes();
+            pendingMeshesDirty = true;
+            PipelineLog::log("plot.callback: DONE treeSize=%zu",
+                chunkTree.size());
         });
 }
 
@@ -241,17 +268,31 @@ int Plot::getDepth() const
     return 2;
 }
 
+void Plot::flushPendingMeshes()
+{
+    if (!pendingMeshesDirty)
+    {
+        return;
+    }
+
+    pendingMeshesDirty = false;
+    PipelineLog::log("plot.flush: treeSize=%zu",
+        chunkTree.size());
+    updateModelMat();
+    rebuildAndPublishMeshes();
+    PipelineLog::log("plot.flush: DONE meshes=%zu", meshes.size());
+}
+
 void Plot::requestNewPlot(const std::string &input)
 {
     formula = std::make_shared<Formula>(input);
     shouldRenderRegionForFormula = !(formula && formula->isTopLevelOperator("="));
     graph = std::make_shared<Graph>();
 
-    sampledChunkCache.clear();
+    chunkTree.clear();
     chunkRegionTextureCache.clear();
     chunkContourCache.clear();
     chunkRenderItems.clear();
-    sampledChunkLevels.clear();
     visibleChunkMeshes.clear();
     meshes.clear();
 
@@ -385,6 +426,21 @@ Mesh Plot::createContourMesh(const std::vector<RasterContourSegment> &segments) 
     };
 }
 
+Mesh Plot::createMissingCellMesh(const TargetCell &cell) const
+{
+    const RasterChunk placeholder{
+        cell.x,
+        cell.y,
+        cell.level,
+        chunkIndexToRange(cell.x, cell.level),
+        chunkIndexToRange(cell.y, cell.level),
+        -1,
+        RasterChunkSource::Exact
+    };
+
+    return createColoredChunkMesh(placeholder, glm::vec4{0.20f, 0.20f, 0.24f, 0.35f});
+}
+
 glm::vec4 Plot::getDebugChunkColor(const RasterChunk &chunk) const
 {
     if (chunk.state < 0)
@@ -399,25 +455,23 @@ glm::vec4 Plot::getDebugChunkColor(const RasterChunk &chunk) const
 
 std::optional<glm::vec4> Plot::getNormalSolidColor(const RasterChunk &chunk) const
 {
-    if (chunk.state >= 0)
+    if (chunk.state > 0)
     {
-        const auto alpha = chunk.state > 0 ? 1.0f : 0.0f;
-        return glm::vec4{0.0f, 0.47f, 0.95f, alpha};
+        return glm::vec4{0.0f, 0.47f, 0.95f, 1.0f};
     }
 
     return std::nullopt;
 }
 
-std::unique_ptr<Plot::ChunkRenderItem> Plot::buildChunkRenderItem(const PlotChunkKey &key)
+std::unique_ptr<Plot::ChunkRenderItem> Plot::buildChunkRenderItem(const ChunkKey &key)
 {
-    const auto chunkIt = sampledChunkCache.find(key);
-    if (chunkIt == sampledChunkCache.end())
+    const auto *chunk = chunkTree.findChunk(key);
+    if (!chunk)
     {
         return nullptr;
     }
 
-    const auto &chunk = chunkIt->second;
-    auto debugMesh = createColoredChunkMesh(chunk, getDebugChunkColor(chunk));
+    auto debugMesh = createColoredChunkMesh(*chunk, getDebugChunkColor(*chunk));
     std::optional<Mesh> contourMesh;
     if (const auto contourIt = chunkContourCache.find(key); contourIt != chunkContourCache.end()
         && !contourIt->second.empty())
@@ -425,12 +479,12 @@ std::unique_ptr<Plot::ChunkRenderItem> Plot::buildChunkRenderItem(const PlotChun
         contourMesh.emplace(createContourMesh(contourIt->second));
     }
 
-    if (chunk.state < 0)
+    if (chunk->state < 0)
     {
         const auto textureIt = chunkRegionTextureCache.find(key);
         if (textureIt != chunkRegionTextureCache.end())
         {
-            auto texturedMesh = createTexturedChunkMesh(chunk, textureIt->second);
+            auto texturedMesh = createTexturedChunkMesh(*chunk, textureIt->second);
             return std::make_unique<TexturedChunkRenderItem>(
                 std::move(texturedMesh), std::move(contourMesh), std::move(debugMesh));
         }
@@ -438,9 +492,9 @@ std::unique_ptr<Plot::ChunkRenderItem> Plot::buildChunkRenderItem(const PlotChun
         return std::make_unique<SolidChunkRenderItem>(std::nullopt, std::move(contourMesh), std::move(debugMesh));
     }
 
-    if (const auto color = getNormalSolidColor(chunk))
+    if (const auto color = getNormalSolidColor(*chunk))
     {
-        std::optional<Mesh> normalMesh{createColoredChunkMesh(chunk, *color)};
+        std::optional<Mesh> normalMesh{createColoredChunkMesh(*chunk, *color)};
         return std::make_unique<SolidChunkRenderItem>(
             std::move(normalMesh), std::move(contourMesh), std::move(debugMesh));
     }
@@ -448,7 +502,7 @@ std::unique_ptr<Plot::ChunkRenderItem> Plot::buildChunkRenderItem(const PlotChun
     return std::make_unique<SolidChunkRenderItem>(std::nullopt, std::move(contourMesh), std::move(debugMesh));
 }
 
-bool Plot::isChunkRenderable(const PlotChunkKey &key) const
+bool Plot::isChunkRenderable(const ChunkKey &key) const
 {
     if (!shouldRenderRegionForFormula)
     {
@@ -468,237 +522,27 @@ bool Plot::isChunkRenderable(const PlotChunkKey &key) const
     return renderItemIt->second && renderItemIt->second->hasNormalMesh();
 }
 
-std::optional<PlotChunkKey> Plot::findBestChunkForTarget(const int64_t chunkX, const int64_t chunkY,
-                                                          const int targetLevel) const
-{
-    const PlotChunkKey exactKey{chunkX, chunkY, targetLevel};
-    if (isChunkRenderable(exactKey))
-    {
-        return exactKey;
-    }
-
-    const auto chunkXRange = chunkIndexToRange(chunkX, targetLevel);
-    const auto chunkYRange = chunkIndexToRange(chunkY, targetLevel);
-    const auto centerX = (chunkXRange.lower + chunkXRange.upper) * 0.5;
-    const auto centerY = (chunkYRange.lower + chunkYRange.upper) * 0.5;
-
-    for (auto it = sampledChunkLevels.lower_bound(targetLevel); it != sampledChunkLevels.end(); ++it)
-    {
-        const auto level = it->first;
-        if (level == targetLevel)
-        {
-            continue;
-        }
-
-        const PlotChunkKey parentKey{
-            worldToChunkIndex(centerX, level),
-            worldToChunkIndex(centerY, level),
-            level
-        };
-        if (isChunkRenderable(parentKey))
-        {
-            return parentKey;
-        }
-    }
-
-    return std::nullopt;
-}
-
-std::vector<PlotChunkKey> Plot::findCompleteRenderableChildrenForTarget(const int64_t chunkX, const int64_t chunkY,
-                                                                         const int targetLevel) const
-{
-    const auto targetXRange = chunkIndexToRange(chunkX, targetLevel);
-    const auto targetYRange = chunkIndexToRange(chunkY, targetLevel);
-
-    const auto begin = sampledChunkLevels.lower_bound(targetLevel);
-    for (auto it = std::make_reverse_iterator(begin); it != sampledChunkLevels.rend(); ++it)
-    {
-        const auto level = it->first;
-
-        auto [childMinX, childMaxX] = getChunkIndexBounds(targetXRange, level);
-        auto [childMinY, childMaxY] = getChunkIndexBounds(targetYRange, level);
-
-        std::vector<PlotChunkKey> candidateKeys;
-        candidateKeys.reserve(
-            static_cast<size_t>(childMaxX - childMinX + 1) * static_cast<size_t>(childMaxY - childMinY + 1));
-
-        auto isComplete = true;
-        for (auto childY = childMinY; childY <= childMaxY && isComplete; ++childY)
-        {
-            for (auto childX = childMinX; childX <= childMaxX; ++childX)
-            {
-                const PlotChunkKey childKey{childX, childY, level};
-                if (!isChunkRenderable(childKey))
-                {
-                    isComplete = false;
-                    break;
-                }
-
-                candidateKeys.push_back(childKey);
-            }
-        }
-
-        if (isComplete && !candidateKeys.empty())
-        {
-            return candidateKeys;
-        }
-    }
-
-    return {};
-}
-
 void Plot::applyChunkRenderData(const ChunkRenderData &chunkRenderData)
 {
     GRAPHX_PROFILE_SCOPE("plot.applyChunkRenderData");
 
-    const auto addLevelRef = [this](const int level)
-    {
-        sampledChunkLevels[level] += 1;
-    };
-
-    const auto removeLevelRef = [this](const int level)
-    {
-        const auto levelCountIt = sampledChunkLevels.find(level);
-        if (levelCountIt == sampledChunkLevels.end())
-        {
-            return;
-        }
-
-        if (levelCountIt->second <= 1)
-        {
-            sampledChunkLevels.erase(level);
-            return;
-        }
-
-        levelCountIt->second -= 1;
-    };
-
-    const auto floorDivByPow2 = [](const int64_t value, const int shift) -> int64_t
-    {
-        if (shift <= 0)
-        {
-            return value;
-        }
-
-        if (shift >= 62)
-        {
-            return value >= 0 ? 0 : -1;
-        }
-
-        const auto divisor = int64_t{1} << shift;
-        if (value >= 0)
-        {
-            return value / divisor;
-        }
-
-        return -(((-value) + divisor - 1) / divisor);
-    };
-
-    const auto parentCoversChild = [floorDivByPow2](const PlotChunkKey &parent, const PlotChunkKey &child) -> bool
-    {
-        if (parent.level <= child.level)
-        {
-            return false;
-        }
-
-        const auto levelDelta = parent.level - child.level;
-        const auto projectedX = floorDivByPow2(child.x, levelDelta);
-        const auto projectedY = floorDivByPow2(child.y, levelDelta);
-        return projectedX == parent.x && projectedY == parent.y;
-    };
-
-    const auto eraseCachedChunk = [this, &removeLevelRef](const PlotChunkKey &key)
-    {
-        if (sampledChunkCache.erase(key) == 0)
-        {
-            return;
-        }
-
-        chunkRenderItems.erase(key);
-        chunkRegionTextureCache.erase(key);
-        chunkContourCache.erase(key);
-        removeLevelRef(key.level);
-    };
-
     const auto &chunk = chunkRenderData.chunk;
     const auto key = toChunkKey(chunk);
-    const auto isUniformChunk = chunk.state >= 0;
 
-    if (isUniformChunk)
-    {
-        auto coveredByUniformParent = false;
-        for (auto levelIt = sampledChunkLevels.upper_bound(chunk.level); levelIt != sampledChunkLevels.end(); ++levelIt)
-        {
-            const auto parentLevel = levelIt->first;
-            const PlotChunkKey parentKey{
-                floorDivByPow2(key.x, parentLevel - key.level),
-                floorDivByPow2(key.y, parentLevel - key.level),
-                parentLevel
-            };
+    PipelineLog::log("  applyChunk: (%lld,%lld,%d) state=%d treeBefore=%zu",
+        key.x, key.y, key.level, chunk.state, chunkTree.size());
 
-            const auto parentIt = sampledChunkCache.find(parentKey);
-            if (parentIt == sampledChunkCache.end())
-            {
-                continue;
-            }
+    chunkTree.insert(chunk);
 
-            if (parentIt->second.state >= 0 && parentIt->second.state == chunk.state)
-            {
-                coveredByUniformParent = true;
-                break;
-            }
-        }
-
-        if (coveredByUniformParent)
-        {
-            return;
-        }
-    }
-
-    const auto existingIt = sampledChunkCache.find(key);
-    if (existingIt == sampledChunkCache.end())
-    {
-        sampledChunkCache.emplace(key, chunk);
-        addLevelRef(chunk.level);
-    }
-    else
-    {
-        existingIt->second = chunk;
-    }
+    PipelineLog::log("  applyChunk: (%lld,%lld,%d) treeAfter=%zu",
+        key.x, key.y, key.level, chunkTree.size());
 
     chunkRenderItems.erase(key);
 
-    if (isUniformChunk)
+    if (chunk.state >= 0)
     {
         chunkRegionTextureCache.erase(key);
         chunkContourCache.erase(key);
-
-        std::vector<PlotChunkKey> removableChildren;
-        removableChildren.reserve(16);
-        for (const auto &[childKey, childChunk] : sampledChunkCache)
-        {
-            if (childKey.level >= key.level)
-            {
-                continue;
-            }
-
-            if (!parentCoversChild(key, childKey))
-            {
-                continue;
-            }
-
-            if (childChunk.state < 0 || childChunk.state != chunk.state)
-            {
-                continue;
-            }
-
-            removableChildren.push_back(childKey);
-        }
-
-        for (const auto &childKey : removableChildren)
-        {
-            eraseCachedChunk(childKey);
-        }
     }
     else
     {
@@ -753,282 +597,78 @@ void Plot::applyChunkRenderDataBatch(const std::vector<ChunkRenderData> &chunkRe
     }
 }
 
-std::vector<PlotChunkKey> Plot::selectVisibleChunkKeysAtLevel(const int targetLevel) const
+VisibleCover Plot::resolveVisibleCover() const
 {
-    GRAPHX_PROFILE_SCOPE("plot.selectVisibleChunkKeysAtLevel");
-    if (sampledChunkCache.empty())
+    GRAPHX_PROFILE_SCOPE("plot.resolveVisibleCover");
+    VisibleCover cover;
+    if (!formula && chunkTree.size() == 0)
     {
-        return {};
+        return cover;
     }
 
-    const auto [minChunkX, maxChunkX] = getChunkIndexBounds(viewXRange, targetLevel);
-    const auto [minChunkY, maxChunkY] = getChunkIndexBounds(viewYRange, targetLevel);
-
-    struct TargetCellKey
+    const auto windowWidth = window->getWidth();
+    const auto windowHeight = window->getHeight();
+    if (!hasValidViewportSize(windowWidth, windowHeight))
     {
-        int64_t x;
-        int64_t y;
-
-        bool operator==(const TargetCellKey &other) const
-        {
-            return x == other.x && y == other.y;
-        }
-    };
-
-    struct TargetCellKeyHash
-    {
-        size_t operator()(const TargetCellKey &key) const
-        {
-            const auto h1 = std::hash<int64_t>{}(key.x);
-            const auto h2 = std::hash<int64_t>{}(key.y);
-            size_t seed = h1;
-            seed ^= h2 + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
-            return seed;
-        }
-    };
-
-    struct TargetCellRect
-    {
-        int64_t minX;
-        int64_t maxX;
-        int64_t minY;
-        int64_t maxY;
-    };
-
-    const auto getTargetRectForKey = [this, targetLevel, minChunkX, maxChunkX, minChunkY, maxChunkY](
-    const PlotChunkKey &key) -> std::optional<TargetCellRect>
-    {
-        const auto chunkIt = sampledChunkCache.find(key);
-        if (chunkIt == sampledChunkCache.end())
-        {
-            return std::nullopt;
-        }
-
-        const auto &chunk = chunkIt->second;
-        auto [coverMinX, coverMaxX] = getChunkIndexBounds(chunk.xRange, targetLevel);
-        auto [coverMinY, coverMaxY] = getChunkIndexBounds(chunk.yRange, targetLevel);
-
-        coverMinX = std::max(coverMinX, minChunkX);
-        coverMaxX = std::min(coverMaxX, maxChunkX);
-        coverMinY = std::max(coverMinY, minChunkY);
-        coverMaxY = std::min(coverMaxY, maxChunkY);
-
-        if (coverMinX > coverMaxX || coverMinY > coverMaxY)
-        {
-            return std::nullopt;
-        }
-
-        return TargetCellRect{coverMinX, coverMaxX, coverMinY, coverMaxY};
-    };
-
-    std::unordered_set<TargetCellKey, TargetCellKeyHash> coveredCells;
-    coveredCells.reserve(
-        static_cast<size_t>(maxChunkX - minChunkX + 1) * static_cast<size_t>(maxChunkY - minChunkY + 1));
-
-    std::unordered_set<PlotChunkKey, PlotChunkKeyHash> chosenKeys;
-    chosenKeys.reserve(
-        static_cast<size_t>(maxChunkX - minChunkX + 1) * static_cast<size_t>(maxChunkY - minChunkY + 1));
-
-    const auto markRectCovered = [&coveredCells](const TargetCellRect &rect)
-    {
-        for (auto y = rect.minY; y <= rect.maxY; ++y)
-        {
-            for (auto x = rect.minX; x <= rect.maxX; ++x)
-            {
-                coveredCells.insert({x, y});
-            }
-        }
-    };
-
-    const auto floorDivByPow2 = [](const int64_t value, const int shift) -> int64_t
-    {
-        if (shift <= 0)
-        {
-            return value;
-        }
-
-        if (shift >= 62)
-        {
-            return value >= 0 ? 0 : -1;
-        }
-
-        const auto divisor = int64_t{1} << shift;
-        if (value >= 0)
-        {
-            return value / divisor;
-        }
-
-        return -(((-value) + divisor - 1) / divisor);
-    };
-
-    const auto parentCoversChild = [floorDivByPow2](const PlotChunkKey &parent, const PlotChunkKey &child) -> bool
-    {
-        if (parent.level <= child.level)
-        {
-            return false;
-        }
-
-        const auto levelDelta = parent.level - child.level;
-        const auto projectedX = floorDivByPow2(child.x, levelDelta);
-        const auto projectedY = floorDivByPow2(child.y, levelDelta);
-        return projectedX == parent.x && projectedY == parent.y;
-    };
-
-    const auto evictCoveredFiner = [&chosenKeys, parentCoversChild](const PlotChunkKey &coarseKey)
-    {
-        for (auto it = chosenKeys.begin(); it != chosenKeys.end();)
-        {
-            if (!parentCoversChild(coarseKey, *it))
-            {
-                ++it;
-                continue;
-            }
-
-            it = chosenKeys.erase(it);
-        }
-    };
-
-    for (auto chunkY = minChunkY; chunkY <= maxChunkY; ++chunkY)
-    {
-        for (auto chunkX = minChunkX; chunkX <= maxChunkX; ++chunkX)
-        {
-            const TargetCellKey cell{chunkX, chunkY};
-            if (coveredCells.contains(cell))
-            {
-                continue;
-            }
-
-            if (const auto chosen = findBestChunkForTarget(chunkX, chunkY, targetLevel))
-            {
-                if (chosen->level > targetLevel)
-                {
-                    evictCoveredFiner(*chosen);
-                }
-
-                chosenKeys.insert(*chosen);
-
-                if (const auto chosenRect = getTargetRectForKey(*chosen))
-                {
-                    markRectCovered(*chosenRect);
-                }
-                else
-                {
-                    coveredCells.insert(cell);
-                }
-
-                continue;
-            }
-
-            const auto childKeys = findCompleteRenderableChildrenForTarget(chunkX, chunkY, targetLevel);
-            if (!childKeys.empty())
-            {
-                for (const auto &childKey : childKeys)
-                {
-                    chosenKeys.insert(childKey);
-                }
-                coveredCells.insert(cell);
-            }
-        }
+        cover.bounded = false;
+        return cover;
     }
 
-    std::vector<PlotChunkKey> keys;
-    keys.reserve(chosenKeys.size());
-    for (const auto &key : chosenKeys)
-    {
-        keys.push_back(key);
-    }
+    const auto desiredLevel = targetLevel(viewXRange, viewYRange, windowWidth, windowHeight);
+    const auto t0 = std::chrono::steady_clock::now();
+    cover = chunkTree.selectVisibleCover(viewXRange, viewYRange, desiredLevel);
+    const auto t1 = std::chrono::steady_clock::now();
+    const auto resolveMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
-    std::ranges::sort(keys, [](const PlotChunkKey &lhs, const PlotChunkKey &rhs)
-    {
-        if (lhs.level != rhs.level)
-        {
-            // Draw coarse chunks first, then refined chunks on top.
-            return lhs.level > rhs.level;
-        }
+    PipelineLog::log("plot.cover: level=%d keys=%zu missing=%zu cells=%zu bounded=%d ms=%lld treeSize=%zu",
+        desiredLevel,
+        cover.keys.size(),
+        cover.missingCells.size(),
+        cover.targetCellCount,
+        cover.bounded ? 1 : 0,
+        resolveMs,
+        chunkTree.size());
 
-        return std::tie(lhs.y, lhs.x) < std::tie(rhs.y, rhs.x);
-    });
-
-    // Final guard: once a parent chunk is selected, drop any covered finer chunks.
-    std::vector<PlotChunkKey> prunedKeys;
-    prunedKeys.reserve(keys.size());
-    for (const auto &candidate : keys)
-    {
-        auto coveredByParent = false;
-        for (const auto &selected : prunedKeys)
-        {
-            if (parentCoversChild(selected, candidate))
-            {
-                coveredByParent = true;
-                break;
-            }
-        }
-
-        if (!coveredByParent)
-        {
-            prunedKeys.push_back(candidate);
-        }
-    }
-
-    return prunedKeys;
-}
-
-std::vector<PlotChunkKey> Plot::selectVisibleChunkKeys() const
-{
-    GRAPHX_PROFILE_SCOPE("plot.selectVisibleChunkKeys");
-    if (sampledChunkCache.empty())
-    {
-        return {};
-    }
-
-    const auto desiredTargetLevel = getTargetLevel(viewXRange, viewYRange, window->getWidth(), window->getHeight());
-
-    std::vector<int> candidateLevels;
-    candidateLevels.reserve(sampledChunkLevels.size() + 1);
-    candidateLevels.push_back(desiredTargetLevel);
-
-    const auto finerBegin = sampledChunkLevels.lower_bound(desiredTargetLevel);
-    for (auto it = std::make_reverse_iterator(finerBegin); it != sampledChunkLevels.rend(); ++it)
-    {
-        const auto level = it->first;
-        if (level == desiredTargetLevel)
-        {
-            continue;
-        }
-
-        candidateLevels.push_back(level);
-    }
-
-    for (const auto candidateLevel : candidateLevels)
-    {
-        auto keys = selectVisibleChunkKeysAtLevel(candidateLevel);
-        if (!keys.empty())
-        {
-            return keys;
-        }
-    }
-
-    return {};
+    return cover;
 }
 
 void Plot::rebuildVisibleChunkMeshes()
 {
     GRAPHX_PROFILE_SCOPE("plot.rebuildVisibleChunkMeshes");
-    visibleChunkMeshes.clear();
     constexpr auto contourOnlyMode = false;
 
-    if (sampledChunkCache.empty())
+    if (!formula && chunkTree.size() == 0)
     {
+        visibleChunkMeshes.clear();
         return;
     }
 
-    const auto keys = selectVisibleChunkKeys();
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto cover = resolveVisibleCover();
+    const auto t1 = std::chrono::steady_clock::now();
+    const auto selectMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    PipelineLog::log("plot.rebuildMeshes: treeSize=%zu selectedKeys=%zu missing=%zu selectMs=%lld",
+        chunkTree.size(), cover.keys.size(), cover.missingCells.size(), selectMs);
+
+    if (!cover.bounded)
+    {
+        PipelineLog::log("plot.rebuildMeshes: keep previous meshes because cover is unbounded");
+        return;
+    }
+
+    visibleChunkMeshes.clear();
     std::vector<Mesh> deferredContourMeshes;
-    deferredContourMeshes.reserve(keys.size());
+    deferredContourMeshes.reserve(cover.keys.size());
 
-    visibleChunkMeshes.reserve(debug ? keys.size() * 3 : keys.size() * 2);
+    const auto baseMeshCount = cover.keys.size() + cover.missingCells.size();
+    visibleChunkMeshes.reserve(debug ? baseMeshCount * 3 : baseMeshCount * 2);
 
-    for (const auto &key : keys)
+    for (const auto &missingCell : cover.missingCells)
+    {
+        visibleChunkMeshes.push_back(createMissingCellMesh(missingCell));
+    }
+
+    for (const auto &key : cover.keys)
     {
         const auto renderIt = chunkRenderItems.find(key);
         if (renderIt == chunkRenderItems.end())
@@ -1053,7 +693,7 @@ void Plot::rebuildVisibleChunkMeshes()
     if (debug)
     {
         // Debug mode overlays chunk-selection visualization on top of normal meshes.
-        for (const auto &key : keys)
+        for (const auto &key : cover.keys)
         {
             const auto renderIt = chunkRenderItems.find(key);
             if (renderIt == chunkRenderItems.end())
@@ -1134,8 +774,15 @@ void Plot::onCursorDrag(const double x, const double y)
     const auto deltaX{viewXRange.size() / windowWidth};
     const auto deltaY{viewYRange.size() / windowHeight};
 
-    viewXRange = viewXRange + Interval{x * -deltaX};
-    viewYRange = viewYRange + Interval{y * deltaY};
+    auto nextXRange = viewXRange + Interval{x * -deltaX};
+    auto nextYRange = viewYRange + Interval{y * deltaY};
+    if (!normalizeViewport(nextXRange, nextYRange, viewXRange, viewYRange))
+    {
+        return;
+    }
+
+    viewXRange = nextXRange;
+    viewYRange = nextYRange;
 
     if (plotRangeChangedCallback)
     {
@@ -1150,6 +797,10 @@ void Plot::onCursorDrag(const double x, const double y)
 
     if (formula)
     {
+        {
+            GRAPHX_PROFILE_SCOPE("plot.onCursorDrag.rebuildCachedMeshes");
+            rebuildAndPublishMeshes();
+        }
         GRAPHX_PROFILE_SCOPE("plot.onCursorDrag.addTask");
         computeEngine->addTask({graph, formula, viewXRange, viewYRange, windowWidth, windowHeight});
     }
@@ -1158,6 +809,19 @@ void Plot::onCursorDrag(const double x, const double y)
 void Plot::onWindowSizeChanged(const int width, const int height)
 {
     GRAPHX_PROFILE_SCOPE("plot.onWindowSizeChanged");
+    onFramebufferResized(width, height);
+
+    if (plotRangeChangedCallback)
+    {
+        plotRangeChangedCallback(viewXRange, viewYRange);
+    }
+
+    onResizeSettled(width, height);
+}
+
+void Plot::onFramebufferResized(const int width, const int height)
+{
+    GRAPHX_PROFILE_SCOPE("plot.onFramebufferResized");
     if (!hasValidViewportSize(width, height))
     {
         return;
@@ -1169,19 +833,29 @@ void Plot::onWindowSizeChanged(const int width, const int height)
 
     double xRangeMid = (viewXRange.lower + viewXRange.upper) / 2.0;
 
-    viewXRange = {xRangeMid - xRangeSize / 2.0, xRangeMid + xRangeSize / 2.0};
-
-    if (plotRangeChangedCallback)
+    auto nextXRange = Interval{xRangeMid - xRangeSize / 2.0, xRangeMid + xRangeSize / 2.0};
+    auto nextYRange = viewYRange;
+    if (!normalizeViewport(nextXRange, nextYRange, viewXRange, viewYRange))
     {
-        plotRangeChangedCallback(viewXRange, viewYRange);
+        return;
     }
+
+    viewXRange = nextXRange;
+    viewYRange = nextYRange;
 
     updateModelMat();
+}
 
-    if (formula)
+void Plot::onResizeSettled(const int width, const int height)
+{
+    GRAPHX_PROFILE_SCOPE("plot.onResizeSettled");
+    if (!hasValidViewportSize(width, height) || !formula)
     {
-        computeEngine->addTask({graph, formula, viewXRange, viewYRange, width, height});
+        return;
     }
+
+    rebuildAndPublishMeshes();
+    computeEngine->addTask({graph, formula, viewXRange, viewYRange, width, height});
 }
 
 Interval Plot::getXRanges() const
@@ -1205,8 +879,10 @@ void Plot::onMouseScrolled(const double offset)
     }
 
     const auto zoomFactor = std::clamp(1.0 - offset * 0.1, 0.1, 10.0);
-    const auto nextXRangeSize = viewXRange.size() * zoomFactor;
-    const auto nextYRangeSize = viewYRange.size() * zoomFactor;
+    const auto nextXRangeSize = std::clamp(
+        viewXRange.size() * zoomFactor, MIN_VIEWPORT_WORLD_SPAN, MAX_VIEWPORT_WORLD_SPAN);
+    const auto nextYRangeSize = std::clamp(
+        viewYRange.size() * zoomFactor, MIN_VIEWPORT_WORLD_SPAN, MAX_VIEWPORT_WORLD_SPAN);
 
     const auto glfwWindow = window->getGlfwWindow();
     const auto [windowCoordWidth, windowCoordHeight] = glfwWindow->getSize();
@@ -1226,8 +902,15 @@ void Plot::onMouseScrolled(const double offset)
     const auto nextXLower = anchorX - xPercent * nextXRangeSize;
     const auto nextYLower = anchorY - (1.0 - yPercentFromTop) * nextYRangeSize;
 
-    viewXRange = {nextXLower, nextXLower + nextXRangeSize};
-    viewYRange = {nextYLower, nextYLower + nextYRangeSize};
+    auto nextXRange = Interval{nextXLower, nextXLower + nextXRangeSize};
+    auto nextYRange = Interval{nextYLower, nextYLower + nextYRangeSize};
+    if (!normalizeViewport(nextXRange, nextYRange, viewXRange, viewYRange))
+    {
+        return;
+    }
+
+    viewXRange = nextXRange;
+    viewYRange = nextYRange;
 
     if (plotRangeChangedCallback)
     {
@@ -1238,6 +921,13 @@ void Plot::onMouseScrolled(const double offset)
 
     if (formula)
     {
+        {
+            GRAPHX_PROFILE_SCOPE("plot.onMouseScrolled.rebuildCachedMeshes");
+            rebuildAndPublishMeshes();
+        }
+        PipelineLog::log("plot.scroll: newRange=[%.1f,%.1f]x[%.1f,%.1f]",
+            viewXRange.lower, viewXRange.upper, viewYRange.lower, viewYRange.upper);
+        GRAPHX_PROFILE_SCOPE("plot.onMouseScrolled.addTask");
         computeEngine->addTask({graph, formula, viewXRange, viewYRange, windowWidth, windowHeight});
     }
 }
@@ -1270,6 +960,10 @@ void Plot::onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action, 
         const auto ratio = windowWidth / static_cast<double>(windowHeight);
         const auto xRangeSize = viewYRange.size() * ratio;
         viewXRange = {-xRangeSize / 2.0, xRangeSize / 2.0};
+        if (!normalizeViewport(viewXRange, viewYRange, Interval{-20.0, 20.0}, Interval{-20.0, 20.0}))
+        {
+            return;
+        }
 
         if (plotRangeChangedCallback)
         {

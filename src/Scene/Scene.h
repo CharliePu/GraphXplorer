@@ -8,7 +8,9 @@
 
 
 class Scene: public UserInputHandler {
-
+public:
+    virtual void onFramebufferResized(int width, int height) {}
+    virtual void onResizeSettled(int width, int height) {}
 };
 
 

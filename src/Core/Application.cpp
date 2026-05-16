@@ -4,6 +4,8 @@
 
 #include "Application.h"
 
+#include <algorithm>
+#include <chrono>
 #include <iostream>
 #include <utility>
 
@@ -17,7 +19,13 @@
 #include "../Math/GraphRasterizer.h"
 #include "../Util/InputScenarioRunner.h"
 #include "../Util/PerformanceProfiler.h"
+#include "../Util/PipelineLog.h"
 #include "../Util/ThreadPool.h"
+
+namespace
+{
+constexpr auto kResizeSettleDelay = std::chrono::milliseconds{120};
+}
 
 Application::Application(const int width, const int height, const std::string &name) :
     name{name},
@@ -28,6 +36,7 @@ Application::Application(const int width, const int height, const std::string &n
     computeEngine{std::make_shared<ComputeEngine>(window, threadPool)},
     sceneManager{std::make_shared<SceneManager>(computeEngine, renderer, window)}
 {
+    PipelineLog::init();
     pendingWindowSize = std::make_pair(width, height);
 }
 
@@ -52,12 +61,16 @@ void Application::run()
             );
         }
 
+        applyPendingWindowSizeChange();
+
         {
             GRAPHX_PROFILE_SCOPE("main.pollAsyncStates");
             computeEngine->pollAsyncStates();
         }
 
-        applyPendingWindowSizeChange();
+        applySettledResizeWork();
+
+        sceneManager->flushPendingMeshes();
 
         {
             GRAPHX_PROFILE_SCOPE("main.render");
@@ -78,9 +91,19 @@ void Application::run()
             break;
         }
 
+        const auto resizeTimeout = resizeWaitTimeoutSeconds();
         if (inputScenarioRunner && inputScenarioRunner->isActive())
         {
-            glfw::waitEvents(inputScenarioRunner->waitTimeoutSeconds());
+            auto waitTimeout = inputScenarioRunner->waitTimeoutSeconds();
+            if (resizeTimeout.has_value())
+            {
+                waitTimeout = std::min(waitTimeout, *resizeTimeout);
+            }
+            glfw::waitEvents(waitTimeout);
+        }
+        else if (resizeTimeout.has_value())
+        {
+            glfw::waitEvents(*resizeTimeout);
         }
         else
         {
@@ -89,6 +112,7 @@ void Application::run()
     }
 
     GRAPHX_PROFILE_FLUSH_NOW();
+    PipelineLog::shutdown();
 }
 
 void Application::onWindowSizeChanged(const int width, const int height)
@@ -128,15 +152,11 @@ void Application::onMouseScrolled(double offset)
 
 void Application::onWindowRefresh()
 {
-    applyPendingWindowSizeChange();
-    renderer->clear();
-    renderer->draw();
-    window->swapBuffers();
+    // The refresh event wakes the main loop; rendering stays centralized there.
 }
 
 void Application::applyPendingWindowSizeChange()
 {
-    return; // DIAGNOSTIC: skip all resize handling
     if (!pendingWindowSize.has_value())
     {
         return;
@@ -164,15 +184,61 @@ void Application::applyPendingWindowSizeChange()
         renderer->onWindowSizeChanged(width, height);
     }
     {
-        GRAPHX_PROFILE_SCOPE("app.applyWindowSize.sceneManager");
-        sceneManager->onWindowSizeChanged(width, height);
+        GRAPHX_PROFILE_SCOPE("app.applyWindowSize.framebufferScene");
+        sceneManager->onFramebufferResized(width, height);
     }
 
+    pendingSettledWindowSize = std::make_pair(width, height);
+    lastResizeEventTime = std::chrono::steady_clock::now();
     appliedWindowSize = std::make_pair(width, height);
+}
+
+void Application::applySettledResizeWork()
+{
+    if (!pendingSettledWindowSize.has_value())
+    {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now - lastResizeEventTime < kResizeSettleDelay)
+    {
+        return;
+    }
+
+    const auto [width, height] = *pendingSettledWindowSize;
+    pendingSettledWindowSize.reset();
+
+    if (!isValidFramebufferSize(width, height))
+    {
+        return;
+    }
+
+    {
+        GRAPHX_PROFILE_SCOPE("app.applyWindowSize.settledScene");
+        sceneManager->onResizeSettled(width, height);
+    }
+}
+
+std::optional<double> Application::resizeWaitTimeoutSeconds() const
+{
+    if (!pendingSettledWindowSize.has_value())
+    {
+        return std::nullopt;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed = now - lastResizeEventTime;
+    if (elapsed >= kResizeSettleDelay)
+    {
+        return 0.001;
+    }
+
+    const auto remaining = kResizeSettleDelay - elapsed;
+    return std::max(0.001, std::chrono::duration<double>(remaining).count());
 }
 
 bool Application::isValidFramebufferSize(const int width, const int height)
 {
     return width > 0 && height > 0;
 }
-

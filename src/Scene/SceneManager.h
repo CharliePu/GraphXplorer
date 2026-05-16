@@ -4,6 +4,7 @@
 
 #ifndef SCENEMANAGER_H
 #define SCENEMANAGER_H
+
 #include "../Core/Input.h"
 
 
@@ -26,9 +27,15 @@ public:
 
     void onWindowSizeChanged(int width, int height) override;
 
+    void onFramebufferResized(int width, int height);
+
+    void onResizeSettled(int width, int height);
+
     void onTextEntered(unsigned int codepoint) override;
 
     void onMouseScrolled(double offset) override;
+
+    void flushPendingMeshes();
 
 private:
     std::shared_ptr<MainScene> mainScene;

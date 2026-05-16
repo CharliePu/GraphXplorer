@@ -30,6 +30,16 @@ void SceneManager::onWindowSizeChanged(int width, int height)
     currentScene->onWindowSizeChanged(width, height);
 }
 
+void SceneManager::onFramebufferResized(int width, int height)
+{
+    currentScene->onFramebufferResized(width, height);
+}
+
+void SceneManager::onResizeSettled(int width, int height)
+{
+    currentScene->onResizeSettled(width, height);
+}
+
 void SceneManager::onTextEntered(unsigned int codepoint)
 {
     currentScene->onTextEntered(codepoint);
@@ -38,4 +48,9 @@ void SceneManager::onTextEntered(unsigned int codepoint)
 void SceneManager::onMouseScrolled(double offset)
 {
     currentScene->onMouseScrolled(offset);
+}
+
+void SceneManager::flushPendingMeshes()
+{
+    mainScene->flushPendingMeshes();
 }

@@ -37,6 +37,8 @@ add_library(GraphXplorerLib
         src/Math/GraphProcessor.cpp
         src/Math/GraphProcessor.h
         src/Graph/Graph.h
+        src/Graph/ChunkTree.h
+        src/Graph/ChunkTree.cpp
         src/Math/Interval.cpp
         src/Math/Interval.h
         src/Math/ChunkRenderer.h
@@ -66,7 +68,6 @@ add_library(GraphXplorerLib
         src/Render/TextMeshesGenerator.h
         src/UI/InputBox.cpp
         src/UI/InputBox.h
-        src/Graph/GraphOperations.h
         src/Math/ComputeEngine.cpp
         src/Math/ComputeEngine.h
         src/Formula/Token.h

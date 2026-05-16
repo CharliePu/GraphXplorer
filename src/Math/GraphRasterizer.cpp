@@ -123,38 +123,6 @@ GraphRasterizer::GraphRasterizer(const std::shared_ptr<Window> &window,
 
 GraphRasterizer::~GraphRasterizer() = default;
 
-int GraphRasterizer::getTargetLevel(const Interval &xRange, const Interval &yRange, const int windowWidth,
-                                    const int windowHeight)
-{
-    const auto minRangeSize = std::min(xRange.size(), yRange.size());
-    const auto maxWindowSize = std::max(windowWidth, windowHeight);
-
-    if (minRangeSize <= 0.0 || maxWindowSize <= 0)
-    {
-        return 0;
-    }
-
-    const auto rangePerPixel = minRangeSize / static_cast<double>(maxWindowSize);
-    const auto rangePerChunk = rangePerPixel * static_cast<double>(MIN_CHUNK_PIXELS);
-    return static_cast<int>(std::floor(std::log2(rangePerChunk)));
-}
-
-std::pair<int64_t, int64_t> GraphRasterizer::getChunkIndexBounds(const Interval &range, const int level)
-{
-    if (range.upper <= range.lower)
-    {
-        const auto chunkIndex = worldToChunkIndex(range.lower, level);
-        return {chunkIndex, chunkIndex};
-    }
-
-    const auto chunkSize = chunkSizeForLevel(level);
-    const auto minIndex = worldToChunkIndex(range.lower, level);
-    const auto scaledUpper = range.upper / chunkSize;
-    const auto upperInclusiveScaled = std::nextafter(scaledUpper, -std::numeric_limits<double>::infinity());
-    const auto maxIndex = static_cast<int64_t>(std::floor(upperInclusiveScaled));
-    return {minIndex, maxIndex};
-}
-
 std::optional<Interval> GraphRasterizer::lookupAtLevel(const std::shared_ptr<Graph> &graph, const double x,
                                                        const double y, const int level)
 {
@@ -223,7 +191,8 @@ RasterizedPlot GraphRasterizer::rasterize(const std::shared_ptr<Graph> &graph,
                                           const std::shared_ptr<Formula> &formula,
                                           const Interval &xRange,
                                           const Interval &yRange, const int windowWidth,
-                                          const int windowHeight)
+                                          const int windowHeight,
+                                          const CancelFn &cancelled)
 {
     if (!graph)
     {
@@ -237,6 +206,11 @@ RasterizedPlot GraphRasterizer::rasterize(const std::shared_ptr<Graph> &graph,
         return result;
     }
 
+    if (cancelled && cancelled())
+    {
+        return result;
+    }
+
     if (cachedFormula != formula.get())
     {
         chunkRegionRasterizer->clearCache();
@@ -244,10 +218,10 @@ RasterizedPlot GraphRasterizer::rasterize(const std::shared_ptr<Graph> &graph,
         cachedFormula = formula.get();
     }
 
-    const auto targetLevel = getTargetLevel(xRange, yRange, windowWidth, windowHeight);
-    const auto [minChunkX, maxChunkX] = getChunkIndexBounds(xRange, targetLevel);
-    const auto [minChunkY, maxChunkY] = getChunkIndexBounds(yRange, targetLevel);
-    const auto targetChunkSize = chunkSizeForLevel(targetLevel);
+    const auto level = targetLevel(xRange, yRange, windowWidth, windowHeight);
+    const auto [minChunkX, maxChunkX] = chunkIndexBounds(xRange, level);
+    const auto [minChunkY, maxChunkY] = chunkIndexBounds(yRange, level);
+    const auto targetChunkSize = chunkSizeForLevel(level);
 
     RPN residualRpn;
     std::string topComparisonOperator;
@@ -262,11 +236,21 @@ RasterizedPlot GraphRasterizer::rasterize(const std::shared_ptr<Graph> &graph,
     std::unordered_set<MixedChunkKey, MixedChunkKeyHash> emittedChunks;
     for (auto chunkY = minChunkY; chunkY <= maxChunkY; ++chunkY)
     {
+        if (cancelled && cancelled())
+        {
+            return result;
+        }
+
         for (auto chunkX = minChunkX; chunkX <= maxChunkX; ++chunkX)
         {
+            if (cancelled && cancelled())
+            {
+                return result;
+            }
+
             const auto x = (static_cast<double>(chunkX) + 0.5) * targetChunkSize;
             const auto y = (static_cast<double>(chunkY) + 0.5) * targetChunkSize;
-            const auto sample = samplePoint(graph, x, y, targetLevel);
+            const auto sample = samplePoint(graph, x, y, level);
             if (sample.source == LookupSource::Missing)
             {
                 continue;
@@ -299,10 +283,20 @@ RasterizedPlot GraphRasterizer::rasterize(const std::shared_ptr<Graph> &graph,
                                                                                      formula);
                 }
 
+                if (cancelled && cancelled())
+                {
+                    return result;
+                }
+
                 if (shouldRenderContour)
                 {
                     renderData.contour = chunkContourRasterizer->rasterizeChunkContour(
                         key.chunkX, key.chunkY, key.level, residualRpn);
+                }
+
+                if (cancelled && cancelled())
+                {
+                    return result;
                 }
 
             }

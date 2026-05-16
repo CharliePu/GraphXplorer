@@ -21,16 +21,16 @@ class Formula;
 class GraphProcessor
 {
 public:
+    using CancelFn = std::function<bool()>;
+
     GraphProcessor(const std::shared_ptr<Window> &window, const std::shared_ptr<ThreadPool> &threadPool);
 
     void process(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula, const Interval &xRange,
-                 const Interval &yRange, int windowWidth, int windowHeight);
+                 const Interval &yRange, int windowWidth, int windowHeight, const CancelFn &cancelled = {});
 
 private:
-    static int getTargetLevel(const Interval &xRange, const Interval &yRange, int windowWidth, int windowHeight);
     static int getCoarsestViewportLevel(const Interval &xRange, const Interval &yRange);
 
-    static std::pair<int64_t, int64_t> getChunkIndexBounds(const Interval &range, int level);
     static bool intersects(const Interval &lhs, const Interval &rhs);
 
     static Tile &getOrComputeTile(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula,
@@ -38,7 +38,7 @@ private:
 
     void refineTile(const std::shared_ptr<Graph> &graph, const std::shared_ptr<Formula> &formula,
                     int64_t chunkX, int64_t chunkY, int level, int targetLevel,
-                    const Interval &viewXRange, const Interval &viewYRange) const;
+                    const Interval &viewXRange, const Interval &viewYRange, const CancelFn &cancelled) const;
 
     std::shared_ptr<Window> window;
 

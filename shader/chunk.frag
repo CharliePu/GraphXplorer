@@ -12,7 +12,7 @@ void main() {
         if (Color.a <= 0.0) {
             discard;
         }
-        FragColor = vec4(Color.rgb, 1.0);
+        FragColor = vec4(Color.rgb, Color.a);
         return;
     }
 
@@ -24,7 +24,7 @@ void main() {
         if (Color.a <= 0.0) {
             discard;
         }
-        FragColor = vec4(Color.rgb, 1.0);
+        FragColor = vec4(Color.rgb, Color.a);
         return;
     }
 

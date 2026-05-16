@@ -5,6 +5,7 @@
 #ifndef APPLICATION_H
 #define APPLICATION_H
 
+#include <chrono>
 #include <optional>
 #include <memory>
 
@@ -47,6 +48,8 @@ public:
 
 private:
     void applyPendingWindowSizeChange();
+    void applySettledResizeWork();
+    [[nodiscard]] std::optional<double> resizeWaitTimeoutSeconds() const;
     static bool isValidFramebufferSize(int width, int height);
 
     std::string name;
@@ -58,7 +61,9 @@ private:
     std::shared_ptr<ComputeEngine> computeEngine;
     std::shared_ptr<SceneManager> sceneManager;
     std::optional<std::pair<int, int>> pendingWindowSize;
+    std::optional<std::pair<int, int>> pendingSettledWindowSize;
     std::optional<std::pair<int, int>> appliedWindowSize;
+    std::chrono::steady_clock::time_point lastResizeEventTime{};
 };
 
 

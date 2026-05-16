@@ -1,7 +1,3 @@
-//
-// Created by charl on 6/2/2024.
-//
-
 #ifndef PLOT_H
 #define PLOT_H
 
@@ -18,6 +14,8 @@
 
 #include "UIComponent.h"
 #include "../Core/Input.h"
+#include "../Graph/ChunkTree.h"
+#include "../Graph/Graph.h"
 #include "../Math/Interval.h"
 #include "../Math/RasterizedPlot.h"
 #include "../Render/Mesh.h"
@@ -34,33 +32,6 @@ namespace staplegl
 class Formula;
 struct Graph;
 
-struct PlotChunkKey
-{
-    int64_t x;
-    int64_t y;
-    int level;
-
-    bool operator==(const PlotChunkKey &other) const
-    {
-        return x == other.x && y == other.y && level == other.level;
-    }
-};
-
-struct PlotChunkKeyHash
-{
-    size_t operator()(const PlotChunkKey &key) const
-    {
-        const auto h1 = std::hash<int64_t>{}(key.x);
-        const auto h2 = std::hash<int64_t>{}(key.y);
-        const auto h3 = std::hash<int>{}(key.level);
-
-        size_t seed = h1;
-        seed ^= h2 + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
-        seed ^= h3 + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
-        return seed;
-    }
-};
-
 class Plot: public UIComponent {
 
 public:
@@ -76,9 +47,15 @@ public:
 
     void updateModelMat();
 
+    void flushPendingMeshes();
+
     void onCursorDrag(double x, double y) override;
 
     void onWindowSizeChanged(int width, int height) override;
+
+    void onFramebufferResized(int width, int height);
+
+    void onResizeSettled(int width, int height);
 
     Interval getXRanges() const;
 
@@ -128,25 +105,18 @@ private:
         Mesh debugMesh;
     };
 
-    static int getTargetLevel(const Interval &xRange, const Interval &yRange, int windowWidth, int windowHeight);
-    static std::pair<int64_t, int64_t> getChunkIndexBounds(const Interval &range, int level);
-
-    static PlotChunkKey toChunkKey(const RasterChunk &chunk);
+    static ChunkKey toChunkKey(const RasterChunk &chunk);
 
     Mesh createColoredChunkMesh(const RasterChunk &chunk, const glm::vec4 &color) const;
     Mesh createTexturedChunkMesh(const RasterChunk &chunk, const std::shared_ptr<staplegl::texture_2d> &texture) const;
     Mesh createContourMesh(const std::vector<RasterContourSegment> &segments) const;
+    Mesh createMissingCellMesh(const TargetCell &cell) const;
     glm::vec4 getDebugChunkColor(const RasterChunk &chunk) const;
     std::optional<glm::vec4> getNormalSolidColor(const RasterChunk &chunk) const;
-    std::unique_ptr<ChunkRenderItem> buildChunkRenderItem(const PlotChunkKey &key);
+    std::unique_ptr<ChunkRenderItem> buildChunkRenderItem(const ChunkKey &key);
 
-    [[nodiscard]] bool isChunkRenderable(const PlotChunkKey &key) const;
-    [[nodiscard]] std::optional<PlotChunkKey> findBestChunkForTarget(int64_t chunkX, int64_t chunkY,
-                                                                      int targetLevel) const;
-    [[nodiscard]] std::vector<PlotChunkKey> findCompleteRenderableChildrenForTarget(int64_t chunkX, int64_t chunkY,
-                                                                                     int targetLevel) const;
-    [[nodiscard]] std::vector<PlotChunkKey> selectVisibleChunkKeysAtLevel(int targetLevel) const;
-    std::vector<PlotChunkKey> selectVisibleChunkKeys() const;
+    [[nodiscard]] bool isChunkRenderable(const ChunkKey &key) const;
+    [[nodiscard]] VisibleCover resolveVisibleCover() const;
     void applyChunkRenderData(const ChunkRenderData &chunkRenderData);
     void applyChunkRenderDataBatch(const std::vector<ChunkRenderData> &chunkRenderDataBatch);
     void rebuildVisibleChunkMeshes();
@@ -170,16 +140,16 @@ private:
     std::vector<Mesh> visibleChunkMeshes;
     std::vector<Mesh> meshes;
 
-    std::unordered_map<PlotChunkKey, RasterChunk, PlotChunkKeyHash> sampledChunkCache;
-    std::unordered_map<PlotChunkKey, std::shared_ptr<staplegl::texture_2d>, PlotChunkKeyHash> chunkRegionTextureCache;
-    std::unordered_map<PlotChunkKey, std::vector<RasterContourSegment>, PlotChunkKeyHash> chunkContourCache;
-    std::unordered_map<PlotChunkKey, std::unique_ptr<ChunkRenderItem>, PlotChunkKeyHash> chunkRenderItems;
-    std::map<int, size_t> sampledChunkLevels;
+    ChunkTree chunkTree;
+    std::unordered_map<ChunkKey, std::shared_ptr<staplegl::texture_2d>, ChunkKeyHash> chunkRegionTextureCache;
+    std::unordered_map<ChunkKey, std::vector<RasterContourSegment>, ChunkKeyHash> chunkContourCache;
+    std::unordered_map<ChunkKey, std::unique_ptr<ChunkRenderItem>, ChunkKeyHash> chunkRenderItems;
 
     glm::mat4 chunkModel;
 
     bool shouldRenderRegionForFormula;
     bool debug;
+    bool pendingMeshesDirty;
 };
 
 #endif //PLOT_H

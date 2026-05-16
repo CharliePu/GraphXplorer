@@ -10,6 +10,7 @@
 #include "GraphRasterizer.h"
 #include "GraphProcessor.h"
 #include "../Util/PerformanceProfiler.h"
+#include "../Util/PipelineLog.h"
 
 ComputeEngine::ComputeEngine(const std::shared_ptr<Window> &window,
                              const std::shared_ptr<ThreadPool> &threadPool): graphProcessor{
@@ -48,9 +49,10 @@ void ComputeEngine::addTask(const Task &task)
 {
     auto queuedTask = task;
     queuedTask.requestId = latestRequestedTaskId.fetch_add(1) + 1;
+    PipelineLog::log("addTask: reqId=%llu range=[%.1f,%.1f]x[%.1f,%.1f] %dx%d",
+        queuedTask.requestId, task.xRange.lower, task.xRange.upper,
+        task.yRange.lower, task.yRange.upper, task.windowWidth, task.windowHeight);
     currentTask = std::make_shared<Task>(queuedTask);
-    // Keep enqueue path lock-free for interactive input; stale queued results
-    // are filtered by requestId in pollAsyncStates().
     currentTask.notify_one();
 }
 
@@ -114,8 +116,6 @@ ComputeEngine::UpdateDrainPolicy ComputeEngine::getUpdateDrainPolicy() const
 void ComputeEngine::pollAsyncStates()
 {
     GRAPHX_PROFILE_SCOPE("compute.pollAsyncStates");
-    // Never dequeue updates before a callback is installed; otherwise prepared
-    // chunks can be dropped without any notification reaching the UI thread.
     if (!computeCompleteCallback)
     {
         return;
@@ -130,6 +130,8 @@ void ComputeEngine::pollAsyncStates()
     std::vector<ChunkRenderData> batchedChunkRenderData;
     auto updates = rasterizedDataInbox.drainForFrame();
 
+    PipelineLog::log("pollAsyncStates: drained %zu items, latestReqId=%llu", updates.size(), targetRequestId);
+
     for (auto &data : updates)
     {
         if (!data)
@@ -139,14 +141,13 @@ void ComputeEngine::pollAsyncStates()
 
         if (data->requestId < targetRequestId)
         {
-            // Drop stale work for superseded view requests.
+            PipelineLog::log("  DROP stale reqId=%llu (latest=%llu)", data->requestId, targetRequestId);
             continue;
         }
 
         if (data->requestId > targetRequestId)
         {
-            // If a newer request already produced results, switch to it and
-            // discard any older partial batch.
+            PipelineLog::log("  SWITCH to newer reqId=%llu (was %llu)", data->requestId, targetRequestId);
             targetRequestId = data->requestId;
             hasBatchedUpdate = false;
             batchedChunkRenderData.clear();
@@ -168,6 +169,7 @@ void ComputeEngine::pollAsyncStates()
 
         if (!data->chunkRenderData.empty())
         {
+            PipelineLog::log("  BATCH reqId=%llu chunks=%zu", data->requestId, data->chunkRenderData.size());
             batchedChunkRenderData.insert(batchedChunkRenderData.end(),
                                           std::make_move_iterator(data->chunkRenderData.begin()),
                                           std::make_move_iterator(data->chunkRenderData.end()));
@@ -176,6 +178,8 @@ void ComputeEngine::pollAsyncStates()
 
     if (hasBatchedUpdate && targetRequestId == latestRequestedTaskId.load())
     {
+        PipelineLog::log("pollAsyncStates: INVOKE callback reqId=%llu totalChunks=%zu",
+            targetRequestId, batchedChunkRenderData.size());
         computeCompleteCallback(std::move(batchedChunkRenderData),
                                 batchedXRange,
                                 batchedYRange,
@@ -183,9 +187,12 @@ void ComputeEngine::pollAsyncStates()
                                 batchedWindowHeight,
                                 targetRequestId);
     }
+    else if (hasBatchedUpdate)
+    {
+        PipelineLog::log("pollAsyncStates: SKIP callback (reqId=%llu != latest=%llu)",
+            targetRequestId, latestRequestedTaskId.load());
+    }
 
-    // Keep driving incremental streaming even when there is no user input event.
-    // If anything remains queued, wake the event loop again.
     if (!rasterizedDataInbox.empty())
     {
         glfw::postEmptyEvent();
@@ -208,64 +215,78 @@ void ComputeEngine::processTasks()
             continue;
         }
 
+        PipelineLog::log("worker: START reqId=%llu range=[%.1f,%.1f]x[%.1f,%.1f]",
+            task->requestId, task->xRange.lower, task->xRange.upper,
+            task->yRange.lower, task->yRange.upper);
+
+        const auto requestId = task->requestId;
+        const auto cancelled = [this, requestId]
+        {
+            return !running.load() || requestId != latestRequestedTaskId.load();
+        };
+
+        if (cancelled())
+        {
+            PipelineLog::log("worker: CANCEL before graph reqId=%llu latest=%llu",
+                requestId, latestRequestedTaskId.load());
+            continue;
+        }
+
         {
             GRAPHX_PROFILE_SCOPE("compute.worker.graphProcess");
             graphProcessor->process(task->graph, task->formula, task->xRange, task->yRange, task->windowWidth,
-                                    task->windowHeight);
+                                    task->windowHeight, cancelled);
         }
+
+        if (cancelled())
+        {
+            PipelineLog::log("worker: CANCEL after graph reqId=%llu latest=%llu",
+                requestId, latestRequestedTaskId.load());
+            continue;
+        }
+
+        PipelineLog::log("worker: GRAPH DONE reqId=%llu", task->requestId);
 
         auto rasterized = [&]()
         {
             GRAPHX_PROFILE_SCOPE("compute.worker.rasterize");
             return graphRasterizer->rasterize(task->graph, task->formula, task->xRange, task->yRange,
                                               task->windowWidth,
-                                              task->windowHeight);
+                                              task->windowHeight,
+                                              cancelled);
         }();
 
-        if (task->requestId != latestRequestedTaskId.load())
+        if (cancelled())
         {
+            PipelineLog::log("worker: CANCEL after raster reqId=%llu latest=%llu",
+                requestId, latestRequestedTaskId.load());
             continue;
         }
 
-        std::vector<std::shared_ptr<RasterizedData>> pendingUpdates;
-        pendingUpdates.reserve(std::max<size_t>(rasterized.chunkRenderData.size(), 1));
-        for (auto &chunkRenderData : rasterized.chunkRenderData)
+        PipelineLog::log("worker: RASTERIZE DONE reqId=%llu chunks=%zu",
+            task->requestId, rasterized.chunkRenderData.size());
+
+        if (task->requestId != latestRequestedTaskId.load())
         {
-            if (task->requestId != latestRequestedTaskId.load())
-            {
-                pendingUpdates.clear();
-                break;
-            }
-
-            auto update = std::make_shared<RasterizedData>();
-            update->requestId = task->requestId;
-            update->xRange = task->xRange;
-            update->yRange = task->yRange;
-            update->windowWidth = task->windowWidth;
-            update->windowHeight = task->windowHeight;
-            update->chunkRenderData.push_back(std::move(chunkRenderData));
-
-            pendingUpdates.push_back(std::move(update));
+            PipelineLog::log("worker: DISCARD reqId=%llu (latest=%llu)",
+                task->requestId, latestRequestedTaskId.load());
+            continue;
         }
 
-        if (pendingUpdates.empty())
-        {
-            auto update = std::make_shared<RasterizedData>();
-            update->requestId = task->requestId;
-            update->xRange = task->xRange;
-            update->yRange = task->yRange;
-            update->windowWidth = task->windowWidth;
-            update->windowHeight = task->windowHeight;
-            pendingUpdates.push_back(std::move(update));
-        }
+        auto batchUpdate = std::make_shared<RasterizedData>();
+        batchUpdate->requestId = task->requestId;
+        batchUpdate->xRange = task->xRange;
+        batchUpdate->yRange = task->yRange;
+        batchUpdate->windowWidth = task->windowWidth;
+        batchUpdate->windowHeight = task->windowHeight;
+        batchUpdate->chunkRenderData = std::move(rasterized.chunkRenderData);
 
         {
             GRAPHX_PROFILE_SCOPE("compute.worker.enqueueUpdates");
-            rasterizedDataInbox.pushRange(std::make_move_iterator(pendingUpdates.begin()),
-                                          std::make_move_iterator(pendingUpdates.end()));
+            rasterizedDataInbox.push(std::move(batchUpdate));
         }
 
-        // Wake the main loop so streamed chunks begin draining immediately.
+        PipelineLog::log("worker: PUSH reqId=%llu", task->requestId);
         glfw::postEmptyEvent();
     }
 }

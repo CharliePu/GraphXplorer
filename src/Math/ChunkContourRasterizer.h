@@ -13,6 +13,7 @@
 
 #include "ChunkRenderer.h"
 #include "RasterizedPlot.h"
+#include "../Graph/Graph.h"
 
 class ChunkContourRasterizer
 {
@@ -43,14 +44,7 @@ private:
     {
         size_t operator()(const ChunkKey &key) const
         {
-            const auto h1 = std::hash<int64_t>{}(key.chunkX);
-            const auto h2 = std::hash<int64_t>{}(key.chunkY);
-            const auto h3 = std::hash<int>{}(key.level);
-
-            size_t seed = h1;
-            seed ^= h2 + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
-            seed ^= h3 + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
-            return seed;
+            return chunkKeyHash(key.chunkX, key.chunkY, key.level);
         }
     };
 

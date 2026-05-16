@@ -25,9 +25,12 @@ public:
 
     [[nodiscard]] double getAspectRatio() const;
 
+    [[nodiscard]] double getContentScaleFactor() const;
+
     std::shared_ptr<glfw::Window> getGlfwWindow();
 
     void onKeyPressed(glfw::KeyCode key, int scancode, glfw::KeyState action, glfw::ModifierKeyBit mods) override;
+    void onWindowSizeChanged(int width, int height) override;
 
 private:
     glfw::GlfwLibrary glfwContext;

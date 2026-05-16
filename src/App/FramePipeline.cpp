@@ -2,110 +2,22 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cmath>
 #include <iomanip>
+#include <optional>
+#include <span>
 #include <sstream>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 
 #include "../Tile/TileMath.h"
+#include "UiLayout.h"
 
 namespace
 {
-using GlyphRows = std::array<const char *, 7>;
-
-GlyphRows glyphFor(const char input)
-{
-    const auto c = static_cast<char>(std::tolower(static_cast<unsigned char>(input)));
-    switch (c)
-    {
-    case '0': return {"111", "101", "101", "101", "101", "101", "111"};
-    case '1': return {"010", "110", "010", "010", "010", "010", "111"};
-    case '2': return {"111", "001", "001", "111", "100", "100", "111"};
-    case '3': return {"111", "001", "001", "111", "001", "001", "111"};
-    case '4': return {"101", "101", "101", "111", "001", "001", "001"};
-    case '5': return {"111", "100", "100", "111", "001", "001", "111"};
-    case '6': return {"111", "100", "100", "111", "101", "101", "111"};
-    case '7': return {"111", "001", "001", "010", "010", "100", "100"};
-    case '8': return {"111", "101", "101", "111", "101", "101", "111"};
-    case '9': return {"111", "101", "101", "111", "001", "001", "111"};
-    case 'a': return {"010", "101", "101", "111", "101", "101", "101"};
-    case 'b': return {"110", "101", "101", "110", "101", "101", "110"};
-    case 'c': return {"111", "100", "100", "100", "100", "100", "111"};
-    case 'd': return {"110", "101", "101", "101", "101", "101", "110"};
-    case 'e': return {"111", "100", "100", "111", "100", "100", "111"};
-    case 'f': return {"111", "100", "100", "111", "100", "100", "100"};
-    case 'g': return {"111", "100", "100", "101", "101", "101", "111"};
-    case 'h': return {"101", "101", "101", "111", "101", "101", "101"};
-    case 'i': return {"111", "010", "010", "010", "010", "010", "111"};
-    case 'j': return {"001", "001", "001", "001", "101", "101", "111"};
-    case 'k': return {"101", "101", "110", "100", "110", "101", "101"};
-    case 'l': return {"100", "100", "100", "100", "100", "100", "111"};
-    case 'm': return {"101", "111", "111", "101", "101", "101", "101"};
-    case 'n': return {"101", "111", "111", "111", "101", "101", "101"};
-    case 'o': return {"111", "101", "101", "101", "101", "101", "111"};
-    case 'p': return {"111", "101", "101", "111", "100", "100", "100"};
-    case 'q': return {"111", "101", "101", "101", "111", "001", "001"};
-    case 'r': return {"110", "101", "101", "110", "101", "101", "101"};
-    case 's': return {"111", "100", "100", "111", "001", "001", "111"};
-    case 't': return {"111", "010", "010", "010", "010", "010", "010"};
-    case 'u': return {"101", "101", "101", "101", "101", "101", "111"};
-    case 'v': return {"101", "101", "101", "101", "101", "101", "010"};
-    case 'w': return {"101", "101", "101", "101", "111", "111", "101"};
-    case 'x': return {"101", "101", "010", "010", "010", "101", "101"};
-    case 'y': return {"101", "101", "101", "010", "010", "010", "010"};
-    case 'z': return {"111", "001", "001", "010", "100", "100", "111"};
-    case '+': return {"000", "010", "010", "111", "010", "010", "000"};
-    case '-': return {"000", "000", "000", "111", "000", "000", "000"};
-    case '*': return {"000", "101", "010", "111", "010", "101", "000"};
-    case '/': return {"001", "001", "001", "010", "100", "100", "100"};
-    case '^': return {"010", "101", "000", "000", "000", "000", "000"};
-    case '<': return {"001", "010", "100", "100", "100", "010", "001"};
-    case '>': return {"100", "010", "001", "001", "001", "010", "100"};
-    case '=': return {"000", "000", "111", "000", "111", "000", "000"};
-    case '(': return {"001", "010", "100", "100", "100", "010", "001"};
-    case ')': return {"100", "010", "001", "001", "001", "010", "100"};
-    case '.': return {"000", "000", "000", "000", "000", "110", "110"};
-    case ',': return {"000", "000", "000", "000", "010", "010", "100"};
-    case ':': return {"000", "010", "010", "000", "010", "010", "000"};
-    case '|': return {"010", "010", "010", "010", "010", "010", "010"};
-    case ' ': return {"000", "000", "000", "000", "000", "000", "000"};
-    default: return {"111", "001", "010", "010", "000", "010", "000"};
-    }
-}
-
-void appendTextRects(std::vector<gx::OverlayRect> &rects,
-                     const std::string_view text,
-                     const float x,
-                     const float y,
-                     const float pixel,
-                     const std::array<float, 4> &color)
-{
-    auto penX = x;
-    constexpr auto glyphWidth = 3;
-    constexpr auto glyphHeight = 7;
-    for (const auto c : text)
-    {
-        const auto rows = glyphFor(c);
-        for (auto row = 0; row < glyphHeight; ++row)
-        {
-            for (auto col = 0; col < glyphWidth; ++col)
-            {
-                if (rows[row][col] != '1')
-                {
-                    continue;
-                }
-                const auto xMin = penX + static_cast<float>(col) * pixel;
-                const auto yMax = y - static_cast<float>(row) * pixel;
-                rects.push_back({xMin, xMin + pixel * 0.82f, yMax - pixel * 0.82f, yMax, color});
-            }
-        }
-        penX += static_cast<float>(glyphWidth + 1) * pixel;
-    }
-}
-
 double pickNiceStep(const double span, const int desiredTickCount)
 {
     if (span <= 0.0 || desiredTickCount <= 0)
@@ -143,6 +55,94 @@ float toNdc(const double value, const Interval &range)
     return static_cast<float>(((value - range.lower) / range.size() - 0.5) * 2.0);
 }
 
+float clampTextX(const float x, const std::string_view text, const float pixelHeight, const int framebufferWidth)
+{
+    const auto width = gx::textAdvanceNdc(text.size(), pixelHeight, framebufferWidth);
+    return std::clamp(x, -0.995f, std::max(-0.995f, 0.995f - width));
+}
+
+float clampTextY(const float y, const float pixelHeight, const int framebufferHeight)
+{
+    const auto height = gx::textHeightNdc(pixelHeight, framebufferHeight);
+    return std::clamp(y, std::min(0.995f, -0.995f + height), 0.995f);
+}
+
+struct DebugOverlayLayout
+{
+    float panelLeft{-0.98f};
+    float panelRight{-0.34f};
+    float panelBottom{-0.98f};
+    float panelTop{-0.72f};
+    float textX{-0.95f};
+    std::array<float, 4> textY{-0.76f, -0.82f, -0.87f, -0.92f};
+    std::array<float, 4> pixelHeights{14.0f, 12.0f, 12.0f, 12.0f};
+};
+
+std::array<std::string, 4> debugOverlayLines(const gx::FramePipelineCounters &counters)
+{
+    return {
+        "debug frames",
+        "compiled:" + std::to_string(counters.formulasCompiled),
+        "jobs:" + std::to_string(counters.tileJobsScheduled),
+        "applied:" + std::to_string(counters.tileDeltasApplied)
+            + "/" + std::to_string(counters.tileDeltasRejected)
+    };
+}
+
+DebugOverlayLayout debugOverlayLayoutFor(const gx::FramePipelineCounters &counters,
+                                         const int framebufferWidth,
+                                         const int framebufferHeight,
+                                         const float scale)
+{
+    const auto width = std::max(1, framebufferWidth);
+    const auto height = std::max(1, framebufferHeight);
+    const auto lines = debugOverlayLines(counters);
+    const std::array pixelHeights{14.0f * scale, 12.0f * scale, 12.0f * scale, 12.0f * scale};
+    auto textWidthPx = 0.0f;
+    for (size_t index = 0; index < lines.size(); ++index)
+    {
+        textWidthPx = std::max(textWidthPx, gx::textAdvancePx(lines[index].size(), pixelHeights[index]));
+    }
+
+    const auto logicalMin = static_cast<float>(std::min(width, height)) / scale;
+    const auto marginPx = std::clamp(logicalMin * 0.020f, 8.0f, 14.0f) * scale;
+    const auto paddingX = 10.0f * scale;
+    const auto paddingY = 8.0f * scale;
+    const auto panelWidthPx = std::min(static_cast<float>(width) - marginPx * 2.0f, textWidthPx + paddingX * 2.0f);
+    const auto panelHeightPx = std::min(static_cast<float>(height) - marginPx * 2.0f, 74.0f * scale);
+    const auto panelLeftPx = marginPx;
+    const auto panelRightPx = panelLeftPx + std::max(48.0f * scale, panelWidthPx);
+    const auto panelBottomPx = static_cast<float>(height) - marginPx;
+    const auto panelTopPx = std::max(marginPx, panelBottomPx - panelHeightPx);
+    const auto textXPx = panelLeftPx + paddingX;
+    const std::array textYPx{
+        panelTopPx + paddingY,
+        panelTopPx + paddingY + 22.0f * scale,
+        panelTopPx + paddingY + 38.0f * scale,
+        panelTopPx + paddingY + 54.0f * scale
+    };
+
+    return {
+        .panelLeft = gx::normalizedPixelX(panelLeftPx, width),
+        .panelRight = gx::normalizedPixelX(panelRightPx, width),
+        .panelBottom = gx::normalizedPixelYFromTop(panelBottomPx, height),
+        .panelTop = gx::normalizedPixelYFromTop(panelTopPx, height),
+        .textX = gx::normalizedPixelX(textXPx, width),
+        .textY = {
+            gx::normalizedPixelYFromTop(textYPx[0], height),
+            gx::normalizedPixelYFromTop(textYPx[1], height),
+            gx::normalizedPixelYFromTop(textYPx[2], height),
+            gx::normalizedPixelYFromTop(textYPx[3], height)
+        },
+        .pixelHeights = pixelHeights
+    };
+}
+
+int desiredTickCountForAxis(const int pixels, const int minimumSpacingPx)
+{
+    return std::clamp(pixels / std::max(1, minimumSpacingPx), 2, 12);
+}
+
 std::string formatTick(const double value)
 {
     std::ostringstream out;
@@ -150,50 +150,66 @@ std::string formatTick(const double value)
     return out.str();
 }
 
-gx::TileVisualState normalVisualStateForRecord(const gx::TileRecord *record)
+std::optional<gx::RenderTileInstance> normalPlotInstanceForDisplayTile(const gx::DisplayTile &tile,
+                                                                       const gx::TextureSlice &regionSlice)
 {
-    if (!record)
+    auto visualState = tile.visualState;
+    if (visualState == gx::TileVisualState::MixedRegion && regionSlice.textureId == 0)
     {
-        return gx::TileVisualState::Missing;
+        visualState = gx::TileVisualState::Missing;
     }
-
-    switch (record->classification)
+    if (visualState == gx::TileVisualState::UniformFalse)
     {
-    case gx::TileClassification::UniformTrue:
-        return gx::TileVisualState::UniformTrue;
-    case gx::TileClassification::UniformFalse:
-        return gx::TileVisualState::UniformFalse;
-    case gx::TileClassification::Mixed:
-        return gx::TileVisualState::MixedRegion;
-    case gx::TileClassification::Unknown:
+        return std::nullopt;
+    }
+    return gx::RenderTileInstance{
+        .key = tile.sourceKey,
+        .worldBounds = tile.worldBounds,
+        .visualState = visualState,
+        .regionSlice = regionSlice,
+        .uvRect = tile.uvRect
+    };
+}
+
+bool isPresentableDisplayTile(const gx::DisplayTile &tile)
+{
+    switch (tile.visualState)
+    {
+    case gx::TileVisualState::UniformTrue:
+    case gx::TileVisualState::UniformFalse:
+        return true;
+    case gx::TileVisualState::MixedRegion:
+        return tile.cpuRegion.has_value() && tile.gpuSlice.textureId != 0;
     default:
-        return gx::TileVisualState::Missing;
+        return false;
     }
 }
 
-gx::TileVisualState debugVisualStateForRecord(const gx::TileRecord *record)
+std::vector<gx::DisplayTile> presentableDisplayTiles(std::span<const gx::DisplayTile> tiles)
 {
-    if (!record)
+    std::vector<gx::DisplayTile> result;
+    result.reserve(tiles.size());
+    for (const auto &tile : tiles)
     {
-        return gx::TileVisualState::DebugMissing;
+        if (isPresentableDisplayTile(tile))
+        {
+            result.push_back(tile);
+        }
     }
-
-    switch (record->classification)
-    {
-    case gx::TileClassification::Mixed:
-        return gx::TileVisualState::DebugMixed;
-    case gx::TileClassification::UniformTrue:
-    case gx::TileClassification::UniformFalse:
-        return gx::TileVisualState::DebugUniform;
-    case gx::TileClassification::Unknown:
-    default:
-        return gx::TileVisualState::DebugMissing;
-    }
+    return result;
 }
 }
 
 namespace gx
 {
+namespace
+{
+bool containsTileKey(const std::vector<TileKey> &keys, const TileKey &candidate)
+{
+    return std::ranges::find(keys, candidate) != keys.end();
+}
+}
+
 std::string FramePipelineCounters::toDebugString() const
 {
     std::ostringstream out;
@@ -205,7 +221,7 @@ std::string FramePipelineCounters::toDebugString() const
     return out.str();
 }
 
-FramePipeline::FramePipeline(std::unique_ptr<ComputeBackend> backend): backend{std::move(backend)}
+FramePipeline::FramePipeline(std::unique_ptr<ComputeBackend> backend): tileRuntime{std::move(backend)}
 {
     compiledFormula = formulaCompiler.compile(appState.formulaExpression);
     if (compiledFormula && compiledFormula->diagnostics.ok)
@@ -217,7 +233,25 @@ FramePipeline::FramePipeline(std::unique_ptr<ComputeBackend> backend): backend{s
 FrameSnapshot FramePipeline::process(const InputEvent &event)
 {
     ++frameId;
-    const auto diff = reducer.reduce(appState, event);
+    std::optional<InputEvent> substitutedEvent;
+    if (std::holds_alternative<SubmitFormulaInputEvent>(event) && appState.formulaInput.active)
+    {
+        if (appState.formulaInput.buffer.empty())
+        {
+            substitutedEvent = RejectFormulaInputEvent{"Expression cannot be empty"};
+        }
+        else
+        {
+            auto candidate = formulaCompiler.compile(appState.formulaInput.buffer);
+            if (!candidate.diagnostics.ok)
+            {
+                substitutedEvent = RejectFormulaInputEvent{candidate.diagnostics.message};
+            }
+        }
+    }
+
+    const auto &effectiveEvent = substitutedEvent ? *substitutedEvent : event;
+    const auto diff = reducer.reduce(appState, effectiveEvent);
     const auto effects = effectPlanner.plan(diff);
 
     if (effects.compileFormula)
@@ -252,33 +286,75 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
     const auto request = makeViewportRequest(diff);
     snapshot.viewportRequest = request;
 
-    std::vector<TileJob> jobs;
-    if (effects.requestTiles || !hasRequestedTiles || std::holds_alternative<RenderTickEvent>(event))
+    tileRuntime.setLatestRequest(request, *compiledFormula);
+    const auto drainResult = tileRuntime.drainCompleted(tileCache, regionPayloads);
+    pipelineCounters.tileDeltasApplied += drainResult.applied;
+    pipelineCounters.tileDeltasRejected += drainResult.rejected;
+    snapshot.appliedTransactions = drainResult.transactions;
+
+    const auto tilePlan = tilePlanner.plan(request, tileCache, TilePlanBudget{}, 4);
+    tileRuntime.submitJobs(tilePlan.jobs);
+    pipelineCounters.tileJobsScheduled += tilePlan.jobs.size();
+    hasRequestedTiles = true;
+
+    auto tileDebugCounts = tileCache.debugCountsForFormula(request.formula.semanticsHash);
+    const auto inFlightCount = tileRuntime.inFlightCount();
+    const auto pendingCompletionCount = tileRuntime.pendingCompletionCount();
+    if (inFlightCount == 0 && pendingCompletionCount == 0 && tilePlan.jobs.empty())
     {
-        jobs = scheduler.buildJobs(request, tileCache, SchedulerBudget{});
-        pipelineCounters.tileJobsScheduled += jobs.size();
-
-        if (!jobs.empty())
-        {
-            auto transaction = executeVisibleJobs(request, jobs);
-            const auto applyResult = tileCache.apply(transaction);
-            pipelineCounters.tileDeltasApplied += applyResult.applied;
-            pipelineCounters.tileDeltasRejected += applyResult.rejected;
-            snapshot.appliedTransactions.push_back(std::move(transaction));
-        }
-        hasRequestedTiles = true;
+        tileDebugCounts.stuckIntervalQueued = tileDebugCounts.intervalQueued;
+        tileDebugCounts.stuckRegionQueued = tileDebugCounts.regionQueued;
     }
+    snapshot.schedulerSummary = "inFlight=" + std::to_string(inFlightCount)
+        + ",completed=" + std::to_string(pendingCompletionCount)
+        + ",queuedInterval=" + std::to_string(tileDebugCounts.intervalQueued)
+        + ",queuedRegion=" + std::to_string(tileDebugCounts.regionQueued)
+        + ",stuckInterval=" + std::to_string(tileDebugCounts.stuckIntervalQueued)
+        + ",stuckRegion=" + std::to_string(tileDebugCounts.stuckRegionQueued);
+    const auto *previousFrame = committedVisualFrame
+        && committedVisualFrame->semantics == request.formula.semanticsHash
+        ? &*committedVisualFrame
+        : nullptr;
+    auto visualFrame = visualCoverBuilder.build(request, tileCache, previousFrame, 4);
+    snapshot.displayTiles = std::move(visualFrame.tiles);
+    snapshot.visibleCover.reserve(snapshot.displayTiles.size());
+    std::vector<RegionImageRef> visibleRegions;
+    visibleRegions.reserve(snapshot.displayTiles.size());
+    for (auto &tile : snapshot.displayTiles)
+    {
+        snapshot.visibleCover.push_back(tile.desiredKey);
+        if (tile.cpuRegion)
+        {
+            tile.gpuSlice = resources.findRegionImage(*tile.cpuRegion);
+            visibleRegions.push_back(*tile.cpuRegion);
+        }
+    }
+    resources.beginRegionFrame(visibleRegions);
+    snapshot.uploadPlan = uploadPlanner.planVisible(snapshot.displayTiles, UploadBudget{});
 
-    snapshot.schedulerSummary = "jobs=" + std::to_string(jobs.size());
-    snapshot.visibleCover = TileCoverageIndex{tileCache}.visibleCover(request);
-
-    const auto records = tileCache.recordsForFormula(request.formula.semanticsHash);
-    snapshot.uploadPlan = uploadPlanner.plan(records, UploadBudget{});
-
-    auto commands = buildCommands(snapshot.visibleCover, request);
+    auto commands = buildCommands(snapshot.displayTiles, request, snapshot.uploadPlan);
     snapshot.drawCommands.assign(commands.commands().begin(), commands.commands().end());
     pipelineCounters.drawCommandsBuilt += snapshot.drawCommands.size();
     snapshot.counters = pipelineCounters.toDebugString();
+
+    auto presentableTiles = presentableDisplayTiles(snapshot.displayTiles);
+    if (!committedVisualFrame
+        || committedVisualFrame->semantics != request.formula.semanticsHash)
+    {
+        committedVisualFrame = CommittedVisualFrame{
+            .semantics = request.formula.semanticsHash,
+            .viewport = request,
+            .tiles = std::move(presentableTiles)
+        };
+    }
+    else if (!presentableTiles.empty())
+    {
+        committedVisualFrame = CommittedVisualFrame{
+            .semantics = request.formula.semanticsHash,
+            .viewport = request,
+            .tiles = std::move(presentableTiles)
+        };
+    }
 
     return snapshot;
 }
@@ -315,248 +391,53 @@ ViewportRequest FramePipeline::makeViewportRequest(const StateDiff &diff) const
         .yRange = appState.yRange,
         .framebufferWidth = appState.framebufferWidth,
         .framebufferHeight = appState.framebufferHeight,
-        .devicePixelRatio = 1.0
+        .devicePixelRatio = appState.devicePixelRatio
     };
 }
 
-TileTransaction FramePipeline::executeVisibleJobs(const ViewportRequest &request,
-                                                  const std::vector<TileJob> &jobs)
-{
-    TileTransaction transaction{
-        .header = request.header,
-        .semanticsHash = request.formula.semanticsHash
-    };
-
-    std::vector<TileKey> classifyKeys;
-    std::vector<TileKey> rasterKeys;
-    for (const auto &job : jobs)
-    {
-        if (job.kind == JobKind::ClassifyInterval)
-        {
-            classifyKeys.push_back(job.key);
-        }
-        else if (job.kind == JobKind::RasterizeRegion)
-        {
-            rasterKeys.push_back(job.key);
-        }
-    }
-
-    std::vector<double> xMin;
-    std::vector<double> xMax;
-    std::vector<double> yMin;
-    std::vector<double> yMax;
-    xMin.reserve(classifyKeys.size());
-    xMax.reserve(classifyKeys.size());
-    yMin.reserve(classifyKeys.size());
-    yMax.reserve(classifyKeys.size());
-
-    for (const auto &key : classifyKeys)
-    {
-        const auto bounds = tileBounds(key);
-        xMin.push_back(bounds.xMin);
-        xMax.push_back(bounds.xMax);
-        yMin.push_back(bounds.yMin);
-        yMax.push_back(bounds.yMax);
-
-        transaction.deltas.push_back({
-            .header = request.header,
-            .semanticsHash = request.formula.semanticsHash,
-            .key = key,
-            .stage = TileStage::IntervalQueued,
-            .classification = TileClassification::Unknown
-        });
-    }
-
-    std::vector<TileClassificationResult> classifications(classifyKeys.size());
-    const auto batchResult = backend->classifyIntervals(
-        IntervalBatchView{compiledFormula ? &*compiledFormula : nullptr, classifyKeys, xMin, xMax, yMin, yMax},
-        classifications);
-
-    if (!batchResult.ok)
-    {
-        return transaction;
-    }
-
-    std::vector<TileKey> mixedRasterKeys = rasterKeys;
-    const auto rasterLeafLevel = leafTileLevel(request);
-    for (const auto &classification : classifications)
-    {
-        if (classification.classification == TileClassification::Mixed
-            && classification.key.level <= rasterLeafLevel)
-        {
-            mixedRasterKeys.push_back(classification.key);
-        }
-    }
-
-    std::vector<double> rasterXMin;
-    std::vector<double> rasterXMax;
-    std::vector<double> rasterYMin;
-    std::vector<double> rasterYMax;
-    std::vector<uint32_t> rasterOffsets;
-    rasterXMin.reserve(mixedRasterKeys.size());
-    rasterXMax.reserve(mixedRasterKeys.size());
-    rasterYMin.reserve(mixedRasterKeys.size());
-    rasterYMax.reserve(mixedRasterKeys.size());
-    rasterOffsets.reserve(mixedRasterKeys.size());
-    for (const auto &key : mixedRasterKeys)
-    {
-        const auto bounds = tileBounds(key);
-        rasterXMin.push_back(bounds.xMin);
-        rasterXMax.push_back(bounds.xMax);
-        rasterYMin.push_back(bounds.yMin);
-        rasterYMax.push_back(bounds.yMax);
-        rasterOffsets.push_back(static_cast<uint32_t>(rasterOffsets.size() * RasterTexturePixels * RasterTexturePixels));
-    }
-
-    std::unordered_map<TileKey, RegionImageRef, TileKeyHash> regionRefs;
-    if (!mixedRasterKeys.empty())
-    {
-        std::vector<RegionOutput> rasterOutputs(mixedRasterKeys.size());
-        const auto rasterResult = backend->rasterizeRegions(
-            RasterBatchView{
-                compiledFormula ? &*compiledFormula : nullptr,
-                mixedRasterKeys,
-                rasterXMin,
-                rasterXMax,
-                rasterYMin,
-                rasterYMax,
-                rasterOffsets,
-                RasterTexturePixels
-            },
-            rasterOutputs);
-
-        if (rasterResult.ok)
-        {
-            for (auto &output : rasterOutputs)
-            {
-                const auto payloadId = nextRegionPayloadId++;
-                const auto width = static_cast<int>(output.width);
-                const auto height = static_cast<int>(output.height);
-                const auto key = output.key;
-                regionPayloads[payloadId] = std::move(output);
-                regionRefs[key] = RegionImageRef{payloadId, width, height};
-            }
-        }
-    }
-
-    for (const auto &classification : classifications)
-    {
-        transaction.deltas.push_back({
-            .header = request.header,
-            .semanticsHash = request.formula.semanticsHash,
-            .key = classification.key,
-            .stage = TileStage::IntervalReady,
-            .classification = classification.classification,
-            .interval = classification.interval
-        });
-
-        auto finalStage = TileStage::MixedNeedsRegion;
-        if (classification.classification == TileClassification::UniformTrue)
-        {
-            finalStage = TileStage::UniformTrue;
-        }
-        else if (classification.classification == TileClassification::UniformFalse)
-        {
-            finalStage = TileStage::UniformFalse;
-        }
-
-        transaction.deltas.push_back({
-            .header = request.header,
-            .semanticsHash = request.formula.semanticsHash,
-            .key = classification.key,
-            .stage = finalStage,
-            .classification = classification.classification,
-            .interval = classification.interval
-        });
-
-        if (classification.classification == TileClassification::Mixed)
-        {
-            if (const auto regionIt = regionRefs.find(classification.key); regionIt != regionRefs.end())
-            {
-                transaction.deltas.push_back({
-                    .header = request.header,
-                    .semanticsHash = request.formula.semanticsHash,
-                    .key = classification.key,
-                    .stage = TileStage::RegionQueued,
-                    .classification = classification.classification
-                });
-                transaction.deltas.push_back({
-                    .header = request.header,
-                    .semanticsHash = request.formula.semanticsHash,
-                    .key = classification.key,
-                    .stage = TileStage::RegionReady,
-                    .classification = classification.classification,
-                    .region = regionIt->second
-                });
-            }
-        }
-    }
-
-    for (const auto &key : rasterKeys)
-    {
-        const auto regionIt = regionRefs.find(key);
-        if (regionIt == regionRefs.end())
-        {
-            continue;
-        }
-        transaction.deltas.push_back({
-            .header = request.header,
-            .semanticsHash = request.formula.semanticsHash,
-            .key = key,
-            .stage = TileStage::RegionQueued,
-            .classification = TileClassification::Mixed
-        });
-        transaction.deltas.push_back({
-            .header = request.header,
-            .semanticsHash = request.formula.semanticsHash,
-            .key = key,
-            .stage = TileStage::RegionReady,
-            .classification = TileClassification::Mixed,
-            .region = regionIt->second
-        });
-    }
-
-    return transaction;
-}
-
-FrameCommandBuffer FramePipeline::buildCommands(const std::vector<TileKey> &visibleCover,
-                                                const ViewportRequest &request)
+FrameCommandBuffer FramePipeline::buildCommands(std::vector<DisplayTile> &displayTiles,
+                                                const ViewportRequest &request,
+                                                const UploadPlan &uploadPlan)
 {
     resources.setPlotViewport(request.xRange, request.yRange);
     resources.setGridState(request.xRange, request.yRange, request.framebufferWidth, request.framebufferHeight);
 
     std::vector<RenderTileInstance> instances;
-    instances.reserve(visibleCover.size());
+    instances.reserve(displayTiles.size());
     std::vector<RenderTileInstance> debugInstances;
-    debugInstances.reserve(appState.debug ? visibleCover.size() : 0);
-    for (const auto &key : visibleCover)
+    debugInstances.reserve(appState.debug ? displayTiles.size() : 0);
+    for (auto &tile : displayTiles)
     {
-        TextureSlice regionSlice{};
-        const auto *record = tileCache.find(key, request.formula.semanticsHash);
-        if (record)
+        auto regionSlice = tile.gpuSlice;
+        if (tile.cpuRegion)
         {
-            if (record->regionPixels)
+            if (regionSlice.textureId == 0
+                && containsTileKey(uploadPlan.textureUploads, tile.sourceKey))
             {
-                if (const auto payloadIt = regionPayloads.find(record->regionPixels->id);
+                if (const auto payloadIt = regionPayloads.find(tile.cpuRegion->id);
                     payloadIt != regionPayloads.end())
                 {
-                    regionSlice = resources.registerRegionImage(*record->regionPixels, payloadIt->second.pixels);
+                    regionSlice = resources.registerRegionImage(*tile.cpuRegion, payloadIt->second.pixels);
+                    tile.gpuSlice = regionSlice;
                 }
             }
         }
 
-        instances.push_back({
-            .key = key,
-            .worldBounds = tileBounds(key),
-            .visualState = normalVisualStateForRecord(record),
-            .regionSlice = regionSlice
-        });
+        if (auto instance = normalPlotInstanceForDisplayTile(tile, regionSlice))
+        {
+            instances.push_back(*instance);
+        }
         if (appState.debug)
         {
             debugInstances.push_back({
-                .key = key,
-                .worldBounds = tileBounds(key),
-                .visualState = debugVisualStateForRecord(record)
+                .key = tile.sourceKey,
+                .worldBounds = tile.worldBounds,
+                .visualState = tile.visualState == TileVisualState::Missing
+                    ? TileVisualState::DebugMissing
+                    : (tile.visualState == TileVisualState::MixedRegion
+                        ? TileVisualState::DebugMixed
+                        : TileVisualState::DebugUniform),
+                .uvRect = tile.uvRect
             });
         }
     }
@@ -566,6 +447,7 @@ FrameCommandBuffer FramePipeline::buildCommands(const std::vector<TileKey> &visi
     const auto debugPlotInstanceCount = debugInstances.size();
     resources.setDebugPlotInstances(std::move(debugInstances));
     resources.setOverlayRects(buildOverlayRects());
+    resources.setOverlayTextRuns(buildOverlayTextRuns());
 
     FrameCommandBuffer buffer;
     buffer.add({
@@ -575,7 +457,7 @@ FrameCommandBuffer FramePipeline::buildCommands(const std::vector<TileKey> &visi
         .material = resources.gridMaterial(),
         .sortKey = 10
     });
-    if (!visibleCover.empty())
+    if (plotInstanceCount > 0)
     {
         buffer.add({
             .layer = RenderLayer::Plot,
@@ -609,6 +491,17 @@ FrameCommandBuffer FramePipeline::buildCommands(const std::vector<TileKey> &visi
             .sortKey = 0
         });
     }
+    if (resources.overlayTextRunCount() > 0)
+    {
+        buffer.add({
+            .layer = RenderLayer::Text,
+            .pipeline = resources.textPipeline(),
+            .geometry = resources.staticQuadGeometry(),
+            .material = resources.textMaterial(),
+            .instanceRange = BufferRange{4, 0, static_cast<uint32_t>(resources.overlayTextRunCount())},
+            .sortKey = 1
+        });
+    }
     buffer.freezeAndSort();
     return buffer;
 }
@@ -617,15 +510,154 @@ std::vector<OverlayRect> FramePipeline::buildOverlayRects() const
 {
     std::vector<OverlayRect> rects;
     const std::array white{0.92f, 0.96f, 1.0f, 1.0f};
-    const std::array muted{0.78f, 0.84f, 0.92f, 0.9f};
+    const std::array panel{0.06f, 0.07f, 0.09f, 0.78f};
     const std::array dark{0.06f, 0.07f, 0.09f, 0.88f};
     const std::array border{0.70f, 0.76f, 0.84f, 0.85f};
+    const std::array button{0.16f, 0.18f, 0.22f, 0.86f};
+    const std::array buttonPrimary{0.02f, 0.36f, 0.72f, 0.90f};
+    const std::array buttonActive{0.95f, 0.68f, 0.18f, 0.90f};
+    const std::array inputFill{0.03f, 0.04f, 0.06f, 0.72f};
+    const auto scale = uiScaleFor(appState);
+
+    const auto pushPixelRect = [&](const UiPixelRect &rect, const std::array<float, 4> &color)
+    {
+        const auto ndc = toNdcRect(rect, appState.framebufferWidth, appState.framebufferHeight);
+        if (ndc.xMin < ndc.xMax && ndc.yMin < ndc.yMax)
+        {
+            rects.push_back({ndc.xMin, ndc.xMax, ndc.yMin, ndc.yMax, color});
+        }
+    };
+    const auto pushPixelBorder = [&](const UiPixelRect &rect,
+                                     const float thicknessPx,
+                                     const std::array<float, 4> &color)
+    {
+        if (rect.width() <= 0.0f || rect.height() <= 0.0f)
+        {
+            return;
+        }
+        const auto thickness = std::min({thicknessPx, rect.width() * 0.5f, rect.height() * 0.5f});
+        pushPixelRect(UiPixelRect{rect.left, rect.top, rect.right, rect.top + thickness}, color);
+        pushPixelRect(UiPixelRect{rect.left, rect.bottom - thickness, rect.right, rect.bottom}, color);
+        pushPixelRect(UiPixelRect{rect.left, rect.top, rect.left + thickness, rect.bottom}, color);
+        pushPixelRect(UiPixelRect{rect.right - thickness, rect.top, rect.right, rect.bottom}, color);
+    };
+    const auto pushButtons = [&](const std::vector<UiButtonLayout> &buttons)
+    {
+        for (const auto &uiButton : buttons)
+        {
+            const auto color = uiButton.active ? buttonActive : (uiButton.primary ? buttonPrimary : button);
+            pushPixelRect(uiButton.bounds, color);
+            pushPixelBorder(uiButton.bounds, 1.0f * scale, border);
+        }
+    };
+
+    if (appState.formulaInput.active)
+    {
+        const auto layout = formulaOverlayLayoutFor(appState);
+        pushPixelRect(layout.panel, dark);
+        pushPixelBorder(layout.panel, 2.0f * scale, border);
+        pushPixelRect(layout.input, inputFill);
+        pushPixelBorder(layout.input, 1.0f * scale, border);
+        pushButtons(layout.buttons);
+
+        const auto textBounds = UiPixelRect{
+            layout.input.left + 6.0f * scale,
+            layout.input.top,
+            std::max(layout.input.left + 7.0f * scale, layout.input.right - 6.0f * scale),
+            layout.input.bottom
+        };
+        const auto textNdc = toNdcRect(textBounds, appState.framebufferWidth, appState.framebufferHeight);
+        const auto inputNdc = toNdcRect(layout.input, appState.framebufferWidth, appState.framebufferHeight);
+        const auto visible = visibleFormulaText(appState.formulaInput.buffer,
+                                                appState.formulaInput.cursor,
+                                                textNdc.xMin,
+                                                textNdc.xMax,
+                                                layout.fontPx,
+                                                appState.framebufferWidth);
+        const auto cursorX = std::min(
+            textNdc.xMax,
+            textNdc.xMin + textAdvanceNdc(visible.cursor, layout.fontPx, appState.framebufferWidth));
+        const auto cursorWidth = appState.framebufferWidth > 0
+            ? std::max(0.004f, 2.0f * scale / static_cast<float>(appState.framebufferWidth) * 2.0f)
+            : 0.006f;
+        rects.push_back({
+            cursorX,
+            std::min(cursorX + cursorWidth, inputNdc.xMax),
+            inputNdc.yMin + textHeightNdc(3.0f * scale, appState.framebufferHeight),
+            inputNdc.yMax - textHeightNdc(3.0f * scale, appState.framebufferHeight),
+            white
+        });
+    }
+    else
+    {
+        const auto layout = statusOverlayLayoutFor(appState);
+        pushPixelRect(layout.panel, panel);
+        pushPixelBorder(layout.panel, 1.0f * scale, border);
+        pushButtons(layout.buttons);
+    }
+
+    if (appState.debug)
+    {
+        const auto layout = debugOverlayLayoutFor(
+            pipelineCounters,
+            appState.framebufferWidth,
+            appState.framebufferHeight,
+            scale);
+        const auto borderHeight = gx::textHeightNdc(1.0f * scale, appState.framebufferHeight);
+        rects.push_back({layout.panelLeft, layout.panelRight, layout.panelBottom, layout.panelTop, dark});
+        rects.push_back({layout.panelLeft, layout.panelRight, layout.panelTop - borderHeight, layout.panelTop, border});
+    }
+
+    return rects;
+}
+
+std::vector<OverlayTextRun> FramePipeline::buildOverlayTextRuns() const
+{
+    std::vector<OverlayTextRun> runs;
+    const std::array white{0.92f, 0.96f, 1.0f, 1.0f};
+    const std::array muted{0.78f, 0.84f, 0.92f, 0.9f};
     const std::array label{0.80f, 0.84f, 0.90f, 0.74f};
+    const std::array error{1.0f, 0.48f, 0.42f, 0.96f};
+    const auto scale = uiScaleFor(appState);
+    const auto logicalWidth = static_cast<float>(std::max(1, appState.framebufferWidth)) / scale;
+    const auto logicalHeight = static_cast<float>(std::max(1, appState.framebufferHeight)) / scale;
+
+    const auto pushPixelText = [&](std::string text,
+                                   const float x,
+                                   const float y,
+                                   const float pixelHeight,
+                                   const std::array<float, 4> &color)
+    {
+        if (text.empty())
+        {
+            return;
+        }
+        runs.push_back({
+            .text = std::move(text),
+            .x = normalizedPixelX(x, appState.framebufferWidth),
+            .y = normalizedPixelYFromTop(y, appState.framebufferHeight),
+            .pixelHeight = pixelHeight,
+            .color = color
+        });
+    };
+    const auto pushButtonText = [&](const UiButtonLayout &button, const float pixelHeight)
+    {
+        const auto textWidth = textAdvancePx(button.text.size(), pixelHeight);
+        const auto lineBox = pixelHeight * 1.28f;
+        const auto x = button.bounds.left + std::max(2.0f * scale, (button.bounds.width() - textWidth) * 0.5f);
+        const auto y = button.bounds.top + std::max(2.0f * scale, (button.bounds.height() - lineBox) * 0.5f);
+        pushPixelText(button.text, x, y, pixelHeight, white);
+    };
 
     const auto xAxisY = std::clamp(toNdc(0.0, appState.yRange), -0.93f, 0.93f);
     const auto yAxisX = std::clamp(toNdc(0.0, appState.xRange), -0.93f, 0.93f);
-    const auto xStep = pickNiceStep(appState.xRange.size(), 8);
-    const auto yStep = pickNiceStep(appState.yRange.size(), 8);
+    const auto xStep = pickNiceStep(
+        appState.xRange.size(),
+        desiredTickCountForAxis(appState.framebufferWidth, static_cast<int>(112.0f * scale)));
+    const auto yStep = pickNiceStep(
+        appState.yRange.size(),
+        desiredTickCountForAxis(appState.framebufferHeight, static_cast<int>(84.0f * scale)));
+    const auto axisLabelPx = ((logicalWidth < 420.0f || logicalHeight < 340.0f) ? 11.0f : 13.0f) * scale;
     constexpr auto loopEpsilon = 1e-9;
     auto tickCount = 0;
     for (auto x = firstTickAtOrAbove(appState.xRange.lower, xStep);
@@ -636,7 +668,14 @@ std::vector<OverlayRect> FramePipeline::buildOverlayRects() const
         {
             continue;
         }
-        appendTextRects(rects, formatTick(x), toNdc(x, appState.xRange) - 0.035f, xAxisY - 0.035f, 0.006f, label);
+        auto text = formatTick(x);
+        runs.push_back({
+            .text = text,
+            .x = clampTextX(toNdc(x, appState.xRange) - 0.035f, text, axisLabelPx, appState.framebufferWidth),
+            .y = clampTextY(xAxisY - 0.035f, axisLabelPx, appState.framebufferHeight),
+            .pixelHeight = axisLabelPx,
+            .color = label
+        });
     }
     tickCount = 0;
     for (auto y = firstTickAtOrAbove(appState.yRange.lower, yStep);
@@ -647,49 +686,113 @@ std::vector<OverlayRect> FramePipeline::buildOverlayRects() const
         {
             continue;
         }
-        appendTextRects(rects, formatTick(y), yAxisX + 0.012f, toNdc(y, appState.yRange) + 0.020f, 0.006f, label);
+        auto text = formatTick(y);
+        runs.push_back({
+            .text = text,
+            .x = clampTextX(yAxisX + 0.012f, text, axisLabelPx, appState.framebufferWidth),
+            .y = clampTextY(toNdc(y, appState.yRange) + 0.020f, axisLabelPx, appState.framebufferHeight),
+            .pixelHeight = axisLabelPx,
+            .color = label
+        });
     }
 
     if (appState.formulaInput.active)
     {
-        rects.push_back({-0.96f, 0.96f, 0.80f, 0.97f, dark});
-        rects.push_back({-0.96f, 0.96f, 0.965f, 0.97f, border});
-        rects.push_back({-0.96f, 0.96f, 0.80f, 0.805f, border});
-        rects.push_back({-0.96f, -0.955f, 0.80f, 0.97f, border});
-        rects.push_back({0.955f, 0.96f, 0.80f, 0.97f, border});
-        appendTextRects(rects, "f(x,y)=", -0.92f, 0.925f, 0.012f, muted);
-        appendTextRects(rects, appState.formulaInput.buffer, -0.70f, 0.925f, 0.012f, white);
-
-        const auto cursorX = -0.70f + static_cast<float>(appState.formulaInput.cursor) * 0.048f;
-        rects.push_back({cursorX, cursorX + 0.006f, 0.825f, 0.925f, white});
+        const auto layout = formulaOverlayLayoutFor(appState);
+        const auto textBounds = UiPixelRect{
+            layout.input.left + 6.0f * scale,
+            layout.input.top,
+            std::max(layout.input.left + 7.0f * scale, layout.input.right - 6.0f * scale),
+            layout.input.bottom
+        };
+        const auto textNdc = toNdcRect(textBounds, appState.framebufferWidth, appState.framebufferHeight);
+        const auto visible = visibleFormulaText(appState.formulaInput.buffer,
+                                                appState.formulaInput.cursor,
+                                                textNdc.xMin,
+                                                textNdc.xMax,
+                                                layout.fontPx,
+                                                appState.framebufferWidth);
+        if (!layout.labelText.empty())
+        {
+            pushPixelText(layout.labelText, layout.labelX, layout.textY, layout.fontPx, muted);
+        }
+        pushPixelText(visible.text, textBounds.left, layout.textY, layout.fontPx, white);
+        if (!appState.formulaInput.error.empty())
+        {
+            const auto messageLeftNdc = normalizedPixelX(layout.input.left, appState.framebufferWidth);
+            const auto messageRightNdc = normalizedPixelX(layout.panel.right - 8.0f * scale, appState.framebufferWidth);
+            const auto visibleError = visibleFormulaText(appState.formulaInput.error,
+                                                         0,
+                                                         messageLeftNdc,
+                                                         messageRightNdc,
+                                                         layout.messageFontPx,
+                                                         appState.framebufferWidth);
+            pushPixelText(visibleError.text, layout.input.left, layout.messageY, layout.messageFontPx, error);
+        }
+        for (const auto &button : layout.buttons)
+        {
+            pushButtonText(button, std::min(layout.fontPx, 14.0f * scale));
+        }
+    }
+    else
+    {
+        const auto layout = statusOverlayLayoutFor(appState);
+        if (!layout.formulaLabel.empty())
+        {
+            pushPixelText(layout.formulaLabel, layout.formulaLabelX, layout.textY, layout.fontPx, muted);
+        }
+        const auto formulaNdc = toNdcRect(layout.formula, appState.framebufferWidth, appState.framebufferHeight);
+        const auto visible = visibleFormulaText(appState.formulaExpression,
+                                                appState.formulaExpression.size(),
+                                                formulaNdc.xMin,
+                                                formulaNdc.xMax,
+                                                layout.fontPx,
+                                                appState.framebufferWidth);
+        pushPixelText(visible.text, layout.formulaTextX, layout.textY, layout.fontPx, white);
+        for (const auto &button : layout.buttons)
+        {
+            pushButtonText(button, layout.fontPx);
+        }
     }
 
     if (appState.debug)
     {
-        rects.push_back({-0.98f, -0.34f, -0.98f, -0.72f, dark});
-        rects.push_back({-0.98f, -0.34f, -0.725f, -0.72f, border});
-        appendTextRects(rects, "debug frames", -0.95f, -0.76f, 0.007f, white);
-        appendTextRects(rects,
-                        "compiled:" + std::to_string(pipelineCounters.formulasCompiled),
-                        -0.95f,
-                        -0.82f,
-                        0.006f,
-                        muted);
-        appendTextRects(rects,
-                        "jobs:" + std::to_string(pipelineCounters.tileJobsScheduled),
-                        -0.95f,
-                        -0.87f,
-                        0.006f,
-                        muted);
-        appendTextRects(rects,
-                        "applied:" + std::to_string(pipelineCounters.tileDeltasApplied)
-                            + "/" + std::to_string(pipelineCounters.tileDeltasRejected),
-                        -0.95f,
-                        -0.92f,
-                        0.006f,
-                        muted);
+        const auto lines = debugOverlayLines(pipelineCounters);
+        const auto layout = debugOverlayLayoutFor(
+            pipelineCounters,
+            appState.framebufferWidth,
+            appState.framebufferHeight,
+            scale);
+        runs.push_back({
+            .text = lines[0],
+            .x = layout.textX,
+            .y = layout.textY[0],
+            .pixelHeight = layout.pixelHeights[0],
+            .color = white
+        });
+        runs.push_back({
+            .text = lines[1],
+            .x = layout.textX,
+            .y = layout.textY[1],
+            .pixelHeight = layout.pixelHeights[1],
+            .color = muted
+        });
+        runs.push_back({
+            .text = lines[2],
+            .x = layout.textX,
+            .y = layout.textY[2],
+            .pixelHeight = layout.pixelHeights[2],
+            .color = muted
+        });
+        runs.push_back({
+            .text = lines[3],
+            .x = layout.textX,
+            .y = layout.textY[3],
+            .pixelHeight = layout.pixelHeights[3],
+            .color = muted
+        });
     }
 
-    return rects;
+    return runs;
 }
 }

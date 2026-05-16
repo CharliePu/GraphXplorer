@@ -2,6 +2,7 @@
 #define COMPUTEBACKEND_H
 
 #include <chrono>
+#include <functional>
 #include <span>
 #include <string>
 #include <vector>
@@ -35,6 +36,7 @@ struct IntervalBatchView
     std::span<const double> xMax{};
     std::span<const double> yMin{};
     std::span<const double> yMax{};
+    std::function<bool()> cancelled{};
 };
 
 struct RasterBatchView
@@ -47,6 +49,7 @@ struct RasterBatchView
     std::span<const double> yMax{};
     std::span<const uint32_t> outputOffsets{};
     uint32_t pixelsPerAxis{RasterTexturePixels};
+    std::function<bool()> cancelled{};
 };
 
 struct TileClassificationResult

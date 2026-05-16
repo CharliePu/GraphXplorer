@@ -323,6 +323,12 @@ Interval computeInterval(double lower, double upper, Func func, const std::vecto
 
 Interval sin(const Interval& interval) {
     constexpr auto pi = std::numbers::pi;
+    constexpr auto fullPeriod = 2.0 * pi;
+    if (!std::isfinite(interval.lower) || !std::isfinite(interval.upper) || interval.size() >= fullPeriod)
+    {
+        return {-1.0, 1.0};
+    }
+
     // Critical points where derivative is zero: multiples of pi/2
     std::vector<double> criticals;
     // Calculate k such that (pi/2) + k*pi is within [lower, upper]
@@ -340,6 +346,12 @@ Interval sin(const Interval& interval) {
 
 Interval cos(const Interval& interval) {
     constexpr auto pi = std::numbers::pi;
+    constexpr auto fullPeriod = 2.0 * pi;
+    if (!std::isfinite(interval.lower) || !std::isfinite(interval.upper) || interval.size() >= fullPeriod)
+    {
+        return {-1.0, 1.0};
+    }
+
     // Critical points where derivative is zero: multiples of pi
     std::vector<double> criticals;
     // Calculate k such that k*pi is within [lower, upper]

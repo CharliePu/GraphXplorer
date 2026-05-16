@@ -1,5 +1,7 @@
 #include "UploadPlanner.h"
 
+#include <algorithm>
+
 namespace gx
 {
 UploadPlan UploadPlanner::plan(std::span<const TileRecord> records, const UploadBudget &budget) const
@@ -10,7 +12,9 @@ UploadPlan UploadPlanner::plan(std::span<const TileRecord> records, const Upload
 
     for (const auto &record : records)
     {
-        if (record.stage != TileStage::UploadQueued && record.stage != TileStage::RegionReady && record.stage != TileStage::ContourReady)
+        if (record.workState != TileWorkState::UploadQueued
+            && record.workState != TileWorkState::RegionReady
+            && record.workState != TileWorkState::ContourReady)
         {
             continue;
         }
@@ -47,6 +51,41 @@ UploadPlan UploadPlanner::plan(std::span<const TileRecord> records, const Upload
         }
     }
 
+    return result;
+}
+
+UploadPlan UploadPlanner::planVisible(std::span<const DisplayTile> tiles, const UploadBudget &budget) const
+{
+    UploadPlan result;
+    auto textureSlices = 0;
+    for (const auto &tile : tiles)
+    {
+        if (!tile.cpuRegion || tile.gpuSlice.textureId != 0)
+        {
+            continue;
+        }
+        if (std::ranges::find(result.textureUploads, tile.sourceKey) != result.textureUploads.end())
+        {
+            continue;
+        }
+        if (textureSlices >= budget.maxTextureSlicesPerFrame)
+        {
+            result.budgetExhausted = true;
+            continue;
+        }
+
+        const auto textureBytes = static_cast<size_t>(tile.cpuRegion->width)
+            * static_cast<size_t>(tile.cpuRegion->height);
+        if (result.textureBytes + textureBytes > budget.maxTextureBytesPerFrame)
+        {
+            result.budgetExhausted = true;
+            continue;
+        }
+
+        result.textureUploads.push_back(tile.sourceKey);
+        result.textureBytes += textureBytes;
+        ++textureSlices;
+    }
     return result;
 }
 }

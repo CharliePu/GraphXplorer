@@ -11,6 +11,7 @@
 #include <span>
 #include <string>
 #include <utility>
+#include <variant>
 
 #include "Window.h"
 #include "../App/FramePipeline.h"
@@ -45,12 +46,16 @@ Application::Application(const int width, const int height, const std::string &n
 {
     PipelineLog::init();
     renderer->setResourceManager(&framePipeline->renderResources());
-    pendingWindowSize = std::make_pair(width, height);
+    const auto framebufferWidth = window->getWidth();
+    const auto framebufferHeight = window->getHeight();
+    const auto devicePixelRatio = window->getContentScaleFactor();
+    pendingWindowSize = std::make_pair(framebufferWidth, framebufferHeight);
     latestFrameSnapshot = framePipeline->process(gx::ViewportChangedEvent{
         Interval{-20.0, 20.0},
         Interval{-20.0, 20.0},
-        width,
-        height
+        framebufferWidth,
+        framebufferHeight,
+        devicePixelRatio
     });
 }
 
@@ -71,14 +76,27 @@ void Application::run()
             inputScenarioRunner->tick(
                 [this](const double dx, const double dy) { onCursorDrag(dx, dy); },
                 [this](const double offset) { onMouseScrolled(offset); },
-                [this](const int width, const int height) { onWindowSizeChanged(width, height); },
+                [this](const int width, const int height) { requestWindowSize(width, height); },
                 [this](const std::string &key, const std::string &state) { onScenarioKey(key, state); },
-                [this](const std::string &path) { requestFrameCapture(path); }
+                [this](const std::string &path) { requestFrameCapture(path); },
+                [this](const std::string &expression) { processFrameEvent(gx::FormulaInputEvent{expression}); },
+                [this](const std::string &text)
+                {
+                    for (const auto ch : text)
+                    {
+                        onTextEntered(static_cast<unsigned char>(ch));
+                    }
+                },
+                [this](const double x, const double y) { onMouseClicked(x, y); }
             );
         }
 
         applyPendingWindowSizeChange();
-        processFrameEvent(gx::RenderTickEvent{});
+        const auto processedInputFrame = processQueuedFrameEvents();
+        if (!processedInputFrame)
+        {
+            processFrameEvent(gx::RenderTickEvent{});
+        }
 
         {
             GRAPHX_PROFILE_SCOPE("main.render");
@@ -135,12 +153,16 @@ void Application::onWindowSizeChanged(const int width, const int height)
 void Application::onKeyPressed(const glfw::KeyCode key, const int scancode, const glfw::KeyState action,
                                const glfw::ModifierKeyBit mods)
 {
-    (void)scancode;
-    (void)mods;
-    window->onKeyPressed(key, scancode, action, mods);
-    for (const auto &event : interactionController->handleKey(key, action, framePipeline->state()))
+    const auto events = interactionController->handleKey(key, action, framePipeline->state());
+    if (events.empty())
     {
-        processFrameEvent(event);
+        window->onKeyPressed(key, scancode, action, mods);
+        return;
+    }
+
+    for (const auto &event : events)
+    {
+        enqueueFrameEvent(event);
     }
 }
 
@@ -148,7 +170,15 @@ void Application::onCursorDrag(double x, double y)
 {
     for (const auto &event : interactionController->handleDrag(x, y, framePipeline->state()))
     {
-        processFrameEvent(event);
+        enqueueFrameEvent(event);
+    }
+}
+
+void Application::onMouseClicked(double x, double y)
+{
+    for (const auto &event : interactionController->handleClick(x, y, framePipeline->state()))
+    {
+        enqueueFrameEvent(event);
     }
 }
 
@@ -156,7 +186,7 @@ void Application::onTextEntered(unsigned int codepoint)
 {
     for (const auto &event : interactionController->handleText(codepoint, framePipeline->state()))
     {
-        processFrameEvent(event);
+        enqueueFrameEvent(event);
     }
 }
 
@@ -164,7 +194,7 @@ void Application::onMouseScrolled(double offset)
 {
     for (const auto &event : interactionController->handleScroll(offset, framePipeline->state()))
     {
-        processFrameEvent(event);
+        enqueueFrameEvent(event);
     }
 }
 
@@ -180,32 +210,83 @@ void Application::applyPendingWindowSizeChange()
         return;
     }
 
-    const auto [width, height] = *pendingWindowSize;
+    const auto [requestedWidth, requestedHeight] = *pendingWindowSize;
     pendingWindowSize.reset();
 
+    if (!isValidFramebufferSize(requestedWidth, requestedHeight))
+    {
+        return;
+    }
+
+    const auto framebufferWidth = requestedWidth;
+    const auto framebufferHeight = requestedHeight;
+    const auto devicePixelRatio = window->getContentScaleFactor();
+    if (!isValidFramebufferSize(framebufferWidth, framebufferHeight))
+    {
+        return;
+    }
+
+    const auto actualSize = std::make_pair(framebufferWidth, framebufferHeight);
+    if (appliedWindowSize.has_value() && *appliedWindowSize == actualSize)
+    {
+        return;
+    }
+    {
+        GRAPHX_PROFILE_SCOPE("app.applyWindowSize.renderer");
+        renderer->onWindowSizeChanged(framebufferWidth, framebufferHeight);
+    }
+    for (const auto &event : interactionController->handleResize(
+             framebufferWidth,
+             framebufferHeight,
+             framePipeline->state(),
+             devicePixelRatio))
+    {
+        enqueueFrameEvent(event);
+    }
+    appliedWindowSize = actualSize;
+}
+
+void Application::requestWindowSize(const int width, const int height)
+{
     if (!isValidFramebufferSize(width, height))
     {
         return;
     }
 
-    if (appliedWindowSize.has_value() && *appliedWindowSize == std::make_pair(width, height))
     {
+        GRAPHX_PROFILE_SCOPE("app.requestWindowSize.window");
+        window->onWindowSizeChanged(width, height);
+    }
+    pendingWindowSize = std::make_pair(window->getWidth(), window->getHeight());
+}
+
+void Application::enqueueFrameEvent(const gx::InputEvent &event)
+{
+    if (std::holds_alternative<gx::ViewportChangedEvent>(event)
+        && !pendingFrameEvents.empty()
+        && std::holds_alternative<gx::ViewportChangedEvent>(pendingFrameEvents.back()))
+    {
+        pendingFrameEvents.back() = event;
         return;
     }
 
+    pendingFrameEvents.push_back(event);
+}
+
+bool Application::processQueuedFrameEvents()
+{
+    if (pendingFrameEvents.empty())
     {
-        GRAPHX_PROFILE_SCOPE("app.applyWindowSize.window");
-        window->onWindowSizeChanged(width, height);
+        return false;
     }
-    {
-        GRAPHX_PROFILE_SCOPE("app.applyWindowSize.renderer");
-        renderer->onWindowSizeChanged(width, height);
-    }
-    for (const auto &event : interactionController->handleResize(width, height, framePipeline->state()))
+
+    auto events = std::move(pendingFrameEvents);
+    pendingFrameEvents.clear();
+    for (const auto &event : events)
     {
         processFrameEvent(event);
     }
-    appliedWindowSize = std::make_pair(width, height);
+    return true;
 }
 
 void Application::processFrameEvent(const gx::InputEvent &event)
@@ -239,6 +320,11 @@ std::optional<glfw::KeyCode> Application::keyCodeForScenarioName(const std::stri
     if (key == "I") return glfw::KeyCode::I;
     if (key == "ENTER") return glfw::KeyCode::Enter;
     if (key == "BACKSPACE") return glfw::KeyCode::Backspace;
+    if (key == "DELETE" || key == "DEL") return glfw::KeyCode::Delete;
+    if (key == "LEFT") return glfw::KeyCode::Left;
+    if (key == "RIGHT") return glfw::KeyCode::Right;
+    if (key == "HOME") return glfw::KeyCode::Home;
+    if (key == "END") return glfw::KeyCode::End;
     if (key == "ESC" || key == "ESCAPE") return glfw::KeyCode::Escape;
     return std::nullopt;
 }

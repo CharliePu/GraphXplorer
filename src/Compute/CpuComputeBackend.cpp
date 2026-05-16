@@ -28,6 +28,11 @@ BatchResult CpuComputeBackend::classifyIntervals(const IntervalBatchView &batch,
 
     for (size_t i = 0; i < batch.keys.size(); ++i)
     {
+        if (batch.cancelled && batch.cancelled())
+        {
+            return {false, i, "Cancelled"};
+        }
+
         std::vector<Interval> variables(batch.formula->variableNames.size(), Interval{0.0});
         if (const auto slot = batch.formula->variableSlot("x"))
         {
@@ -85,6 +90,11 @@ BatchResult CpuComputeBackend::rasterizeRegions(const RasterBatchView &batch, st
 
         for (auto y = 0; y < pixelsPerAxis; ++y)
         {
+            if (batch.cancelled && batch.cancelled())
+            {
+                return {false, i, "Cancelled"};
+            }
+
             const auto sampleY = batch.yMin[i] + (static_cast<double>(y) + 0.5) * dy;
             if (ySlot)
             {

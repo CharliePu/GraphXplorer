@@ -16,6 +16,10 @@ void UserInputHandler::onCursorDrag(double x, double y)
 {
 }
 
+void UserInputHandler::onMouseClicked(double x, double y)
+{
+}
+
 void UserInputHandler::onWindowSizeChanged(int width, int height)
 {
 }
@@ -81,15 +85,24 @@ void Input::keyCallback(glfw::Window &window, glfw::KeyCode key, int scancode, g
 
 void Input::windowSizeCallback(glfw::Window &window, int width, int height) const
 {
-    inputHandler->onWindowSizeChanged(width, height);
+    (void)window;
+    (void)width;
+    (void)height;
+    inputHandler->onWindowSizeChanged(this->window->getWidth(), this->window->getHeight());
 }
 
 void Input::cursorPosCallback(glfw::Window &window, double x, double y)
 {
+    const auto scale = this->window->getContentScaleFactor();
+    x *= scale;
+    y *= scale;
 
     if (mouseButtonState == glfw::MouseButtonState::Press)
     {
-        inputHandler->onCursorDrag(x - mouseX, y - mouseY);
+        const auto dx = x - mouseX;
+        const auto dy = y - mouseY;
+        dragDistanceSquared += dx * dx + dy * dy;
+        inputHandler->onCursorDrag(dx, dy);
     }
 
     mouseX = x;
@@ -99,8 +112,29 @@ void Input::cursorPosCallback(glfw::Window &window, double x, double y)
 void Input::mouseButtonCallback(glfw::Window &window, glfw::MouseButton button, glfw::MouseButtonState action,
                                 glfw::ModifierKeyBit mods)
 {
-    if (button == glfw::MouseButton::Left)
+    if (button != glfw::MouseButton::Left)
+    {
+        return;
+    }
+
+    if (action == glfw::MouseButtonState::Press)
+    {
+        pressMouseX = mouseX;
+        pressMouseY = mouseY;
+        dragDistanceSquared = 0.0;
         mouseButtonState = action;
+        return;
+    }
+
+    if (mouseButtonState == glfw::MouseButtonState::Press)
+    {
+        constexpr auto clickThresholdSquared = 25.0;
+        if (dragDistanceSquared <= clickThresholdSquared)
+        {
+            inputHandler->onMouseClicked(mouseX, mouseY);
+        }
+    }
+    mouseButtonState = action;
 }
 
 void Input::textCallback(glfw::Window &window, unsigned int codepoint)

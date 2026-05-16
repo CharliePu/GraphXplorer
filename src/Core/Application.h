@@ -9,6 +9,7 @@
 #include <optional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #define GLFW_INCLUDE_NONE
 #include <glfwpp/glfwpp.h>
@@ -25,7 +26,6 @@ namespace glfw
     class KeyCode;
 }
 
-class ComputeEngine;
 class ThreadPool;
 class Window;
 class Renderer;
@@ -48,6 +48,8 @@ public:
 
     void onCursorDrag(double x, double y) override;
 
+    void onMouseClicked(double x, double y) override;
+
     void onTextEntered(unsigned int codepoint) override;
 
     void onMouseScrolled(double offset) override;
@@ -56,6 +58,9 @@ public:
 
 private:
     void applyPendingWindowSizeChange();
+    void requestWindowSize(int width, int height);
+    void enqueueFrameEvent(const gx::InputEvent &event);
+    [[nodiscard]] bool processQueuedFrameEvents();
     void processFrameEvent(const gx::InputEvent &event);
     void onScenarioKey(const std::string &keyName, const std::string &stateName);
     void requestFrameCapture(const std::string &path);
@@ -73,6 +78,7 @@ private:
     std::optional<std::pair<int, int>> pendingWindowSize;
     std::optional<std::pair<int, int>> appliedWindowSize;
     std::optional<std::filesystem::path> pendingCapturePath;
+    std::vector<gx::InputEvent> pendingFrameEvents;
 };
 
 

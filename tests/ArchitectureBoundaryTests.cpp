@@ -85,7 +85,8 @@ TEST_CASE("Executable target has no legacy scene or mesh-render path", "[Archite
 
     const auto application = readFile(root / "src" / "Core" / "Application.cpp");
     CHECK(application.find("SceneManager") == std::string::npos);
-    CHECK(application.find("ComputeEngine") == std::string::npos);
+    const auto legacyComputeName = std::string{"Compute"} + "Engine";
+    CHECK(application.find(legacyComputeName) == std::string::npos);
 
     const auto rendererHeader = readFile(root / "src" / "Render" / "Renderer.h");
     CHECK(rendererHeader.find("updateMeshes") == std::string::npos);

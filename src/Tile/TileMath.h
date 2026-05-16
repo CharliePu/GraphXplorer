@@ -85,6 +85,15 @@ inline constexpr int MaxTileLevel = 30;
     return -(((-value) + divisor - 1) / divisor);
 }
 
+[[nodiscard]] inline TileKey tileParent(const TileKey &key)
+{
+    return {
+        floorDivByPow2(key.x, 1),
+        floorDivByPow2(key.y, 1),
+        key.level + 1
+    };
+}
+
 [[nodiscard]] inline bool parentCoversChild(const TileKey &parent, const TileKey &child)
 {
     if (parent.level <= child.level)
@@ -143,6 +152,35 @@ inline constexpr int MaxTileLevel = 30;
     const auto upperInclusiveScaled = std::nextafter(scaledUpper, -std::numeric_limits<double>::infinity());
     const auto maxIndex = static_cast<int64_t>(std::floor(upperInclusiveScaled));
     return {minIndex, maxIndex};
+}
+
+[[nodiscard]] inline int seedTileLevelForViewport(const ViewportRequest &request, const int maxSeedCells = 4)
+{
+    if (!request.valid() || maxSeedCells <= 0)
+    {
+        return MaxTileLevel;
+    }
+
+    for (auto level = MinTileLevel; level <= MaxTileLevel; ++level)
+    {
+        const auto [minX, maxX] = tileIndexBounds(request.xRange, level);
+        const auto [minY, maxY] = tileIndexBounds(request.yRange, level);
+        const auto width = maxX - minX + 1;
+        const auto height = maxY - minY + 1;
+        if (width <= 0 || height <= 0)
+        {
+            continue;
+        }
+
+        if (width <= maxSeedCells
+            && height <= maxSeedCells
+            && width <= maxSeedCells / std::max<int64_t>(1, height))
+        {
+            return level;
+        }
+    }
+
+    return MaxTileLevel;
 }
 }
 

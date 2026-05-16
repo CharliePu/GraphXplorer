@@ -2,6 +2,7 @@
 #define CONTRACTS_H
 
 #include <cstdint>
+#include <array>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -265,7 +266,22 @@ struct RenderTileInstance
     TileVisualState visualState{TileVisualState::Missing};
     TextureSlice regionSlice{};
     BufferRange contourRange{};
+    std::array<float, 4> uvRect{0.0f, 0.0f, 1.0f, 1.0f};
     bool operator==(const RenderTileInstance &) const = default;
+};
+
+struct DisplayTile
+{
+    TileKey desiredKey{};
+    TileKey sourceKey{};
+    Rect worldBounds{};
+    TileVisualState visualState{TileVisualState::Missing};
+    std::optional<RegionImageRef> cpuRegion{};
+    TextureSlice gpuSlice{};
+    std::array<float, 4> uvRect{0.0f, 0.0f, 1.0f, 1.0f};
+    bool isFallback{false};
+    bool clippedFallback{false};
+    bool operator==(const DisplayTile &) const = default;
 };
 
 enum class RenderLayer
@@ -342,6 +358,7 @@ struct FrameSnapshot
     std::string schedulerSummary{};
     std::vector<TileTransaction> appliedTransactions{};
     std::vector<TileKey> visibleCover{};
+    std::vector<DisplayTile> displayTiles{};
     UploadPlan uploadPlan{};
     std::vector<DrawCommand> drawCommands{};
     std::string counters{};

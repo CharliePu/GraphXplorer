@@ -40,10 +40,6 @@ add_library(GraphXplorerFormula
 target_link_libraries(GraphXplorerFormula PUBLIC GraphXplorerUtil)
 
 add_library(GraphXplorerTile
-        src/Graph/ChunkTree.cpp
-        src/Graph/ChunkTree.h
-        src/Graph/Graph.h
-        src/Math/RasterizedPlot.h
         src/Tile/TileCache.cpp
         src/Tile/TileCache.h
         src/Tile/TileMath.h
@@ -53,23 +49,13 @@ target_link_libraries(GraphXplorerTile PUBLIC GraphXplorerFormula GraphXplorerUt
 add_library(GraphXplorerCompute
         src/Compute/ComputeBackend.h
         src/Compute/CpuComputeBackend.cpp
-        src/Compute/TileScheduler.cpp
-        src/Compute/TileScheduler.h
-        src/Math/ChunkRenderer.h
-        src/Math/CpuChunkRenderer.cpp
-        src/Math/CpuChunkRenderer.h
-        src/Math/ChunkRegionRasterizer.cpp
-        src/Math/ChunkRegionRasterizer.h
-        src/Math/ChunkContourRasterizer.cpp
-        src/Math/ChunkContourRasterizer.h
-        src/Math/ComputeEngine.cpp
-        src/Math/ComputeEngine.h
-        src/Math/GraphProcessor.cpp
-        src/Math/GraphProcessor.h
-        src/Math/GraphRasterizer.cpp
-        src/Math/GraphRasterizer.h
-        src/Math/OpenCLChunkRenderer.cpp
-        src/Math/OpenCLChunkRenderer.h
+        src/Compute/TileJob.h
+        src/Compute/TilePlanner.cpp
+        src/Compute/TilePlanner.h
+        src/Compute/TileRuntime.cpp
+        src/Compute/TileRuntime.h
+        src/Compute/VisualCoverBuilder.cpp
+        src/Compute/VisualCoverBuilder.h
 )
 target_include_directories(GraphXplorerCompute PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(GraphXplorerCompute PUBLIC GraphXplorerFormula GraphXplorerTile GraphXplorerUtil glfw)
@@ -104,6 +90,8 @@ add_library(GraphXplorerApp
         src/App/FramePipeline.h
         src/App/InteractionController.cpp
         src/App/InteractionController.h
+        src/App/UiLayout.cpp
+        src/App/UiLayout.h
         src/Core/Application.cpp
         src/Core/Application.h
 )

@@ -12,6 +12,7 @@ class UploadPlanner
 {
 public:
     [[nodiscard]] UploadPlan plan(std::span<const TileRecord> records, const UploadBudget &budget) const;
+    [[nodiscard]] UploadPlan planVisible(std::span<const DisplayTile> tiles, const UploadBudget &budget) const;
 };
 }
 

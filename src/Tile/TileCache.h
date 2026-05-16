@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <unordered_map>
 #include <vector>
 
@@ -26,13 +27,33 @@ struct GpuResidency
     bool operator==(const GpuResidency &) const = default;
 };
 
+enum class TileValueState
+{
+    Unknown,
+    UniformFalse,
+    UniformTrue,
+    Mixed
+};
+
+enum class TileWorkState
+{
+    Idle,
+    IntervalQueued,
+    RegionQueued,
+    RegionReady,
+    ContourQueued,
+    ContourReady,
+    UploadQueued,
+    GpuResident,
+    Presented
+};
+
 struct TileRecord
 {
     TileKey key{};
     FormulaSemanticsHash semanticsHash{};
-    uint64_t generation{0};
-    TileStage stage{TileStage::Unknown};
-    TileClassification classification{TileClassification::Unknown};
+    TileValueState valueState{TileValueState::Unknown};
+    TileWorkState workState{TileWorkState::Idle};
     std::optional<Interval> interval{};
     std::optional<RegionImageRef> regionPixels{};
     std::optional<ContourSegmentRange> contourSegments{};
@@ -48,54 +69,103 @@ struct TileApplyResult
     size_t rejected{0};
 };
 
+struct TileDebugCounts
+{
+    size_t intervalQueued{0};
+    size_t regionQueued{0};
+    size_t stuckIntervalQueued{0};
+    size_t stuckRegionQueued{0};
+};
+
 class TileCache
 {
 public:
     [[nodiscard]] static bool validTransition(TileStage from, TileStage to);
 
     TileApplyResult apply(const TileTransaction &transaction);
-    bool transition(const TileKey &key, FormulaSemanticsHash semanticsHash, uint64_t generation, TileStage to);
+    bool transition(const TileKey &key, FormulaSemanticsHash semanticsHash, TileStage to);
+    bool erase(const TileKey &key, FormulaSemanticsHash semanticsHash);
+    [[nodiscard]] TileRecord &getOrCreate(
+        const TileKey &key,
+        FormulaSemanticsHash semanticsHash);
 
     [[nodiscard]] const TileRecord *find(const TileKey &key, FormulaSemanticsHash semanticsHash) const;
+    [[nodiscard]] const TileRecord *findNearestUniformAncestorOrSelf(
+        const TileKey &key,
+        FormulaSemanticsHash semanticsHash) const;
+    [[nodiscard]] const TileRecord *findNearestRenderableMixedAncestor(
+        const TileKey &key,
+        FormulaSemanticsHash semanticsHash) const;
+    [[nodiscard]] bool hasDescendantRecord(
+        const TileKey &key,
+        FormulaSemanticsHash semanticsHash) const;
+    [[nodiscard]] std::vector<int> occupiedLevelsForFormula(FormulaSemanticsHash semanticsHash) const;
     [[nodiscard]] std::vector<TileRecord> recordsForFormula(FormulaSemanticsHash semanticsHash) const;
+    [[nodiscard]] TileDebugCounts debugCountsForFormula(FormulaSemanticsHash semanticsHash) const;
     [[nodiscard]] size_t size() const;
     void clear();
 
 private:
-    struct CacheKey
+    struct XYKey
     {
-        TileKey tile{};
-        FormulaSemanticsHash semanticsHash{};
-        bool operator==(const CacheKey &) const = default;
+        int64_t x{0};
+        int64_t y{0};
+        bool operator==(const XYKey &) const = default;
     };
 
-    struct CacheKeyHash
+    struct XYKeyHash
     {
-        size_t operator()(const CacheKey &key) const noexcept
+        size_t operator()(const XYKey &key) const noexcept
         {
-            auto hash = TileKeyHash{}(key.tile);
-            hash ^= std::hash<uint64_t>{}(key.semanticsHash.value)
-                + 0x9e3779b97f4a7c15ull
-                + (hash << 6)
-                + (hash >> 2);
+            auto hash = std::hash<int64_t>{}(key.x);
+            hash ^= std::hash<int64_t>{}(key.y) + 0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
             return hash;
         }
     };
 
-    std::unordered_map<CacheKey, TileRecord, CacheKeyHash> records;
-};
+    struct LevelBucket
+    {
+        std::unordered_map<XYKey, TileRecord, XYKeyHash> records;
+    };
 
-class TileCoverageIndex
-{
-public:
-    explicit TileCoverageIndex(const TileCache &cache);
+    struct FormulaTileIndex
+    {
+        std::unordered_map<int, LevelBucket> levels;
+        std::set<int> occupiedLevels;
+        size_t recordCount{0};
+    };
 
-    [[nodiscard]] std::vector<TileKey> visibleCover(
-        const ViewportRequest &request,
-        int maxCells = 16384) const;
+    [[nodiscard]] static XYKey xyKeyFor(const TileKey &key);
+    [[nodiscard]] static TileKey ancestorAtLevel(const TileKey &key, int level);
+    [[nodiscard]] static bool renderReadyUniform(const TileRecord &record);
+    [[nodiscard]] static TileClassification classificationForValueState(TileValueState valueState);
+    [[nodiscard]] static TileValueState valueStateForClassification(TileClassification classification);
+    [[nodiscard]] static TileStage stageForRecord(const TileRecord &record);
+    static void applyDeltaToRecord(TileRecord &record, const TileDelta &delta);
+    static void applyTransitionToRecord(TileRecord &record, TileStage to);
+    [[nodiscard]] static const TileRecord *findInIndex(const FormulaTileIndex &index, const TileKey &key);
+    [[nodiscard]] static TileRecord *findMutableInIndex(FormulaTileIndex &index, const TileKey &key);
+    [[nodiscard]] static const TileRecord *findUniformAncestorInIndex(
+        const FormulaTileIndex &index,
+        const TileKey &key,
+        bool includeSelf);
+    [[nodiscard]] static const TileRecord *findRenderableMixedAncestorInIndex(
+        const FormulaTileIndex &index,
+        const TileKey &key);
+    [[nodiscard]] static bool hasDescendantRecordInIndex(
+        const FormulaTileIndex &index,
+        const TileKey &key);
+    static TileRecord &putRecord(FormulaTileIndex &index, TileRecord record);
+    static bool eraseRecord(FormulaTileIndex &index, const TileKey &key);
+    static void normalizeUniformAuthority(FormulaTileIndex &index,
+                                          const TileKey &key,
+                                          FormulaSemanticsHash semanticsHash);
+    static bool promoteParentIfChildrenAgree(FormulaTileIndex &index,
+                                             const TileKey &parent,
+                                             FormulaSemanticsHash semanticsHash);
+    static void pruneDescendants(FormulaTileIndex &index, const TileKey &parent);
 
-private:
-    const TileCache &cache;
+    std::unordered_map<uint64_t, FormulaTileIndex> formulas;
 };
 }
 

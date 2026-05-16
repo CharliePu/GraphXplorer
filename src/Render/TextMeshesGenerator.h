@@ -15,11 +15,14 @@
 #include <freetype/freetype.h>
 #include <glad/glad.h>
 
-#include "../UI/Plot.h"
-
 #include FT_FREETYPE_H
 
 struct Mesh;
+
+namespace staplegl
+{
+class shader_program;
+}
 
 enum class TextAlign
 {

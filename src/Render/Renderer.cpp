@@ -9,6 +9,8 @@
 #include <glad/glad.h>
 #include <staplegl/staplegl.hpp>
 
+#include "RenderResourceManager.h"
+
 Renderer::Renderer(const GLADloadproc &gladLoader)
 {
     // Load OpenGL function pointers
@@ -30,15 +32,39 @@ void Renderer::clear()
 
 void Renderer::draw()
 {
-    for (const auto &[component, meshes]: components)
+    for (const auto &[layer, meshes]: layerMeshes)
     {
+        (void)layer;
         draw(meshes);
     }
 }
 
-void Renderer::updateMeshes(const std::shared_ptr<UIComponent> &component, const std::vector<Mesh> &meshes)
+void Renderer::draw(const gx::FrameCommandBuffer &commands)
 {
-    components[component] = meshes;
+    draw(commands.commands());
+}
+
+void Renderer::draw(std::span<const gx::DrawCommand> commands)
+{
+    if (!resources)
+    {
+        return;
+    }
+
+    for (const auto &command : commands)
+    {
+        resources->draw(command);
+    }
+}
+
+void Renderer::setResourceManager(gx::RenderResourceManager *nextResources)
+{
+    resources = nextResources;
+}
+
+void Renderer::updateMeshes(const int layer, const std::vector<Mesh> &meshes)
+{
+    layerMeshes[layer] = meshes;
 }
 
 void Renderer::onWindowSizeChanged(int width, int height)

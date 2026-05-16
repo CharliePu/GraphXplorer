@@ -1,0 +1,75 @@
+#ifndef APPSTATE_H
+#define APPSTATE_H
+
+#include <optional>
+#include <string>
+#include <variant>
+
+#include "../Math/Interval.h"
+
+namespace gx
+{
+struct FormulaInputEvent
+{
+    std::string expression{};
+};
+
+struct ViewportChangedEvent
+{
+    Interval xRange{};
+    Interval yRange{};
+    int framebufferWidth{0};
+    int framebufferHeight{0};
+};
+
+struct DebugToggleEvent
+{
+    bool enabled{false};
+};
+
+using InputEvent = std::variant<FormulaInputEvent, ViewportChangedEvent, DebugToggleEvent>;
+
+struct AppState
+{
+    std::string formulaExpression{"x<=y"};
+    Interval xRange{-20.0, 20.0};
+    Interval yRange{-20.0, 20.0};
+    int framebufferWidth{800};
+    int framebufferHeight{800};
+    bool debug{false};
+    uint64_t requestId{1};
+    uint64_t generation{1};
+};
+
+struct StateDiff
+{
+    bool formulaChanged{false};
+    bool viewportChanged{false};
+    bool renderInvalidated{false};
+    uint64_t requestId{0};
+    uint64_t generation{0};
+    std::string debugString{};
+};
+
+class AppStateReducer
+{
+public:
+    [[nodiscard]] StateDiff reduce(AppState &state, const InputEvent &event) const;
+};
+
+struct EffectPlan
+{
+    bool compileFormula{false};
+    bool requestTiles{false};
+    bool invalidateRender{false};
+    bool invalidateTextLayout{false};
+};
+
+class EffectPlanner
+{
+public:
+    [[nodiscard]] EffectPlan plan(const StateDiff &diff) const;
+};
+}
+
+#endif // APPSTATE_H

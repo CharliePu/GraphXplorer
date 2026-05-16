@@ -1,17 +1,30 @@
 add_executable(GraphXplorerTests
+        ArchitectureBoundaryTests.cpp
         AsyncFrameInboxTests.cpp
         ChunkTreeTests.cpp
+        ContractTests.cpp
         ComputeCancellationTests.cpp
+        FormulaCompilerTests.cpp
         EvaluatorTests.cpp
+        FramePipelineTests.cpp
         FormulaTests.cpp
         GraphGenerationTests.cpp
         InputScenarioRunnerTests.cpp
         ParserTests.cpp
+        RenderCommandTests.cpp
+        SchedulerBackendTests.cpp
+        TileCacheTests.cpp
         TrigSupportTests.cpp
         TokenizerTests.cpp
 )
 
 target_link_libraries(GraphXplorerTests PRIVATE
-        GraphXplorerLib
+        GraphXplorerApp
+        GraphXplorerUI
+        GraphXplorerCompute
+        GraphXplorerRender
+        GraphXplorerTile
+        GraphXplorerFormula
+        GraphXplorerUtil
         Catch2::Catch2WithMain
 )

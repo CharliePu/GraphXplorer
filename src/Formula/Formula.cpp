@@ -4,28 +4,27 @@
 
 #include "Formula.h"
 
+#include <stdexcept>
+#include <utility>
+
 Formula::Formula(const std::string& expression)
-    : expressionStr(expression), tokenizer(expression)
+    : expressionStr(expression), compiled{std::make_shared<gx::CompiledFormula>()}
 {
-    tokens = tokenizer.tokenize();
-    if (tokens.empty())
+    auto next = gx::FormulaCompiler{}.compile(expression);
+    if (!next.diagnostics.ok)
     {
-        throw std::invalid_argument("Failed to tokenize expression");
+        throw std::invalid_argument(next.diagnostics.message);
     }
-    rpn = parser.convertToRPN(tokens);
-    if (rpn.tokens.empty())
-    {
-        throw std::invalid_argument("Failed to convert to RPN");
-    }
+    *compiled = std::move(next);
 }
 
 double Formula::evaluate(const std::unordered_map<std::string, double>& variables) {
-    return pointEvaluator.evaluateRPN(rpn, variables);
+    return compiled->evaluateDouble(variables);
 }
 
 Interval Formula::evaluate(const std::unordered_map<std::string, Interval> &variables)
 {
-    return intervalEvaluator.evaluateRPN(rpn, variables);
+    return compiled->evaluateInterval(variables);
 }
 
 const std::string &Formula::getExpression() const
@@ -35,12 +34,17 @@ const std::string &Formula::getExpression() const
 
 const RPN &Formula::getRPN() const
 {
-    return rpn;
+    return compiled->legacyRpn;
+}
+
+const gx::CompiledFormula &Formula::getCompiledFormula() const
+{
+    return *compiled;
 }
 
 bool Formula::hasOperatorContainingEqualSign() const
 {
-    for (const auto &token : rpn.tokens)
+    for (const auto &token : compiled->legacyRpn.tokens)
     {
         if (token.type != TokenType::OPERATOR)
         {
@@ -58,11 +62,11 @@ bool Formula::hasOperatorContainingEqualSign() const
 
 bool Formula::isTopLevelOperator(const std::string &op) const
 {
-    if (rpn.tokens.empty())
+    if (compiled->legacyRpn.tokens.empty())
     {
         return false;
     }
 
-    const auto &token = rpn.tokens.back();
+    const auto &token = compiled->legacyRpn.tokens.back();
     return token.type == TokenType::OPERATOR && token.value == op;
 }

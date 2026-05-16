@@ -125,28 +125,24 @@ void Application::onKeyPressed(const glfw::KeyCode key, const int scancode, cons
                                const glfw::ModifierKeyBit mods)
 {
     window->onKeyPressed(key, scancode, action, mods);
-    renderer->onKeyPressed(key, scancode, action, mods);
     sceneManager->onKeyPressed(key, scancode, action, mods);
 }
 
 void Application::onCursorDrag(double x, double y)
 {
     window->onCursorDrag(x, y);
-    renderer->onCursorDrag(x, y);
     sceneManager->onCursorDrag(x, y);
 }
 
 void Application::onTextEntered(unsigned int codepoint)
 {
     window->onTextEntered(codepoint);
-    renderer->onTextEntered(codepoint);
     sceneManager->onTextEntered(codepoint);
 }
 
 void Application::onMouseScrolled(double offset)
 {
     window->onMouseScrolled(offset);
-    renderer->onMouseScrolled(offset);
     sceneManager->onMouseScrolled(offset);
 }
 

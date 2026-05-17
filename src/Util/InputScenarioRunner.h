@@ -23,7 +23,8 @@ public:
         Capture,
         Formula,
         Text,
-        Click
+        Click,
+        Close
     };
 
     struct Action
@@ -53,6 +54,7 @@ public:
     using FormulaCallback = std::function<void(const std::string &)>;
     using TextCallback = std::function<void(const std::string &)>;
     using ClickCallback = std::function<void(double, double)>;
+    using CloseCallback = std::function<void()>;
 
     static std::optional<Config> parseScript(const std::string &script);
     static std::optional<InputScenarioRunner> fromEnvironment();
@@ -72,7 +74,8 @@ public:
               const CaptureCallback &onCapture,
               const FormulaCallback &onFormula = [](const std::string &) {},
               const TextCallback &onText = [](const std::string &) {},
-              const ClickCallback &onClick = [](double, double) {});
+              const ClickCallback &onClick = [](double, double) {},
+              const CloseCallback &onClose = [] {});
 
 private:
     static std::string trim(const std::string &value);

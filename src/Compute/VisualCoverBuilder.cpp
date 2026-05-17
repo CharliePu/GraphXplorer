@@ -151,9 +151,33 @@ void VisualCoverBuilder::visit(const ViewportRequest &request,
         key,
         request.formula.semanticsHash);
 
+    if (key.level <= leafLevel)
+    {
+        if (record)
+        {
+            if (auto tile = currentReadyTileFor(request, key, *record, false))
+            {
+                state.frame.tiles.push_back(*tile);
+                return;
+            }
+        }
+
+        if (hasPartialCover && key.level > MinTileLevel)
+        {
+            for (const auto &child : tileChildren(key))
+            {
+                visit(request, tileCache, previous, child, leafLevel, state);
+            }
+            return;
+        }
+
+        emitFallbackCell(request, tileCache, previous, key, state);
+        return;
+    }
+
     if (record && record->valueState == TileValueState::Mixed)
     {
-        if (key.level > leafLevel && (hasPartialCover || !record->regionPixels))
+        if (hasPartialCover || !record->regionPixels)
         {
             for (const auto &child : tileChildren(key))
             {
@@ -181,7 +205,7 @@ void VisualCoverBuilder::visit(const ViewportRequest &request,
         }
     }
 
-    if (hasPartialCover && key.level > MinTileLevel)
+    if (hasPartialCover)
     {
         for (const auto &child : tileChildren(key))
         {
@@ -291,8 +315,7 @@ std::optional<DisplayTile> VisualCoverBuilder::currentReadyTileFor(
     }
 
     auto uvRect = std::array{0.0f, 0.0f, 1.0f, 1.0f};
-    const auto clipped = record.key != displayKey;
-    if (visualState == TileVisualState::MixedRegion && clipped)
+    if (visualState == TileVisualState::MixedRegion)
     {
         uvRect = uvRectForTileSource(bounds, tileBounds(record.key));
     }
@@ -305,7 +328,7 @@ std::optional<DisplayTile> VisualCoverBuilder::currentReadyTileFor(
         .cpuRegion = record.regionPixels,
         .uvRect = uvRect,
         .isFallback = fallback,
-        .clippedFallback = fallback && clipped
+        .clippedFallback = fallback && record.key != displayKey
     };
 }
 

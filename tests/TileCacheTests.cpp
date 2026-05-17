@@ -173,6 +173,40 @@ TEST_CASE("TileCache applies transactions by formula semantics instead of genera
     CHECK(record->valueState == gx::TileValueState::UniformTrue);
 }
 
+TEST_CASE("TileCache rejects invalid transactions without committing earlier deltas", "[TileCache]")
+{
+    gx::TileCache cache;
+    const gx::FormulaSemanticsHash semantics{124};
+    const gx::TileKey key{2, 3, 4};
+
+    const gx::TileTransaction tx{
+        .header = {.requestId = 1, .generation = 1},
+        .semanticsHash = semantics,
+        .deltas = {
+            gx::TileDelta{
+                .header = {.requestId = 1, .generation = 1},
+                .semanticsHash = semantics,
+                .key = key,
+                .stage = gx::TileStage::IntervalQueued
+            },
+            gx::TileDelta{
+                .header = {.requestId = 1, .generation = 1},
+                .semanticsHash = semantics,
+                .key = key,
+                .stage = gx::TileStage::RegionReady,
+                .classification = gx::TileClassification::Mixed,
+                .region = gx::RegionImageRef{.id = 99, .width = 256, .height = 256}
+            }
+        }
+    };
+
+    const auto result = cache.apply(tx);
+    CHECK(result.applied == 0);
+    CHECK(result.rejected == tx.deltas.size());
+    CHECK(cache.find(key, semantics) == nullptr);
+    CHECK(cache.size() == 0);
+}
+
 TEST_CASE("TileCache promotes agreeing uniform children into the parent authority", "[TileCache]")
 {
     gx::TileCache cache;

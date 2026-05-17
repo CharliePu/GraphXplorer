@@ -15,6 +15,7 @@ namespace
 constexpr char ScriptEnvName[] = "GRAPHX_INPUT_SCRIPT";
 constexpr char ScriptLoopEnvName[] = "GRAPHX_INPUT_LOOP";
 constexpr char ScriptCloseOnCompleteEnvName[] = "GRAPHX_INPUT_EXIT_ON_COMPLETE";
+constexpr char ScriptCloseOnCompleteAliasEnvName[] = "GRAPHX_INPUT_CLOSE_ON_COMPLETE";
 constexpr char ScriptWaitMsEnvName[] = "GRAPHX_INPUT_WAIT_MS";
 
 std::string normalizedLower(std::string value)
@@ -216,6 +217,13 @@ std::optional<InputScenarioRunner::Action> InputScenarioRunner::parseAction(cons
             }
             return action;
         }
+
+        if (name == "close" && args.empty())
+        {
+            Action action;
+            action.type = ActionType::Close;
+            return action;
+        }
     }
     catch (const std::exception &)
     {
@@ -308,7 +316,9 @@ std::optional<InputScenarioRunner> InputScenarioRunner::fromEnvironment()
     }
 
     parsedConfig->loop = parseBooleanEnv(std::getenv(ScriptLoopEnvName), false);
-    parsedConfig->closeOnComplete = parseBooleanEnv(std::getenv(ScriptCloseOnCompleteEnvName), false);
+    parsedConfig->closeOnComplete = parseBooleanEnv(
+        std::getenv(ScriptCloseOnCompleteAliasEnvName),
+        parseBooleanEnv(std::getenv(ScriptCloseOnCompleteEnvName), false));
     parsedConfig->waitTimeoutSeconds = std::max(0.0, parseDoubleEnv(std::getenv(ScriptWaitMsEnvName), 8.0)) / 1000.0;
 
     return InputScenarioRunner{std::move(*parsedConfig)};
@@ -356,7 +366,8 @@ void InputScenarioRunner::tick(const DragCallback &onDrag,
                                const CaptureCallback &onCapture,
                                const FormulaCallback &onFormula,
                                const TextCallback &onText,
-                               const ClickCallback &onClick)
+                               const ClickCallback &onClick,
+                               const CloseCallback &onClose)
 {
     if (!isActive())
     {
@@ -395,6 +406,10 @@ void InputScenarioRunner::tick(const DragCallback &onDrag,
     else if (action.type == ActionType::Click)
     {
         onClick(action.x, action.y);
+    }
+    else if (action.type == ActionType::Close)
+    {
+        onClose();
     }
 
     frameInAction += 1;

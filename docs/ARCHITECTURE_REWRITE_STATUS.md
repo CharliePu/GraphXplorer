@@ -38,6 +38,11 @@
   level.
 - Moved async compute to `TileRuntime`, with tile work invalidated by formula
   semantics rather than viewport request id.
+- Added a GPU-preferred compute backend factory. Raster jobs use an OpenCL GPU
+  kernel when a compatible double-precision GPU device is available, and fall
+  back to `CpuComputeBackend` otherwise. Backend calls are submitted in batches,
+  while completed results are still committed to `TileCache` as independent
+  per-tile transactions.
 - Added formula identity simplification so expressions such as `x=x`, `x<=x`,
   and `x!=x` classify correctly before interval evaluation.
 - Added `VisualCoverBuilder` so presentation is not tree-exclusive: current
@@ -64,7 +69,7 @@
 
 ## Remaining Work
 
-- Port any future GPU/OpenCL acceleration behind the batch `ComputeBackend`
-  interface instead of reviving chunk renderer ownership.
+- Extend GPU acceleration beyond mixed-tile raster masks only when it can stay
+  behind the batch `ComputeBackend` interface.
 - Keep presentation-specific behavior in `VisualCoverBuilder`; `TilePlanner`
   should remain work-only.

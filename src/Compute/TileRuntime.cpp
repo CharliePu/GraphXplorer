@@ -20,7 +20,7 @@ size_t TileRuntime::WorkKeyHash::operator()(const WorkKey &key) const noexcept
 }
 
 TileRuntime::TileRuntime(std::unique_ptr<ComputeBackend> nextBackend, const size_t workerCount)
-    : backend{std::move(nextBackend)},
+    : backend{nextBackend ? std::move(nextBackend) : makeDefaultComputeBackend()},
       workers{workerCount == 0 ? defaultWorkerCount() : workerCount}
 {
 }
@@ -69,13 +69,42 @@ void TileRuntime::submitJobs(const std::span<const TileJob> jobs)
         return;
     }
 
+    std::vector<TileJob> intervalJobs;
+    std::vector<TileJob> rasterJobs;
+    intervalJobs.reserve(jobs.size());
+    rasterJobs.reserve(jobs.size());
     for (const auto &job : jobs)
     {
         if (job.kind != JobKind::ClassifyInterval && job.kind != JobKind::RasterizeRegion)
         {
             continue;
         }
-        enqueueJob(*request, *formula, job);
+        const auto key = workKeyFor(*request, job);
+        {
+            std::lock_guard lock(inFlightMutex);
+            if (!inFlight.insert(key).second)
+            {
+                continue;
+            }
+        }
+
+        if (job.kind == JobKind::ClassifyInterval)
+        {
+            intervalJobs.push_back(job);
+        }
+        else
+        {
+            rasterJobs.push_back(job);
+        }
+    }
+
+    if (!intervalJobs.empty())
+    {
+        enqueueBatch(*request, *formula, JobKind::ClassifyInterval, std::move(intervalJobs));
+    }
+    if (!rasterJobs.empty())
+    {
+        enqueueBatch(*request, *formula, JobKind::RasterizeRegion, std::move(rasterJobs));
     }
 }
 
@@ -87,23 +116,27 @@ TileRuntimeDrainResult TileRuntime::drainCompleted(TileCache &tileCache,
     TileRuntimeDrainResult result;
     for (auto &work : completed.drainForFrame())
     {
-        if (!work.transaction.deltas.empty())
+        for (auto &region : work.regions)
         {
-            if (!isCurrent(work.transaction.header, work.transaction.semanticsHash))
+            regionPayloads[region.first] = std::move(region.second);
+        }
+
+        for (auto &transaction : work.transactions)
+        {
+            if (transaction.deltas.empty())
             {
-                result.rejected += work.transaction.deltas.size();
+                continue;
+            }
+            if (!isCurrent(transaction.header, transaction.semanticsHash))
+            {
+                result.rejected += transaction.deltas.size();
                 continue;
             }
 
-            for (auto &region : work.regions)
-            {
-                regionPayloads[region.first] = std::move(region.second);
-            }
-
-            const auto applyResult = tileCache.apply(work.transaction);
+            const auto applyResult = tileCache.apply(transaction);
             result.applied += applyResult.applied;
             result.rejected += applyResult.rejected;
-            result.transactions.push_back(std::move(work.transaction));
+            result.transactions.push_back(std::move(transaction));
         }
     }
 
@@ -121,58 +154,68 @@ size_t TileRuntime::inFlightCount() const
     return inFlight.size();
 }
 
-void TileRuntime::enqueueJob(const ViewportRequest &request,
-                             const CompiledFormula &formula,
-                             const TileJob &job)
+void TileRuntime::enqueueBatch(const ViewportRequest &request,
+                               const CompiledFormula &formula,
+                               const JobKind kind,
+                               std::vector<TileJob> jobs)
 {
-    const auto key = workKeyFor(request, job);
-    {
-        std::lock_guard lock(inFlightMutex);
-        if (!inFlight.insert(key).second)
-        {
-            return;
-        }
-    }
-
-    workers.addTask([this, request, formula, job, key]()
+    workers.addTask([this, request, formula, kind, jobs = std::move(jobs)]()
     {
         if (!isCurrent(request))
         {
-            removeInFlight(key);
+            removeInFlight(request, jobs);
             return;
         }
 
         TileWorkResult work;
-        if (job.kind == JobKind::ClassifyInterval)
+        if (kind == JobKind::ClassifyInterval)
         {
-            work = classifyTile(request, formula, job);
+            work = classifyTiles(request, formula, jobs);
         }
-        else if (job.kind == JobKind::RasterizeRegion)
+        else if (kind == JobKind::RasterizeRegion)
         {
-            work = rasterizeTile(request, formula, job);
+            work = rasterizeTiles(request, formula, jobs);
         }
 
-        if (isCurrent(request) && !work.transaction.deltas.empty())
+        if (isCurrent(request) && !work.transactions.empty())
         {
             completed.push(std::move(work));
         }
 
-        removeInFlight(key);
+        removeInFlight(request, jobs);
     });
 }
 
-TileRuntime::TileWorkResult TileRuntime::classifyTile(const ViewportRequest &request,
-                                                      const CompiledFormula &formula,
-                                                      const TileJob &job)
+TileRuntime::TileWorkResult TileRuntime::classifyTiles(const ViewportRequest &request,
+                                                       const CompiledFormula &formula,
+                                                       const std::span<const TileJob> jobs)
 {
     TileWorkResult work;
-    const auto bounds = tileBounds(job.key);
-    std::array keys{job.key};
-    std::array xMin{bounds.xMin};
-    std::array xMax{bounds.xMax};
-    std::array yMin{bounds.yMin};
-    std::array yMax{bounds.yMax};
-    std::array<TileClassificationResult, 1> classifications{};
+    if (jobs.empty())
+    {
+        return work;
+    }
+
+    std::vector<TileKey> keys;
+    std::vector<double> xMin;
+    std::vector<double> xMax;
+    std::vector<double> yMin;
+    std::vector<double> yMax;
+    keys.reserve(jobs.size());
+    xMin.reserve(jobs.size());
+    xMax.reserve(jobs.size());
+    yMin.reserve(jobs.size());
+    yMax.reserve(jobs.size());
+    for (const auto &job : jobs)
+    {
+        const auto bounds = tileBounds(job.key);
+        keys.push_back(job.key);
+        xMin.push_back(bounds.xMin);
+        xMax.push_back(bounds.xMax);
+        yMin.push_back(bounds.yMin);
+        yMax.push_back(bounds.yMax);
+    }
+    std::vector<TileClassificationResult> classifications(jobs.size());
 
     BatchResult batchResult;
     {
@@ -195,60 +238,88 @@ TileRuntime::TileWorkResult TileRuntime::classifyTile(const ViewportRequest &req
         return work;
     }
 
-    const auto &classification = classifications.front();
-    auto finalStage = TileStage::MixedNeedsRegion;
-    if (classification.classification == TileClassification::UniformTrue)
+    const auto completedCount = std::min(batchResult.completed, classifications.size());
+    work.transactions.reserve(completedCount);
+    for (size_t index = 0; index < completedCount; ++index)
     {
-        finalStage = TileStage::UniformTrue;
-    }
-    else if (classification.classification == TileClassification::UniformFalse)
-    {
-        finalStage = TileStage::UniformFalse;
-    }
+        const auto &classification = classifications[index];
+        auto finalStage = TileStage::MixedNeedsRegion;
+        if (classification.classification == TileClassification::UniformTrue)
+        {
+            finalStage = TileStage::UniformTrue;
+        }
+        else if (classification.classification == TileClassification::UniformFalse)
+        {
+            finalStage = TileStage::UniformFalse;
+        }
 
-    work.transaction = {
-        .header = request.header,
-        .semanticsHash = request.formula.semanticsHash
-    };
-    work.transaction.deltas.push_back({
-        .header = request.header,
-        .semanticsHash = request.formula.semanticsHash,
-        .key = classification.key,
-        .stage = TileStage::IntervalQueued,
-        .classification = TileClassification::Unknown
-    });
-    work.transaction.deltas.push_back({
-        .header = request.header,
-        .semanticsHash = request.formula.semanticsHash,
-        .key = classification.key,
-        .stage = TileStage::IntervalReady,
-        .classification = classification.classification,
-        .interval = classification.interval
-    });
-    work.transaction.deltas.push_back({
-        .header = request.header,
-        .semanticsHash = request.formula.semanticsHash,
-        .key = classification.key,
-        .stage = finalStage,
-        .classification = classification.classification,
-        .interval = classification.interval
-    });
+        TileTransaction transaction{
+            .header = request.header,
+            .semanticsHash = request.formula.semanticsHash
+        };
+        transaction.deltas.reserve(3);
+        transaction.deltas.push_back({
+            .header = request.header,
+            .semanticsHash = request.formula.semanticsHash,
+            .key = classification.key,
+            .stage = TileStage::IntervalQueued,
+            .classification = TileClassification::Unknown
+        });
+        transaction.deltas.push_back({
+            .header = request.header,
+            .semanticsHash = request.formula.semanticsHash,
+            .key = classification.key,
+            .stage = TileStage::IntervalReady,
+            .classification = classification.classification,
+            .interval = classification.interval
+        });
+        transaction.deltas.push_back({
+            .header = request.header,
+            .semanticsHash = request.formula.semanticsHash,
+            .key = classification.key,
+            .stage = finalStage,
+            .classification = classification.classification,
+            .interval = classification.interval
+        });
+        work.transactions.push_back(std::move(transaction));
+    }
     return work;
 }
 
-TileRuntime::TileWorkResult TileRuntime::rasterizeTile(const ViewportRequest &request,
-                                                       const CompiledFormula &formula,
-                                                       const TileJob &job)
+TileRuntime::TileWorkResult TileRuntime::rasterizeTiles(const ViewportRequest &request,
+                                                        const CompiledFormula &formula,
+                                                        const std::span<const TileJob> jobs)
 {
     TileWorkResult work;
-    const auto bounds = tileBounds(job.key);
-    std::array keys{job.key};
-    std::array xMin{bounds.xMin};
-    std::array xMax{bounds.xMax};
-    std::array yMin{bounds.yMin};
-    std::array yMax{bounds.yMax};
-    std::array<uint32_t, 1> offsets{0};
-    std::array<RegionOutput, 1> outputs{};
+    if (jobs.empty())
+    {
+        return work;
+    }
+
+    std::vector<TileKey> keys;
+    std::vector<double> xMin;
+    std::vector<double> xMax;
+    std::vector<double> yMin;
+    std::vector<double> yMax;
+    std::vector<uint32_t> offsets;
+    keys.reserve(jobs.size());
+    xMin.reserve(jobs.size());
+    xMax.reserve(jobs.size());
+    yMin.reserve(jobs.size());
+    yMax.reserve(jobs.size());
+    offsets.reserve(jobs.size());
+    const auto pixelsPerTile = RasterTexturePixels * RasterTexturePixels;
+    for (const auto &job : jobs)
+    {
+        const auto bounds = tileBounds(job.key);
+        keys.push_back(job.key);
+        xMin.push_back(bounds.xMin);
+        xMax.push_back(bounds.xMax);
+        yMin.push_back(bounds.yMin);
+        yMax.push_back(bounds.yMax);
+        offsets.push_back(static_cast<uint32_t>(offsets.size() * pixelsPerTile));
+    }
+    std::vector<RegionOutput> outputs(jobs.size());
 
     BatchResult batchResult;
     {
@@ -273,31 +344,39 @@ TileRuntime::TileWorkResult TileRuntime::rasterizeTile(const ViewportRequest &re
         return work;
     }
 
-    const auto payloadId = nextRegionPayloadId.fetch_add(1, std::memory_order_relaxed);
-    auto output = std::move(outputs.front());
-    const auto width = static_cast<int>(output.width);
-    const auto height = static_cast<int>(output.height);
+    const auto completedCount = std::min(batchResult.completed, outputs.size());
+    work.transactions.reserve(completedCount);
+    work.regions.reserve(completedCount);
+    for (size_t index = 0; index < completedCount; ++index)
+    {
+        const auto payloadId = nextRegionPayloadId.fetch_add(1, std::memory_order_relaxed);
+        auto output = std::move(outputs[index]);
+        const auto width = static_cast<int>(output.width);
+        const auto height = static_cast<int>(output.height);
 
-    work.transaction = {
-        .header = request.header,
-        .semanticsHash = request.formula.semanticsHash
-    };
-    work.transaction.deltas.push_back({
-        .header = request.header,
-        .semanticsHash = request.formula.semanticsHash,
-        .key = job.key,
-        .stage = TileStage::RegionQueued,
-        .classification = TileClassification::Mixed
-    });
-    work.transaction.deltas.push_back({
-        .header = request.header,
-        .semanticsHash = request.formula.semanticsHash,
-        .key = job.key,
-        .stage = TileStage::RegionReady,
-        .classification = TileClassification::Mixed,
-        .region = RegionImageRef{payloadId, width, height}
-    });
-    work.regions.emplace_back(payloadId, std::move(output));
+        TileTransaction transaction{
+            .header = request.header,
+            .semanticsHash = request.formula.semanticsHash
+        };
+        transaction.deltas.reserve(2);
+        transaction.deltas.push_back({
+            .header = request.header,
+            .semanticsHash = request.formula.semanticsHash,
+            .key = output.key,
+            .stage = TileStage::RegionQueued,
+            .classification = TileClassification::Mixed
+        });
+        transaction.deltas.push_back({
+            .header = request.header,
+            .semanticsHash = request.formula.semanticsHash,
+            .key = output.key,
+            .stage = TileStage::RegionReady,
+            .classification = TileClassification::Mixed,
+            .region = RegionImageRef{payloadId, width, height}
+        });
+        work.transactions.push_back(std::move(transaction));
+        work.regions.emplace_back(payloadId, std::move(output));
+    }
     return work;
 }
 
@@ -316,6 +395,15 @@ void TileRuntime::removeInFlight(const WorkKey &key)
 {
     std::lock_guard lock(inFlightMutex);
     inFlight.erase(key);
+}
+
+void TileRuntime::removeInFlight(const ViewportRequest &request, const std::span<const TileJob> jobs)
+{
+    std::lock_guard lock(inFlightMutex);
+    for (const auto &job : jobs)
+    {
+        inFlight.erase(workKeyFor(request, job));
+    }
 }
 
 void TileRuntime::discardInFlightExcept(const FormulaSemanticsHash semanticsHash)

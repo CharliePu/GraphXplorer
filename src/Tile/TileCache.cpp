@@ -531,24 +531,109 @@ TileApplyResult TileCache::apply(const TileTransaction &transaction)
         return {.applied = 0, .rejected = transaction.deltas.size()};
     }
 
-    auto staged = formulas;
-    auto &index = staged[transaction.semanticsHash.value];
+    const FormulaTileIndex emptyIndex;
+    const auto formulaIt = formulas.find(transaction.semanticsHash.value);
+    const auto &baseIndex = formulaIt != formulas.end()
+        ? formulaIt->second
+        : emptyIndex;
+    std::unordered_map<TileKey, std::optional<TileRecord>, TileKeyHash> pending;
     std::vector<TileKey> touchedKeys;
     touchedKeys.reserve(transaction.deltas.size());
     size_t applied = 0;
     size_t rejected = 0;
 
+    const auto findPendingRecord = [&pending](const TileKey &key) -> const std::optional<TileRecord> *
+    {
+        const auto it = pending.find(key);
+        if (it == pending.end())
+        {
+            return nullptr;
+        }
+        return &it->second;
+    };
+
+    const auto findOverlayRecord = [&](const TileKey &key) -> const TileRecord *
+    {
+        if (const auto *pendingRecord = findPendingRecord(key))
+        {
+            return pendingRecord->has_value() ? &**pendingRecord : nullptr;
+        }
+        return findInIndex(baseIndex, key);
+    };
+
+    const auto findUniformAncestor = [&](const TileKey &key, const bool includeSelf) -> const TileRecord *
+    {
+        for (auto level = MaxTileLevel; level >= key.level; --level)
+        {
+            if (!includeSelf && level == key.level)
+            {
+                continue;
+            }
+
+            const auto ancestor = ancestorAtLevel(key, level);
+            const auto *record = findOverlayRecord(ancestor);
+            if (record && renderReadyUniform(*record))
+            {
+                return record;
+            }
+        }
+        return nullptr;
+    };
+
+    const auto markErase = [&pending](const TileKey &key)
+    {
+        pending.insert_or_assign(key, std::nullopt);
+    };
+
+    const auto pruneDescendants = [&](const TileKey &parent)
+    {
+        std::vector<TileKey> toErase;
+        for (const auto &[key, record] : pending)
+        {
+            (void)record;
+            if (parentCoversChild(parent, key))
+            {
+                toErase.push_back(key);
+            }
+        }
+
+        for (auto levelIt = baseIndex.occupiedLevels.begin();
+             levelIt != baseIndex.occupiedLevels.end() && *levelIt < parent.level;
+             ++levelIt)
+        {
+            const auto bucketIt = baseIndex.levels.find(*levelIt);
+            if (bucketIt == baseIndex.levels.end())
+            {
+                continue;
+            }
+
+            for (const auto &[xy, record] : bucketIt->second.records)
+            {
+                (void)xy;
+                if (parentCoversChild(parent, record.key))
+                {
+                    toErase.push_back(record.key);
+                }
+            }
+        }
+
+        for (const auto &key : toErase)
+        {
+            markErase(key);
+        }
+    };
+
     for (const auto &delta : transaction.deltas)
     {
-        if (const auto *ancestor = findUniformAncestorInIndex(index, delta.key, false))
+        if (const auto *ancestor = findUniformAncestor(delta.key, false))
         {
-            pruneDescendants(index, ancestor->key);
+            pruneDescendants(ancestor->key);
             ++rejected;
             continue;
         }
 
         TileRecord record;
-        if (const auto *existing = findInIndex(index, delta.key))
+        if (const auto *existing = findOverlayRecord(delta.key))
         {
             record = *existing;
         }
@@ -566,7 +651,7 @@ TileApplyResult TileCache::apply(const TileTransaction &transaction)
 
         if (delta.stage == TileStage::Evicted)
         {
-            eraseRecord(index, delta.key);
+            markErase(delta.key);
             touchedKeys.push_back(delta.key);
             ++applied;
             continue;
@@ -574,9 +659,22 @@ TileApplyResult TileCache::apply(const TileTransaction &transaction)
 
         applyDeltaToRecord(record, delta);
 
-        putRecord(index, std::move(record));
+        pending.insert_or_assign(delta.key, std::move(record));
         touchedKeys.push_back(delta.key);
         ++applied;
+    }
+
+    auto &index = formulas[transaction.semanticsHash.value];
+    for (auto &[key, record] : pending)
+    {
+        if (record)
+        {
+            putRecord(index, std::move(*record));
+        }
+        else
+        {
+            eraseRecord(index, key);
+        }
     }
 
     for (const auto &key : touchedKeys)
@@ -586,9 +684,8 @@ TileApplyResult TileCache::apply(const TileTransaction &transaction)
 
     if (index.recordCount == 0)
     {
-        staged.erase(transaction.semanticsHash.value);
+        formulas.erase(transaction.semanticsHash.value);
     }
-    formulas = std::move(staged);
     return {.applied = applied, .rejected = rejected};
 }
 

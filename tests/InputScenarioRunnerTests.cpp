@@ -5,14 +5,36 @@
 #include "catch.hpp"
 #include "../src/Util/InputScenarioRunner.h"
 
+#include <cstdlib>
 #include <cmath>
+
+namespace
+{
+void setEnvValue(const char *name, const char *value)
+{
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
+void unsetEnvValue(const char *name)
+{
+#ifdef _WIN32
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+}
 
 TEST_CASE("InputScenarioRunner parses valid script", "[InputScenarioRunner]")
 {
     const auto config = InputScenarioRunner::parseScript(
-        "drag(2.5,-1.0,3); resize(1280,720,1); scroll(0.5,2); pause(4); key(D,press); capture(D:\\GraphXplorer\\frame.png); formula(x<y); text(+1); click(32,24)");
+        "drag(2.5,-1.0,3); resize(1280,720,1); scroll(0.5,2); pause(4); key(D,press); capture(D:\\GraphXplorer\\frame.png); formula(x<y); text(+1); click(32,24); close()");
     REQUIRE(config.has_value());
-    REQUIRE(config->actions.size() == 9);
+    REQUIRE(config->actions.size() == 10);
 
     REQUIRE(config->actions[0].type == InputScenarioRunner::ActionType::Drag);
     REQUIRE(std::abs(config->actions[0].x - 2.5) < 1e-9);
@@ -47,6 +69,8 @@ TEST_CASE("InputScenarioRunner parses valid script", "[InputScenarioRunner]")
     REQUIRE(config->actions[8].type == InputScenarioRunner::ActionType::Click);
     REQUIRE(std::abs(config->actions[8].x - 32.0) < 1e-9);
     REQUIRE(std::abs(config->actions[8].y - 24.0) < 1e-9);
+
+    REQUIRE(config->actions[9].type == InputScenarioRunner::ActionType::Close);
 }
 
 TEST_CASE("InputScenarioRunner rejects invalid script", "[InputScenarioRunner]")
@@ -59,6 +83,7 @@ TEST_CASE("InputScenarioRunner rejects invalid script", "[InputScenarioRunner]")
     REQUIRE_FALSE(InputScenarioRunner::parseScript("formula()").has_value());
     REQUIRE_FALSE(InputScenarioRunner::parseScript("text()").has_value());
     REQUIRE_FALSE(InputScenarioRunner::parseScript("click(1)").has_value());
+    REQUIRE_FALSE(InputScenarioRunner::parseScript("close(1)").has_value());
     REQUIRE_FALSE(InputScenarioRunner::parseScript("unknown(1,2,3)").has_value());
 }
 
@@ -143,7 +168,7 @@ TEST_CASE("InputScenarioRunner ticks actions deterministically", "[InputScenario
 TEST_CASE("InputScenarioRunner ticks key and capture actions", "[InputScenarioRunner]")
 {
     const auto config = InputScenarioRunner::parseScript(
-        "key(D,press);formula(x^2+y^2<25);text(+1);click(44,22);capture(D:\\GraphXplorer\\debug.png)");
+        "key(D,press);formula(x^2+y^2<25);text(+1);click(44,22);capture(D:\\GraphXplorer\\debug.png);close()");
     REQUIRE(config.has_value());
     InputScenarioRunner runner{*config};
 
@@ -154,8 +179,9 @@ TEST_CASE("InputScenarioRunner ticks key and capture actions", "[InputScenarioRu
     std::string textInput;
     double clickX = 0.0;
     double clickY = 0.0;
+    auto closeCount = 0;
 
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < 6; ++i)
     {
         runner.tick(
             [](double, double) {},
@@ -182,6 +208,10 @@ TEST_CASE("InputScenarioRunner ticks key and capture actions", "[InputScenarioRu
             {
                 clickX = x;
                 clickY = y;
+            },
+            [&]
+            {
+                closeCount += 1;
             });
     }
 
@@ -192,5 +222,23 @@ TEST_CASE("InputScenarioRunner ticks key and capture actions", "[InputScenarioRu
     REQUIRE(std::abs(clickX - 44.0) < 1e-9);
     REQUIRE(std::abs(clickY - 22.0) < 1e-9);
     REQUIRE(capturePath == "D:\\GraphXplorer\\debug.png");
+    REQUIRE(closeCount == 1);
     REQUIRE(runner.isComplete());
+}
+
+TEST_CASE("InputScenarioRunner accepts close-on-complete env alias", "[InputScenarioRunner]")
+{
+    setEnvValue("GRAPHX_INPUT_SCRIPT", "pause(1)");
+    setEnvValue("GRAPHX_INPUT_CLOSE_ON_COMPLETE", "true");
+    unsetEnvValue("GRAPHX_INPUT_EXIT_ON_COMPLETE");
+
+    auto runner = InputScenarioRunner::fromEnvironment();
+    REQUIRE(runner.has_value());
+    runner->tick([](double, double) {}, [](double) {}, [](int, int) {});
+
+    CHECK(runner->isComplete());
+    CHECK(runner->shouldCloseOnComplete());
+
+    unsetEnvValue("GRAPHX_INPUT_SCRIPT");
+    unsetEnvValue("GRAPHX_INPUT_CLOSE_ON_COMPLETE");
 }

@@ -14,6 +14,7 @@
 #include <variant>
 
 #include "../Tile/TileMath.h"
+#include "../Util/PipelineLog.h"
 #include "UiLayout.h"
 
 namespace
@@ -74,30 +75,46 @@ struct DebugOverlayLayout
     float panelBottom{-0.98f};
     float panelTop{-0.72f};
     float textX{-0.95f};
-    std::array<float, 4> textY{-0.76f, -0.82f, -0.87f, -0.92f};
-    std::array<float, 4> pixelHeights{14.0f, 12.0f, 12.0f, 12.0f};
+    std::array<float, 6> textY{-0.76f, -0.81f, -0.86f, -0.91f, -0.95f, -0.98f};
+    std::array<float, 6> pixelHeights{12.0f, 12.0f, 12.0f, 12.0f, 12.0f, 12.0f};
 };
 
-std::array<std::string, 4> debugOverlayLines(const gx::FramePipelineCounters &counters)
+std::array<std::string, 6> debugOverlayLines(const gx::FramePipelineDebugStats &stats,
+                                             const gx::FramePipelineCounters &counters)
 {
+    const auto processingTiles = stats.queuedIntervalTiles + stats.queuedRegionTiles;
+    const auto stuckTiles = stats.stuckIntervalTiles + stats.stuckRegionTiles;
     return {
-        "debug frames",
-        "compiled:" + std::to_string(counters.formulasCompiled),
-        "jobs:" + std::to_string(counters.tileJobsScheduled),
-        "applied:" + std::to_string(counters.tileDeltasApplied)
+        "tiles:" + std::to_string(stats.displayTiles)
+            + " plot:" + std::to_string(stats.plotTiles),
+        "uniform:" + std::to_string(stats.uniformTiles)
+            + " mixed:" + std::to_string(stats.mixedTiles)
+            + " missing:" + std::to_string(stats.missingTiles),
+        "fallback:" + std::to_string(stats.fallbackTiles)
+            + " clipped:" + std::to_string(stats.clippedFallbackTiles),
+        "processing:" + std::to_string(processingTiles)
+            + " running:" + std::to_string(stats.inFlightJobs)
+            + " done:" + std::to_string(stats.completedJobs),
+        "queued i:" + std::to_string(stats.queuedIntervalTiles)
+            + " r:" + std::to_string(stats.queuedRegionTiles)
+            + " jobs:" + std::to_string(stats.submittedJobs),
+        "stuck:" + std::to_string(stuckTiles)
+            + " applied:" + std::to_string(counters.tileDeltasApplied)
             + "/" + std::to_string(counters.tileDeltasRejected)
     };
 }
 
-DebugOverlayLayout debugOverlayLayoutFor(const gx::FramePipelineCounters &counters,
+DebugOverlayLayout debugOverlayLayoutFor(const gx::FramePipelineDebugStats &stats,
+                                         const gx::FramePipelineCounters &counters,
                                          const int framebufferWidth,
                                          const int framebufferHeight,
                                          const float scale)
 {
     const auto width = std::max(1, framebufferWidth);
     const auto height = std::max(1, framebufferHeight);
-    const auto lines = debugOverlayLines(counters);
-    const std::array pixelHeights{14.0f * scale, 12.0f * scale, 12.0f * scale, 12.0f * scale};
+    const auto lines = debugOverlayLines(stats, counters);
+    std::array<float, 6> pixelHeights{};
+    pixelHeights.fill(12.0f * scale);
     auto textWidthPx = 0.0f;
     for (size_t index = 0; index < lines.size(); ++index)
     {
@@ -108,19 +125,22 @@ DebugOverlayLayout debugOverlayLayoutFor(const gx::FramePipelineCounters &counte
     const auto marginPx = std::clamp(logicalMin * 0.020f, 8.0f, 14.0f) * scale;
     const auto paddingX = 10.0f * scale;
     const auto paddingY = 8.0f * scale;
+    const auto lineGapPx = 16.0f * scale;
     const auto panelWidthPx = std::min(static_cast<float>(width) - marginPx * 2.0f, textWidthPx + paddingX * 2.0f);
-    const auto panelHeightPx = std::min(static_cast<float>(height) - marginPx * 2.0f, 74.0f * scale);
+    const auto desiredHeightPx = paddingY * 2.0f
+        + static_cast<float>(lines.size() - 1) * lineGapPx
+        + 12.0f * scale;
+    const auto panelHeightPx = std::min(static_cast<float>(height) - marginPx * 2.0f, desiredHeightPx);
     const auto panelLeftPx = marginPx;
     const auto panelRightPx = panelLeftPx + std::max(48.0f * scale, panelWidthPx);
     const auto panelBottomPx = static_cast<float>(height) - marginPx;
     const auto panelTopPx = std::max(marginPx, panelBottomPx - panelHeightPx);
     const auto textXPx = panelLeftPx + paddingX;
-    const std::array textYPx{
-        panelTopPx + paddingY,
-        panelTopPx + paddingY + 22.0f * scale,
-        panelTopPx + paddingY + 38.0f * scale,
-        panelTopPx + paddingY + 54.0f * scale
-    };
+    std::array<float, 6> textYPx{};
+    for (size_t index = 0; index < textYPx.size(); ++index)
+    {
+        textYPx[index] = panelTopPx + paddingY + static_cast<float>(index) * lineGapPx;
+    }
 
     return {
         .panelLeft = gx::normalizedPixelX(panelLeftPx, width),
@@ -132,7 +152,9 @@ DebugOverlayLayout debugOverlayLayoutFor(const gx::FramePipelineCounters &counte
             gx::normalizedPixelYFromTop(textYPx[0], height),
             gx::normalizedPixelYFromTop(textYPx[1], height),
             gx::normalizedPixelYFromTop(textYPx[2], height),
-            gx::normalizedPixelYFromTop(textYPx[3], height)
+            gx::normalizedPixelYFromTop(textYPx[3], height),
+            gx::normalizedPixelYFromTop(textYPx[4], height),
+            gx::normalizedPixelYFromTop(textYPx[5], height)
         },
         .pixelHeights = pixelHeights
     };
@@ -320,14 +342,85 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
     snapshot.visibleCover.reserve(snapshot.displayTiles.size());
     std::vector<RegionImageRef> visibleRegions;
     visibleRegions.reserve(snapshot.displayTiles.size());
+    debugStats = FramePipelineDebugStats{
+        .displayTiles = snapshot.displayTiles.size(),
+        .inFlightJobs = inFlightCount,
+        .completedJobs = pendingCompletionCount,
+        .queuedIntervalTiles = tileDebugCounts.intervalQueued,
+        .queuedRegionTiles = tileDebugCounts.regionQueued,
+        .stuckIntervalTiles = tileDebugCounts.stuckIntervalQueued,
+        .stuckRegionTiles = tileDebugCounts.stuckRegionQueued,
+        .submittedJobs = tilePlan.jobs.size()
+    };
     for (auto &tile : snapshot.displayTiles)
     {
         snapshot.visibleCover.push_back(tile.desiredKey);
+        if (tile.visualState != TileVisualState::UniformFalse)
+        {
+            ++debugStats.plotTiles;
+        }
+        switch (tile.visualState)
+        {
+        case TileVisualState::Missing:
+            ++debugStats.missingTiles;
+            break;
+        case TileVisualState::MixedRegion:
+            ++debugStats.mixedTiles;
+            break;
+        case TileVisualState::UniformFalse:
+        case TileVisualState::UniformTrue:
+            ++debugStats.uniformTiles;
+            break;
+        default:
+            break;
+        }
+        if (tile.isFallback)
+        {
+            ++debugStats.fallbackTiles;
+        }
+        if (tile.clippedFallback)
+        {
+            ++debugStats.clippedFallbackTiles;
+        }
         if (tile.cpuRegion)
         {
             tile.gpuSlice = resources.findRegionImage(*tile.cpuRegion);
             visibleRegions.push_back(*tile.cpuRegion);
         }
+    }
+    if (appState.debug
+        && (frameId % 30 == 0
+            || debugStats.submittedJobs > 0
+            || drainResult.applied > 0
+            || drainResult.rejected > 0))
+    {
+        PipelineLog::log(
+            "frame=%llu view=[%.3f,%.3f]x[%.3f,%.3f] root=%d leaf=%d "
+            "tiles=%zu plot=%zu uniform=%zu mixed=%zu missing=%zu fallback=%zu clipped=%zu "
+            "inFlight=%zu completed=%zu queuedI=%zu queuedR=%zu stuckI=%zu stuckR=%zu jobs=%zu applied=%zu rejected=%zu",
+            static_cast<unsigned long long>(frameId),
+            request.xRange.lower,
+            request.xRange.upper,
+            request.yRange.lower,
+            request.yRange.upper,
+            rootTileLevel(request),
+            leafTileLevel(request),
+            debugStats.displayTiles,
+            debugStats.plotTiles,
+            debugStats.uniformTiles,
+            debugStats.mixedTiles,
+            debugStats.missingTiles,
+            debugStats.fallbackTiles,
+            debugStats.clippedFallbackTiles,
+            debugStats.inFlightJobs,
+            debugStats.completedJobs,
+            debugStats.queuedIntervalTiles,
+            debugStats.queuedRegionTiles,
+            debugStats.stuckIntervalTiles,
+            debugStats.stuckRegionTiles,
+            debugStats.submittedJobs,
+            drainResult.applied,
+            drainResult.rejected);
     }
     resources.beginRegionFrame(visibleRegions);
     snapshot.uploadPlan = uploadPlanner.planVisible(snapshot.displayTiles, UploadBudget{});
@@ -443,6 +536,7 @@ FrameCommandBuffer FramePipeline::buildCommands(std::vector<DisplayTile> &displa
     }
 
     const auto plotInstanceCount = instances.size();
+    debugStats.plotTiles = plotInstanceCount;
     resources.setPlotInstances(std::move(instances));
     const auto debugPlotInstanceCount = debugInstances.size();
     resources.setDebugPlotInstances(std::move(debugInstances));
@@ -599,6 +693,7 @@ std::vector<OverlayRect> FramePipeline::buildOverlayRects() const
     if (appState.debug)
     {
         const auto layout = debugOverlayLayoutFor(
+            debugStats,
             pipelineCounters,
             appState.framebufferWidth,
             appState.framebufferHeight,
@@ -757,40 +852,23 @@ std::vector<OverlayTextRun> FramePipeline::buildOverlayTextRuns() const
 
     if (appState.debug)
     {
-        const auto lines = debugOverlayLines(pipelineCounters);
+        const auto lines = debugOverlayLines(debugStats, pipelineCounters);
         const auto layout = debugOverlayLayoutFor(
+            debugStats,
             pipelineCounters,
             appState.framebufferWidth,
             appState.framebufferHeight,
             scale);
-        runs.push_back({
-            .text = lines[0],
-            .x = layout.textX,
-            .y = layout.textY[0],
-            .pixelHeight = layout.pixelHeights[0],
-            .color = white
-        });
-        runs.push_back({
-            .text = lines[1],
-            .x = layout.textX,
-            .y = layout.textY[1],
-            .pixelHeight = layout.pixelHeights[1],
-            .color = muted
-        });
-        runs.push_back({
-            .text = lines[2],
-            .x = layout.textX,
-            .y = layout.textY[2],
-            .pixelHeight = layout.pixelHeights[2],
-            .color = muted
-        });
-        runs.push_back({
-            .text = lines[3],
-            .x = layout.textX,
-            .y = layout.textY[3],
-            .pixelHeight = layout.pixelHeights[3],
-            .color = muted
-        });
+        for (size_t index = 0; index < lines.size(); ++index)
+        {
+            runs.push_back({
+                .text = lines[index],
+                .x = layout.textX,
+                .y = layout.textY[index],
+                .pixelHeight = layout.pixelHeights[index],
+                .color = index == 0 ? white : muted
+            });
+        }
     }
 
     return runs;

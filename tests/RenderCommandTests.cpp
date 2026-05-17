@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "../src/Render/FrameCommandBuffer.h"
+#include "../src/Render/RenderResourceManager.h"
 #include "../src/Render/UploadPlanner.h"
 
 TEST_CASE("FrameCommandBuffer sorts and freezes draw commands", "[Render]")
@@ -66,4 +67,25 @@ TEST_CASE("UploadPlanner prioritizes visible display tiles", "[Render]")
     const auto plan = gx::UploadPlanner{}.planVisible(tiles, budget);
     CHECK(plan.textureUploads == std::vector<gx::TileKey>{visibleKey});
     CHECK_FALSE(plan.budgetExhausted);
+}
+
+TEST_CASE("RenderResourceManager assigns slices for the whole visible region set", "[Render]")
+{
+    gx::RenderResourceManager resources;
+    std::vector<gx::RegionImageRef> visibleRefs;
+    visibleRefs.reserve(600);
+    for (auto id = uint64_t{1}; id <= 600; ++id)
+    {
+        visibleRefs.push_back(gx::RegionImageRef{.id = id, .width = 1, .height = 1});
+    }
+
+    resources.beginRegionFrame(visibleRefs);
+
+    const std::array pixel{uint8_t{255}};
+    for (const auto &ref : visibleRefs)
+    {
+        const auto slice = resources.registerRegionImage(ref, pixel);
+        CHECK(slice.textureId == resources.regionTextureSet().id);
+        CHECK(slice.slice < visibleRefs.size());
+    }
 }

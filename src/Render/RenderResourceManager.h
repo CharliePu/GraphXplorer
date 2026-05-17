@@ -129,10 +129,15 @@ private:
         int width{0};
         int height{0};
         uint32_t capacity{0};
+        uint32_t desiredCapacity{0};
         uint32_t nextSlice{0};
+        uint32_t maxArrayLayers{0};
         bool initialized{false};
+        bool maxArrayLayersKnown{false};
         std::unordered_map<uint64_t, uint32_t> slices;
         std::unordered_map<uint32_t, uint64_t> refsBySlice;
+        std::unordered_map<uint64_t, RegionImageRef> refs;
+        std::unordered_map<uint64_t, std::vector<uint8_t>> pixels;
         std::vector<uint32_t> freeSlices;
         std::unordered_set<uint64_t> visibleRefs;
     };
@@ -177,6 +182,9 @@ private:
     void bindPlotInstanceAttributes(uint32_t firstInstance);
     void bindOverlayInstanceAttributes(uint32_t firstInstance);
     void ensureRegionTextureArray(int width, int height);
+    void queueRegionUpload(const RegionImageRef &ref, TextureSlice slice, std::span<const uint8_t> pixels);
+    void queueResidentRegionUploads();
+    [[nodiscard]] uint32_t maxRegionArrayLayers();
     void uploadPlotInstancesIfDirty();
     void uploadPlotInstanceFloats(std::span<const float> floats);
     void uploadOverlayRectsIfDirty();

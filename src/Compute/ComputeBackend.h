@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -102,6 +103,8 @@ public:
         const RasterBatchView &batch,
         std::span<RegionOutput> out) override;
 };
+
+[[nodiscard]] std::unique_ptr<ComputeBackend> makeDefaultComputeBackend();
 }
 
 #endif // COMPUTEBACKEND_H

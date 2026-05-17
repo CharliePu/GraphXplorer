@@ -13,13 +13,30 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 
+#include "../Util/PipelineLog.h"
+
 namespace gx
 {
 namespace
 {
-constexpr uint32_t MaxRegionSlices = 512;
 constexpr auto PlotInstanceFloatCount = 16u;
 constexpr auto OverlayInstanceFloatCount = 8u;
+
+uint32_t nextPowerOfTwoAtLeast(const uint32_t value)
+{
+    if (value <= 1)
+    {
+        return 1;
+    }
+
+    auto result = uint32_t{1};
+    while (result < value && result <= (std::numeric_limits<uint32_t>::max() / 2u))
+    {
+        result *= 2u;
+    }
+
+    return result < value ? value : result;
+}
 
 constexpr const char *PlotVertexShader = R"GLSL(
 #version 330 core
@@ -395,6 +412,27 @@ void RenderResourceManager::beginRegionFrame(const std::span<const RegionImageRe
             regionTextures.visibleRefs.insert(ref.id);
         }
     }
+    regionTextures.desiredCapacity = static_cast<uint32_t>(regionTextures.visibleRefs.size());
+
+    for (auto it = regionTextures.slices.begin(); it != regionTextures.slices.end();)
+    {
+        if (regionTextures.visibleRefs.contains(it->first))
+        {
+            ++it;
+            continue;
+        }
+
+        const auto slice = it->second;
+        regionTextures.refsBySlice.erase(slice);
+        regionTextures.refs.erase(it->first);
+        regionTextures.pixels.erase(it->first);
+        regionTextures.freeSlices.push_back(slice);
+        std::erase_if(pendingRegionUploads, [slice](const PendingRegionUpload &upload)
+        {
+            return upload.slice.slice == slice;
+        });
+        it = regionTextures.slices.erase(it);
+    }
 }
 
 TextureSlice RenderResourceManager::findRegionImage(const RegionImageRef &ref) const
@@ -429,44 +467,19 @@ TextureSlice RenderResourceManager::registerRegionImage(const RegionImageRef &re
             slice = regionTextures.freeSlices.back();
             regionTextures.freeSlices.pop_back();
         }
-        else if (regionTextures.nextSlice < MaxRegionSlices)
-        {
-            slice = regionTextures.nextSlice++;
-        }
         else
         {
-            auto evicted = false;
-            for (auto candidate = regionTextures.slices.begin(); candidate != regionTextures.slices.end(); ++candidate)
-            {
-                if (regionTextures.visibleRefs.contains(candidate->first))
-                {
-                    continue;
-                }
-
-                slice = candidate->second;
-                regionTextures.refsBySlice.erase(slice);
-                regionTextures.slices.erase(candidate);
-                std::erase_if(pendingRegionUploads, [slice](const PendingRegionUpload &upload)
-                {
-                    return upload.slice.slice == slice;
-                });
-                evicted = true;
-                break;
-            }
-            if (!evicted)
-            {
-                return {};
-            }
+            slice = regionTextures.nextSlice++;
+            regionTextures.desiredCapacity = std::max(regionTextures.desiredCapacity, regionTextures.nextSlice);
         }
 
         it = regionTextures.slices.emplace(ref.id, slice).first;
         regionTextures.refsBySlice[slice] = ref.id;
-        pendingRegionUploads.push_back({
-            ref,
-            TextureSlice{RegionTextureSet.id, slice},
-            std::vector<uint8_t>{pixels.begin(), pixels.end()}
-        });
     }
+
+    regionTextures.refs[ref.id] = ref;
+    regionTextures.pixels[ref.id] = std::vector<uint8_t>{pixels.begin(), pixels.end()};
+    queueRegionUpload(ref, TextureSlice{RegionTextureSet.id, it->second}, pixels);
 
     return TextureSlice{RegionTextureSet.id, it->second};
 }
@@ -876,16 +889,90 @@ void RenderResourceManager::ensureTextResources()
     textVerticesDirty = true;
 }
 
-void RenderResourceManager::ensureRegionTextureArray(const int width, const int height)
+uint32_t RenderResourceManager::maxRegionArrayLayers()
 {
-    if (regionTextures.initialized)
+    if (!regionTextures.maxArrayLayersKnown)
+    {
+        GLint maxLayers = 0;
+        glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &maxLayers);
+        regionTextures.maxArrayLayers = maxLayers > 0 ? static_cast<uint32_t>(maxLayers) : 1u;
+        regionTextures.maxArrayLayersKnown = true;
+        PipelineLog::log("render.regionTexture maxArrayLayers=%u", regionTextures.maxArrayLayers);
+    }
+
+    return regionTextures.maxArrayLayers;
+}
+
+void RenderResourceManager::queueRegionUpload(const RegionImageRef &ref,
+                                              const TextureSlice slice,
+                                              const std::span<const uint8_t> pixels)
+{
+    if (ref.id == 0 || slice.textureId == 0 || pixels.empty())
     {
         return;
     }
 
+    std::erase_if(pendingRegionUploads, [&ref](const PendingRegionUpload &upload)
+    {
+        return upload.ref.id == ref.id;
+    });
+    pendingRegionUploads.push_back({
+        ref,
+        slice,
+        std::vector<uint8_t>{pixels.begin(), pixels.end()}
+    });
+}
+
+void RenderResourceManager::queueResidentRegionUploads()
+{
+    for (const auto &[id, slice] : regionTextures.slices)
+    {
+        if (slice >= regionTextures.capacity)
+        {
+            continue;
+        }
+        const auto refIt = regionTextures.refs.find(id);
+        const auto pixelsIt = regionTextures.pixels.find(id);
+        if (refIt == regionTextures.refs.end() || pixelsIt == regionTextures.pixels.end())
+        {
+            continue;
+        }
+        queueRegionUpload(refIt->second, TextureSlice{RegionTextureSet.id, slice}, pixelsIt->second);
+    }
+}
+
+void RenderResourceManager::ensureRegionTextureArray(const int width, const int height)
+{
+    const auto requiredCapacity = std::max({1u, regionTextures.desiredCapacity, regionTextures.nextSlice});
+    const auto maxLayers = maxRegionArrayLayers();
+    const auto targetCapacity = std::min(nextPowerOfTwoAtLeast(requiredCapacity), maxLayers);
+    if (targetCapacity < requiredCapacity)
+    {
+        PipelineLog::log(
+            "render.regionTexture capacity limited required=%u allocated=%u maxArrayLayers=%u",
+            requiredCapacity,
+            targetCapacity,
+            maxLayers);
+    }
+
+    if (regionTextures.initialized
+        && regionTextures.width == width
+        && regionTextures.height == height
+        && regionTextures.capacity >= requiredCapacity)
+    {
+        return;
+    }
+
+    if (regionTextures.initialized)
+    {
+        glDeleteTextures(1, &regionTextures.texture);
+        regionTextures.texture = 0;
+        regionTextures.initialized = false;
+    }
+
     regionTextures.width = width;
     regionTextures.height = height;
-    regionTextures.capacity = MaxRegionSlices;
+    regionTextures.capacity = targetCapacity;
 
     glGenTextures(1, &regionTextures.texture);
     glBindTexture(GL_TEXTURE_2D_ARRAY, regionTextures.texture);
@@ -905,6 +992,15 @@ void RenderResourceManager::ensureRegionTextureArray(const int width, const int 
         GL_UNSIGNED_BYTE,
         nullptr);
     regionTextures.initialized = true;
+    queueResidentRegionUploads();
+    PipelineLog::log(
+        "render.regionTexture allocated width=%d height=%d capacity=%u required=%u visible=%zu resident=%zu",
+        width,
+        height,
+        regionTextures.capacity,
+        requiredCapacity,
+        regionTextures.visibleRefs.size(),
+        regionTextures.slices.size());
 }
 
 void RenderResourceManager::uploadPlotInstancesIfDirty()
@@ -1079,10 +1175,18 @@ void RenderResourceManager::uploadPendingRegionImages()
 
     glBindTexture(GL_TEXTURE_2D_ARRAY, regionTextures.texture);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    auto skippedForCapacity = size_t{0};
+    auto skippedForSize = size_t{0};
     for (const auto &upload : pendingRegionUploads)
     {
+        if (upload.slice.slice >= regionTextures.capacity)
+        {
+            ++skippedForCapacity;
+            continue;
+        }
         if (upload.ref.width != regionTextures.width || upload.ref.height != regionTextures.height)
         {
+            ++skippedForSize;
             continue;
         }
         glTexSubImage3D(
@@ -1097,6 +1201,15 @@ void RenderResourceManager::uploadPendingRegionImages()
             GL_RED,
             GL_UNSIGNED_BYTE,
             upload.pixels.data());
+    }
+    if (skippedForCapacity > 0 || skippedForSize > 0)
+    {
+        PipelineLog::log(
+            "render.regionTexture upload skipped capacity=%zu size=%zu pending=%zu allocated=%u",
+            skippedForCapacity,
+            skippedForSize,
+            pendingRegionUploads.size(),
+            regionTextures.capacity);
     }
     pendingRegionUploads.clear();
 }

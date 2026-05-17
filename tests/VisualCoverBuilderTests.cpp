@@ -59,6 +59,55 @@ gx::TileTransaction mixedNeedsRegionTransaction(const gx::FormulaSemanticsHash s
     };
 }
 
+gx::TileTransaction mixedRegionTransaction(const gx::FormulaSemanticsHash semantics,
+                                           const gx::TileKey &key)
+{
+    return {
+        .header = {.requestId = 1, .generation = 1},
+        .semanticsHash = semantics,
+        .deltas = {
+            gx::TileDelta{
+                .header = {.requestId = 1, .generation = 1},
+                .semanticsHash = semantics,
+                .key = key,
+                .stage = gx::TileStage::IntervalQueued,
+                .classification = gx::TileClassification::Unknown
+            },
+            gx::TileDelta{
+                .header = {.requestId = 1, .generation = 1},
+                .semanticsHash = semantics,
+                .key = key,
+                .stage = gx::TileStage::IntervalReady,
+                .classification = gx::TileClassification::Mixed,
+                .interval = Interval{-1.0, 1.0}
+            },
+            gx::TileDelta{
+                .header = {.requestId = 1, .generation = 1},
+                .semanticsHash = semantics,
+                .key = key,
+                .stage = gx::TileStage::MixedNeedsRegion,
+                .classification = gx::TileClassification::Mixed,
+                .interval = Interval{-1.0, 1.0}
+            },
+            gx::TileDelta{
+                .header = {.requestId = 1, .generation = 1},
+                .semanticsHash = semantics,
+                .key = key,
+                .stage = gx::TileStage::RegionQueued,
+                .classification = gx::TileClassification::Mixed
+            },
+            gx::TileDelta{
+                .header = {.requestId = 1, .generation = 1},
+                .semanticsHash = semantics,
+                .key = key,
+                .stage = gx::TileStage::RegionReady,
+                .classification = gx::TileClassification::Mixed,
+                .region = gx::RegionImageRef{.id = 10, .width = 256, .height = 256}
+            }
+        }
+    };
+}
+
 gx::TileTransaction uniformTrueTransaction(const gx::FormulaSemanticsHash semantics,
                                            const gx::TileKey &key)
 {
@@ -191,7 +240,7 @@ TEST_CASE("VisualCoverBuilder lets current uniform authority replace stale previ
     CHECK_FALSE(frame.tiles.front().isFallback);
 }
 
-TEST_CASE("VisualCoverBuilder does not commit a missing mixed leaf over previous children", "[VisualCoverBuilder]")
+TEST_CASE("VisualCoverBuilder keeps previous children until the current leaf tile is ready", "[VisualCoverBuilder]")
 {
     const auto formula = gx::FormulaCompiler{}.compile("x>y");
     REQUIRE(formula.diagnostics.ok);
@@ -232,4 +281,82 @@ TEST_CASE("VisualCoverBuilder does not commit a missing mixed leaf over previous
                 && tile.isFallback;
         }));
     }
+}
+
+TEST_CASE("VisualCoverBuilder preserves mixed-region UVs when viewport clips the source tile", "[VisualCoverBuilder]")
+{
+    const auto formula = gx::FormulaCompiler{}.compile("x<=y");
+    REQUIRE(formula.diagnostics.ok);
+
+    const gx::TileKey source{1, 1, 5};
+    const auto request = requestFor(
+        formula.handle,
+        Interval{40.0, 56.0},
+        Interval{36.0, 60.0});
+    REQUIRE(gx::seedTileLevelForViewport(request, 1) == source.level);
+
+    gx::TileCache cache;
+    REQUIRE(cache.apply(mixedRegionTransaction(formula.handle.semanticsHash, source)).rejected == 0);
+
+    const auto frame = gx::VisualCoverBuilder{}.build(request, cache, nullptr, 1);
+
+    REQUIRE(frame.tiles.size() == 1);
+    const auto &tile = frame.tiles.front();
+    CHECK(tile.desiredKey == source);
+    CHECK(tile.sourceKey == source);
+    CHECK(tile.worldBounds == gx::Rect{40.0, 56.0, 36.0, 60.0});
+    CHECK(tile.visualState == gx::TileVisualState::MixedRegion);
+    CHECK(tile.uvRect[0] == 0.25f);
+    CHECK(tile.uvRect[1] == 0.125f);
+    CHECK(tile.uvRect[2] == 0.75f);
+    CHECK(tile.uvRect[3] == 0.875f);
+}
+
+TEST_CASE("VisualCoverBuilder replaces stale descendants at the current leaf level", "[VisualCoverBuilder]")
+{
+    const auto formula = gx::FormulaCompiler{}.compile("x<=y");
+    REQUIRE(formula.diagnostics.ok);
+
+    const auto request = requestFor(
+        formula.handle,
+        Interval{0.0, 1024.0},
+        Interval{0.0, 1024.0});
+    const auto leafLevel = gx::leafTileLevel(request);
+    REQUIRE(leafLevel == 8);
+
+    const gx::TileKey seed{0, 0, 9};
+    const gx::TileKey leaf{0, 0, leafLevel};
+    const auto staleChild = gx::tileChildren(leaf).front();
+
+    gx::TileCache cache;
+    REQUIRE(cache.apply(mixedNeedsRegionTransaction(formula.handle.semanticsHash, seed)).rejected == 0);
+    REQUIRE(cache.apply(mixedRegionTransaction(formula.handle.semanticsHash, leaf)).rejected == 0);
+    REQUIRE(cache.apply(mixedRegionTransaction(formula.handle.semanticsHash, staleChild)).rejected == 0);
+
+    const gx::CommittedVisualFrame previous{
+        .semantics = formula.handle.semanticsHash,
+        .viewport = request,
+        .tiles = {
+            gx::DisplayTile{
+                .desiredKey = staleChild,
+                .sourceKey = staleChild,
+                .worldBounds = gx::tileBounds(staleChild),
+                .visualState = gx::TileVisualState::UniformTrue
+            }
+        }
+    };
+
+    const auto frame = gx::VisualCoverBuilder{}.build(request, cache, &previous);
+
+    CHECK(std::ranges::any_of(frame.tiles, [leaf](const gx::DisplayTile &tile)
+    {
+        return tile.desiredKey == leaf
+            && tile.sourceKey == leaf
+            && tile.visualState == gx::TileVisualState::MixedRegion
+            && !tile.isFallback;
+    }));
+    CHECK(std::ranges::none_of(frame.tiles, [leafLevel](const gx::DisplayTile &tile)
+    {
+        return tile.desiredKey.level < leafLevel;
+    }));
 }

@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -94,6 +96,23 @@ static_assert(sizeof(GpuFormulaInstruction) == 16);
     return instructions;
 }
 
+[[nodiscard]] bool requiresIntervalAwareRaster(const CompiledFormula &formula)
+{
+    return std::ranges::any_of(formula.evaluationIr, [](const FormulaInstruction &instruction)
+    {
+        switch (instruction.op)
+        {
+        case FormulaOp::Divide:
+        case FormulaOp::Tan:
+        case FormulaOp::Log:
+        case FormulaOp::Sqrt:
+            return true;
+        default:
+            return false;
+        }
+    });
+}
+
 [[nodiscard]] BatchResult invalidRasterBatch()
 {
     return {false, 0, "Invalid raster batch shape"};
@@ -157,12 +176,24 @@ using cl_kernel = struct _cl_kernel *;
 using cl_mem = struct _cl_mem *;
 
 constexpr cl_int CL_SUCCESS = 0;
+constexpr cl_int CL_DEVICE_NOT_FOUND = -1;
+constexpr cl_int CL_MEM_OBJECT_ALLOCATION_FAILURE = -4;
+constexpr cl_int CL_OUT_OF_RESOURCES = -5;
+constexpr cl_int CL_OUT_OF_HOST_MEMORY = -6;
+constexpr cl_int CL_BUILD_PROGRAM_FAILURE = -11;
+constexpr cl_int CL_INVALID_VALUE = -30;
+constexpr cl_int CL_INVALID_MEM_OBJECT = -38;
+constexpr cl_int CL_INVALID_WORK_GROUP_SIZE = -54;
+constexpr cl_int CL_INVALID_GLOBAL_WORK_SIZE = -63;
+constexpr cl_int CL_OUT_OF_GPU_MEMORY_AMD = -61;
 constexpr cl_bool CL_TRUE = 1;
 constexpr cl_device_type CL_DEVICE_TYPE_GPU = 1ull << 2;
 constexpr cl_uint CL_DEVICE_DOUBLE_FP_CONFIG = 0x1032;
 constexpr cl_bitfield CL_MEM_READ_ONLY = 1ull << 2;
 constexpr cl_bitfield CL_MEM_WRITE_ONLY = 1ull << 1;
 constexpr cl_bitfield CL_MEM_COPY_HOST_PTR = 1ull << 5;
+constexpr size_t MaxOpenClTransferBytes = 32ull * 1024ull * 1024ull;
+constexpr auto OpenClFailureCooldown = std::chrono::seconds{2};
 
 #define GX_CL_CALL __stdcall
 
@@ -263,6 +294,43 @@ struct OpenClApi
     }
 };
 
+[[nodiscard]] std::string_view openClErrorName(const cl_int error)
+{
+    switch (error)
+    {
+    case CL_SUCCESS:
+        return "CL_SUCCESS";
+    case CL_DEVICE_NOT_FOUND:
+        return "CL_DEVICE_NOT_FOUND";
+    case CL_MEM_OBJECT_ALLOCATION_FAILURE:
+        return "CL_MEM_OBJECT_ALLOCATION_FAILURE";
+    case CL_OUT_OF_RESOURCES:
+        return "CL_OUT_OF_RESOURCES";
+    case CL_OUT_OF_HOST_MEMORY:
+        return "CL_OUT_OF_HOST_MEMORY";
+    case CL_BUILD_PROGRAM_FAILURE:
+        return "CL_BUILD_PROGRAM_FAILURE";
+    case CL_INVALID_VALUE:
+        return "CL_INVALID_VALUE";
+    case CL_INVALID_MEM_OBJECT:
+        return "CL_INVALID_MEM_OBJECT";
+    case CL_INVALID_WORK_GROUP_SIZE:
+        return "CL_INVALID_WORK_GROUP_SIZE";
+    case CL_INVALID_GLOBAL_WORK_SIZE:
+        return "CL_INVALID_GLOBAL_WORK_SIZE";
+    case CL_OUT_OF_GPU_MEMORY_AMD:
+        return "CL_OUT_OF_GPU_MEMORY_AMD";
+    default:
+        return "CL_UNKNOWN_ERROR";
+    }
+}
+
+[[nodiscard]] std::string openClFailureMessage(const std::string_view action, const cl_int error)
+{
+    return std::string{"OpenCL "} + std::string{action} + " failed: "
+        + std::string{openClErrorName(error)} + " (" + std::to_string(error) + ")";
+}
+
 struct OpenClMem
 {
     std::shared_ptr<OpenClApi> api;
@@ -352,6 +420,107 @@ double unaryValue(int op, double value)
     }
 }
 
+double evaluateFormula(
+    __global const GpuFormulaInstruction *instructions,
+    uint instructionCount,
+    int xSlot,
+    int ySlot,
+    double sampleX,
+    double sampleY,
+    int *valid)
+{
+    double stack[64];
+    int sp = 0;
+    *valid = 1;
+    for (uint i = 0; i < instructionCount && *valid; ++i)
+    {
+        const GpuFormulaInstruction instruction = instructions[i];
+        switch (instruction.op)
+        {
+        case 0:
+            if (sp >= 64) { *valid = 0; break; }
+            stack[sp++] = instruction.constantValue;
+            break;
+        case 1:
+            if (sp >= 64) { *valid = 0; break; }
+            stack[sp++] = instruction.variableSlot == xSlot
+                ? sampleX
+                : (instruction.variableSlot == ySlot ? sampleY : 0.0);
+            break;
+        case 15:
+        case 16:
+        case 17:
+        case 18:
+        case 19:
+        case 20:
+            if (sp < 1) { *valid = 0; break; }
+            stack[sp - 1] = unaryValue(instruction.op, stack[sp - 1]);
+            break;
+        default:
+            if (sp < 2) { *valid = 0; break; }
+            {
+                const double rhs = stack[--sp];
+                const double lhs = stack[sp - 1];
+                stack[sp - 1] = binaryValue(instruction.op, lhs, rhs);
+            }
+            break;
+        }
+    }
+
+    if (!*valid || sp != 1)
+    {
+        *valid = 0;
+        return 0.0;
+    }
+    return stack[0];
+}
+
+double rasterSampleJitterX(int sample)
+{
+    switch (sample)
+    {
+    case 0: return 0.23;
+    case 1: return 0.72;
+    case 2: return 0.41;
+    case 3: return 0.91;
+    case 4: return 0.64;
+    case 5: return 0.86;
+    case 6: return 0.18;
+    case 7: return 0.53;
+    case 8: return 0.39;
+    case 9: return 0.93;
+    case 10: return 0.22;
+    case 11: return 0.12;
+    case 12: return 0.81;
+    case 13: return 0.28;
+    case 14: return 0.58;
+    default: return 0.88;
+    }
+}
+
+double rasterSampleJitterY(int sample)
+{
+    switch (sample)
+    {
+    case 0: return 0.67;
+    case 1: return 0.31;
+    case 2: return 0.84;
+    case 3: return 0.16;
+    case 4: return 0.24;
+    case 5: return 0.14;
+    case 6: return 0.59;
+    case 7: return 0.78;
+    case 8: return 0.93;
+    case 9: return 0.47;
+    case 10: return 0.76;
+    case 11: return 0.64;
+    case 12: return 0.09;
+    case 13: return 0.86;
+    case 14: return 0.35;
+    default: return 0.43;
+    }
+}
+
 __kernel void rasterizeFormula(
     __global const GpuFormulaInstruction *instructions,
     uint instructionCount,
@@ -380,49 +549,28 @@ __kernel void rasterizeFormula(
     const uint px = pixelIndex - py * pixelsPerAxis;
     const double dx = (xMax[tileIndex] - xMin[tileIndex]) / (double)pixelsPerAxis;
     const double dy = (yMax[tileIndex] - yMin[tileIndex]) / (double)pixelsPerAxis;
-    const double sampleX = xMin[tileIndex] + ((double)px + 0.5) * dx;
-    const double sampleY = yMin[tileIndex] + ((double)py + 0.5) * dy;
+    const double x0 = xMin[tileIndex] + (double)px * dx;
+    const double y0 = yMin[tileIndex] + (double)py * dy;
 
-    double stack[64];
-    int sp = 0;
-    int valid = 1;
-    for (uint i = 0; i < instructionCount && valid; ++i)
+    int hits = 0;
+    for (int sample = 0; sample < 16; ++sample)
     {
-        const GpuFormulaInstruction instruction = instructions[i];
-        switch (instruction.op)
-        {
-        case 0:
-            if (sp >= 64) { valid = 0; break; }
-            stack[sp++] = instruction.constantValue;
-            break;
-        case 1:
-            if (sp >= 64) { valid = 0; break; }
-            stack[sp++] = instruction.variableSlot == xSlot
-                ? sampleX
-                : (instruction.variableSlot == ySlot ? sampleY : 0.0);
-            break;
-        case 15:
-        case 16:
-        case 17:
-        case 18:
-        case 19:
-        case 20:
-            if (sp < 1) { valid = 0; break; }
-            stack[sp - 1] = unaryValue(instruction.op, stack[sp - 1]);
-            break;
-        default:
-            if (sp < 2) { valid = 0; break; }
-            {
-                const double rhs = stack[--sp];
-                const double lhs = stack[sp - 1];
-                stack[sp - 1] = binaryValue(instruction.op, lhs, rhs);
-            }
-            break;
-        }
+        const int sx = sample & 3;
+        const int sy = sample >> 2;
+        const double sampleX = x0 + (((double)sx + rasterSampleJitterX(sample)) / 4.0) * dx;
+        const double sampleY = y0 + (((double)sy + rasterSampleJitterY(sample)) / 4.0) * dy;
+        int valid = 1;
+        const double result = evaluateFormula(
+            instructions,
+            instructionCount,
+            xSlot,
+            ySlot,
+            sampleX,
+            sampleY,
+            &valid);
+        hits += (valid && result > 0.0) ? 1 : 0;
     }
-
-    const double result = valid && sp == 1 ? stack[0] : 0.0;
-    pixels[outputOffsets[tileIndex] + pixelIndex] = result > 0.0 ? (uchar)255 : (uchar)0;
+    pixels[outputOffsets[tileIndex] + pixelIndex] = (uchar)((hits * 255 + 8) / 16);
 }
 )CLC";
 }
@@ -530,13 +678,21 @@ public:
         }
 
         const auto pixelsPerAxis = batch.pixelsPerAxis;
-        const auto pixelsPerTile = pixelsPerAxis * pixelsPerAxis;
+        const auto pixelsPerTile = static_cast<size_t>(pixelsPerAxis) * static_cast<size_t>(pixelsPerAxis);
+        if (pixelsPerTile > std::numeric_limits<uint32_t>::max())
+        {
+            return {false, 0, "OpenCL raster pixel count overflow"};
+        }
         auto outputPixelCount = size_t{0};
         for (size_t index = 0; index < batch.outputOffsets.size(); ++index)
         {
             outputPixelCount = std::max(
                 outputPixelCount,
-                static_cast<size_t>(batch.outputOffsets[index]) + static_cast<size_t>(pixelsPerTile));
+                static_cast<size_t>(batch.outputOffsets[index]) + pixelsPerTile);
+        }
+        if (outputPixelCount > MaxOpenClTransferBytes)
+        {
+            return {false, 0, "OpenCL raster transfer exceeds interactive budget"};
         }
 
         std::vector<uint8_t> outputPixels(outputPixelCount, 0);
@@ -555,6 +711,7 @@ public:
         }
 
         auto error = CL_SUCCESS;
+        auto errorAction = std::string_view{"buffer allocation"};
         auto makeReadOnlyBuffer = [&](const size_t bytes, const void *data) -> OpenClMem
         {
             auto nextError = CL_SUCCESS;
@@ -589,11 +746,12 @@ public:
         if (outputBufferError != CL_SUCCESS)
         {
             error = outputBufferError;
+            errorAction = "output buffer allocation";
         }
 
         if (error != CL_SUCCESS)
         {
-            return {false, 0, "OpenCL buffer allocation failed"};
+            return {false, 0, openClFailureMessage(errorAction, error)};
         }
 
         const auto instructionCount = static_cast<uint32_t>(instructions.size());
@@ -614,14 +772,15 @@ public:
 
         for (cl_uint index = 0; index < args.size(); ++index)
         {
-            if (api->clSetKernelArg(kernel, index, args[index].size, args[index].value) != CL_SUCCESS)
+            const auto argError = api->clSetKernelArg(kernel, index, args[index].size, args[index].value);
+            if (argError != CL_SUCCESS)
             {
-                return {false, 0, "OpenCL kernel argument setup failed"};
+                return {false, 0, openClFailureMessage("kernel argument setup", argError)};
             }
         }
 
         const auto globalWorkItems = static_cast<size_t>(tileCount) * static_cast<size_t>(pixelsPerTile);
-        if (api->clEnqueueNDRangeKernel(
+        const auto enqueueError = api->clEnqueueNDRangeKernel(
                 queue,
                 kernel,
                 1,
@@ -630,12 +789,13 @@ public:
                 nullptr,
                 0,
                 nullptr,
-                nullptr) != CL_SUCCESS)
+                nullptr);
+        if (enqueueError != CL_SUCCESS)
         {
-            return {false, 0, "OpenCL raster kernel enqueue failed"};
+            return {false, 0, openClFailureMessage("raster kernel enqueue", enqueueError)};
         }
 
-        if (api->clEnqueueReadBuffer(
+        const auto readError = api->clEnqueueReadBuffer(
                 queue,
                 outputBuffer.value,
                 CL_TRUE,
@@ -644,11 +804,16 @@ public:
                 outputPixels.data(),
                 0,
                 nullptr,
-                nullptr) != CL_SUCCESS)
+                nullptr);
+        if (readError != CL_SUCCESS)
         {
-            return {false, 0, "OpenCL raster readback failed"};
+            return {false, 0, openClFailureMessage("raster readback", readError)};
         }
-        (void)api->clFinish(queue);
+        const auto finishError = api->clFinish(queue);
+        if (finishError != CL_SUCCESS)
+        {
+            return {false, 0, openClFailureMessage("queue finish", finishError)};
+        }
 
         for (size_t index = 0; index < batch.keys.size(); ++index)
         {
@@ -756,8 +921,13 @@ private:
 class OpenClPreferredComputeBackend final : public ComputeBackend
 {
 public:
+    OpenClPreferredComputeBackend()
+    {
+    }
+
     explicit OpenClPreferredComputeBackend(std::unique_ptr<OpenClRasterizer> nextRasterizer)
-        : rasterizer{std::move(nextRasterizer)}
+        : rasterizer{std::move(nextRasterizer)},
+          rasterizerCreationAttempted{true}
     {
     }
 
@@ -780,17 +950,30 @@ public:
     BatchResult rasterizeRegions(const RasterBatchView &batch,
                                  std::span<RegionOutput> out) override
     {
-        if (!loggedBackendMode)
+        if (batch.allowGpu)
         {
-            PipelineLog::log("compute.backend opencl=%d", rasterizer ? 1 : 0);
+            refreshRasterizer();
+        }
+        const auto openClReady = rasterizer != nullptr;
+        if (!loggedBackendMode || loggedOpenClReady != openClReady)
+        {
+            PipelineLog::log("compute.backend opencl=%d", openClReady ? 1 : 0);
             loggedBackendMode = true;
+            loggedOpenClReady = openClReady;
         }
 
-        if (rasterizer)
+        const auto needsIntervalAwareRaster = batch.formula && requiresIntervalAwareRaster(*batch.formula);
+        const auto now = std::chrono::steady_clock::now();
+        const auto openClInCooldown = now < openClCooldownUntil;
+        if (rasterizer && !needsIntervalAwareRaster && !openClInCooldown)
         {
             const auto gpuResult = rasterizer->rasterize(batch, out);
             if (gpuResult.ok || gpuResult.message == "Invalid raster batch shape")
             {
+                if (gpuResult.ok)
+                {
+                    consecutiveOpenClFailures = 0;
+                }
                 if (gpuResult.ok)
                 {
                     const auto stats = summarizeRasterOutputs(out, gpuResult.completed);
@@ -811,6 +994,7 @@ public:
                 }
                 return gpuResult;
             }
+            noteOpenClFailure(gpuResult.message);
             PipelineLog::log(
                 "compute.raster backend=opencl rejected batch=%zu reason=%s formula=%llu firstTile=%s",
                 batch.keys.size(),
@@ -841,21 +1025,57 @@ public:
     }
 
 private:
+    void refreshRasterizer()
+    {
+        if (rasterizer)
+        {
+            return;
+        }
+        if (rasterizerCreationAttempted)
+        {
+            return;
+        }
+
+        if (!rasterizerFuture.valid())
+        {
+            rasterizerCreationAttempted = true;
+            rasterizerFuture = std::async(std::launch::async, []
+            {
+                return OpenClRasterizer::create();
+            });
+            return;
+        }
+
+        if (rasterizerFuture.wait_for(std::chrono::milliseconds{0}) != std::future_status::ready)
+        {
+            return;
+        }
+
+        rasterizer = rasterizerFuture.get();
+    }
+
     CpuComputeBackend cpu;
     std::unique_ptr<OpenClRasterizer> rasterizer;
+    std::future<std::unique_ptr<OpenClRasterizer>> rasterizerFuture;
+    std::chrono::steady_clock::time_point openClCooldownUntil{};
+    size_t consecutiveOpenClFailures{0};
+    bool rasterizerCreationAttempted{false};
     bool loggedBackendMode{false};
+    bool loggedOpenClReady{false};
     size_t loggedRasterBatches{0};
-};
-#endif
-}
 
-std::unique_ptr<ComputeBackend> makeDefaultComputeBackend()
-{
-#ifdef _WIN32
-    GRAPHX_PROFILE_SCOPE("compute.makeDefaultBackend");
-    return std::make_unique<OpenClPreferredComputeBackend>(OpenClRasterizer::create());
-#else
-    return std::make_unique<CpuComputeBackend>();
+    void noteOpenClFailure(const std::string &message)
+    {
+        ++consecutiveOpenClFailures;
+        openClCooldownUntil = std::chrono::steady_clock::now() + OpenClFailureCooldown;
+        PipelineLog::log(
+            "compute.raster opencl cooldown failures=%zu durationMs=%lld reason=%s",
+            consecutiveOpenClFailures,
+            static_cast<long long>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(OpenClFailureCooldown).count()),
+            message.c_str());
+    }
+};
 #endif
 }
 }

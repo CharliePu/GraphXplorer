@@ -71,7 +71,8 @@ namespace
 VisualFrame VisualCoverBuilder::build(const ViewportRequest &request,
                                       const TileCache &tileCache,
                                       const CommittedVisualFrame *previous,
-                                      const int maxSeedCells) const
+                                      const int maxSeedCells,
+                                      const int refinementDepth) const
 {
     VisualFrame empty;
     if (!request.valid() || maxSeedCells <= 0)
@@ -96,7 +97,7 @@ VisualFrame VisualCoverBuilder::build(const ViewportRequest &request,
 
     BuildState state;
     state.frame.tiles.reserve(static_cast<size_t>(width * height));
-    const auto leafLevel = leafTileLevel(request);
+    const auto leafLevel = leafTileLevelForSeed(seedLevel, refinementDepth);
     for (auto y = minY; y <= maxY; ++y)
     {
         for (auto x = minX; x <= maxX; ++x)
@@ -162,7 +163,7 @@ void VisualCoverBuilder::visit(const ViewportRequest &request,
             }
         }
 
-        if (hasPartialCover && key.level > MinTileLevel)
+        if (hasPartialCover && key.level > LowestFiniteTileLevel)
         {
             for (const auto &child : tileChildren(key))
             {

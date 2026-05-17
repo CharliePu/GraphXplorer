@@ -2,6 +2,7 @@
 #define TILEJOB_H
 
 #include <cstdint>
+#include <optional>
 
 #include "../Util/Contracts.h"
 
@@ -32,6 +33,7 @@ struct TileJob
     TileKey key{};
     int priority{0};
     JobDependencyMask dependencies{};
+    std::optional<Interval> interval{};
     bool operator==(const TileJob &) const = default;
 };
 

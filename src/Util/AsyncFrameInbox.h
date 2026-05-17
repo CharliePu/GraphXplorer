@@ -52,6 +52,24 @@ public:
         queue.push_back(std::move(item));
     }
 
+    void pushFront(T item)
+    {
+        std::lock_guard lock(mutex);
+        queue.push_front(std::move(item));
+    }
+
+    template<typename InputIt>
+    void pushFrontRange(InputIt first, InputIt last)
+    {
+        std::lock_guard lock(mutex);
+        for (auto it = std::make_reverse_iterator(last);
+             it != std::make_reverse_iterator(first);
+             ++it)
+        {
+            queue.push_front(std::move(*it));
+        }
+    }
+
     template<typename InputIt>
     void pushRange(InputIt first, InputIt last)
     {
@@ -128,4 +146,3 @@ private:
 };
 
 #endif // ASYNCFRAMEINBOX_H
-

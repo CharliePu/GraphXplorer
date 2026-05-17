@@ -30,6 +30,11 @@
   source, semantic, and backend hashes.
 - Replaced request-sized graph generation with a sparse dyadic tile cache:
   `TileCache` stores records by formula, level, and integer tile coordinate.
+- Removed the old fixed `MinTileLevel`/`MaxTileLevel` viewport policy. Seed
+  tile levels are now computed directly from viewport geometry and constrained
+  only by finite `double`/integer representation limits, so zooming out past
+  the previous level-30 boundary still produces a sparse cover instead of an
+  empty frame.
 - Made render-ready uniform tiles authoritative. A uniform tile owns its subtree,
   descendants are pruned or rejected, and agreeing uniform children promote to a
   parent authority.
@@ -40,9 +45,36 @@
   semantics rather than viewport request id.
 - Added a GPU-preferred compute backend factory. Raster jobs use an OpenCL GPU
   kernel when a compatible double-precision GPU device is available, and fall
-  back to `CpuComputeBackend` otherwise. Backend calls are submitted in batches,
-  while completed results are still committed to `TileCache` as independent
-  per-tile transactions.
+  back to `CpuComputeBackend` otherwise. OpenCL initialization is lazy and runs
+  off the UI path, so startup can fall back to CPU rasterization until the GPU
+  path is ready.
+- Added latency-aware batching in `TileRuntime`. Backend calls are split into
+  measured sub-batches, and `BatchOptimizer` keeps a per-job-kind Pareto
+  frontier of observed batch size and raster sampling bucket versus wall-clock
+  latency. Runtime selection chooses the highest-throughput measured batch that
+  fits the target latency budget, with bounded exploration of larger and
+  in-between candidates.
+- Made completed tile application budgeted. `FrameBudgetController` passes a
+  per-frame apply budget into `TileRuntime::drainCompleted`; unfinished
+  completions are deferred back to the front of the inbox instead of forcing the
+  UI thread to drain a backlog in one frame.
+- Added `FrameBudgetController` as the main-thread side of the optimization
+  problem. Its objective is to keep `FramePipeline::process` under a target UI
+  latency while maximizing useful tile work. It controls apply budget, tile job
+  admission, upload budget, seed-cell count, and seed-relative refinement depth.
+  The refinement depth is a topology policy such as "refine three levels below
+  the current seed tile." It is not recomputed on every frame, pan, or zoom:
+  zoom moves the seed and leaf levels together, while the depth stays fixed.
+  Only formula changes and framebuffer/device-pixel-ratio changes are allowed
+  to reselect that topology policy. Viewport interaction still uses smaller
+  apply/upload/job budgets, but it does not switch the displayed tile grid
+  between fine and coarse levels.
+- Made statically derivable runtime sizing explicit. Worker count defaults to
+  hardware threads minus a CPU headroom value, and raster sampling resolution is
+  a `TileRuntimeOptions` value aligned with the target tile screen size rather
+  than an implicit runtime constant.
+- Added an event-loop responsiveness path: after a frame that processed input,
+  the app polls GLFW events instead of sleeping for the normal wait interval.
 - Added formula identity simplification so expressions such as `x=x`, `x<=x`,
   and `x!=x` classify correctly before interval evaluation.
 - Added `VisualCoverBuilder` so presentation is not tree-exclusive: current
@@ -73,3 +105,9 @@
   behind the batch `ComputeBackend` interface.
 - Keep presentation-specific behavior in `VisualCoverBuilder`; `TilePlanner`
   should remain work-only.
+- Add budgeted/yieldable internals to visual cover construction and render
+  resource uploads if profiling shows those stages exceeding the controller's
+  UI target. The controller owns the budgets now, but those two stages still
+  execute their selected work synchronously inside the frame.
+- Persist or warm-start batch optimizer frontiers per backend/device/formula
+  class after enough profiling data exists.

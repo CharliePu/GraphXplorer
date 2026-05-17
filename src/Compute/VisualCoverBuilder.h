@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "../Tile/TileCache.h"
+#include "../Tile/TileMath.h"
 #include "../Util/Contracts.h"
 
 namespace gx
@@ -29,7 +30,8 @@ public:
     [[nodiscard]] VisualFrame build(const ViewportRequest &request,
                                     const TileCache &tileCache,
                                     const CommittedVisualFrame *previous = nullptr,
-                                    int maxSeedCells = 4) const;
+                                    int maxSeedCells = 4,
+                                    int refinementDepth = DefaultRefinementDepth) const;
 
 private:
     struct BuildState

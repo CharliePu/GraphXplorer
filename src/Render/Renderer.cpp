@@ -160,12 +160,12 @@ void Renderer::clear()
     glClear(GL_COLOR_BUFFER_BIT);
 }
 
-void Renderer::draw(const gx::FrameCommandBuffer &commands)
+void Renderer::draw(const gx::FrameCommandBuffer &commands, const gx::UploadBudget &uploadBudget)
 {
-    draw(commands.commands());
+    draw(commands.commands(), uploadBudget);
 }
 
-void Renderer::draw(std::span<const gx::DrawCommand> commands)
+void Renderer::draw(std::span<const gx::DrawCommand> commands, const gx::UploadBudget &uploadBudget)
 {
     if (!resources)
     {
@@ -174,7 +174,7 @@ void Renderer::draw(std::span<const gx::DrawCommand> commands)
 
     for (const auto &command : commands)
     {
-        resources->draw(command);
+        resources->draw(command, uploadBudget);
     }
 }
 

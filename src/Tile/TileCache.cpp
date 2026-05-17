@@ -1,6 +1,7 @@
 #include "TileCache.h"
 
 #include <algorithm>
+#include <limits>
 #include <utility>
 
 #include "TileMath.h"
@@ -20,7 +21,7 @@ bool TileCache::validTransition(const TileStage from, const TileStage to)
     case TileStage::Unknown:
         return to == TileStage::IntervalQueued || to == TileStage::Evicted;
     case TileStage::IntervalQueued:
-        return to == TileStage::IntervalReady || to == TileStage::Evicted;
+        return to == TileStage::IntervalReady || to == TileStage::Unknown || to == TileStage::Evicted;
     case TileStage::IntervalReady:
         return to == TileStage::UniformTrue
             || to == TileStage::UniformFalse
@@ -32,7 +33,7 @@ bool TileCache::validTransition(const TileStage from, const TileStage to)
     case TileStage::MixedNeedsRegion:
         return to == TileStage::RegionQueued || to == TileStage::ContourQueued || to == TileStage::Evicted;
     case TileStage::RegionQueued:
-        return to == TileStage::RegionReady || to == TileStage::Evicted;
+        return to == TileStage::RegionReady || to == TileStage::MixedNeedsRegion || to == TileStage::Evicted;
     case TileStage::RegionReady:
         return to == TileStage::ContourQueued || to == TileStage::UploadQueued || to == TileStage::Evicted;
     case TileStage::ContourQueued:
@@ -178,6 +179,10 @@ void TileCache::applyDeltaToRecord(TileRecord &record, const TileDelta &delta)
     case TileStage::Unknown:
         record.valueState = TileValueState::Unknown;
         record.workState = TileWorkState::Idle;
+        record.interval.reset();
+        record.regionPixels.reset();
+        record.contourSegments.reset();
+        record.gpuResidency = {};
         break;
     case TileStage::IntervalQueued:
         record.workState = TileWorkState::IntervalQueued;
@@ -197,6 +202,9 @@ void TileCache::applyDeltaToRecord(TileRecord &record, const TileDelta &delta)
     case TileStage::MixedNeedsRegion:
         record.valueState = TileValueState::Mixed;
         record.workState = TileWorkState::Idle;
+        record.regionPixels.reset();
+        record.contourSegments.reset();
+        record.gpuResidency = {};
         break;
     case TileStage::RegionQueued:
         record.valueState = TileValueState::Mixed;
@@ -509,7 +517,7 @@ void TileCache::normalizeUniformAuthority(
             pruneDescendants(index, current);
         }
 
-        if (current.level >= MaxTileLevel)
+        if (current.level == std::numeric_limits<int>::max())
         {
             return;
         }
@@ -565,21 +573,46 @@ TileApplyResult TileCache::apply(const TileTransaction &transaction)
 
     const auto findUniformAncestor = [&](const TileKey &key, const bool includeSelf) -> const TileRecord *
     {
-        for (auto level = MaxTileLevel; level >= key.level; --level)
+        const TileRecord *best = nullptr;
+        auto bestLevel = std::numeric_limits<int>::min();
+        const auto consider = [&](const TileRecord *record)
         {
-            if (!includeSelf && level == key.level)
+            if (!record || !renderReadyUniform(*record))
+            {
+                return;
+            }
+            const auto sameTile = record->key == key;
+            const auto covers = sameTile || parentCoversChild(record->key, key);
+            if (covers
+                && (includeSelf || !sameTile)
+                && record->key.level > bestLevel)
+            {
+                best = record;
+                bestLevel = record->key.level;
+            }
+        };
+
+        for (const auto &[candidateKey, record] : pending)
+        {
+            (void)candidateKey;
+            if (record)
+            {
+                consider(&*record);
+            }
+        }
+
+        for (auto levelIt = baseIndex.occupiedLevels.lower_bound(key.level);
+             levelIt != baseIndex.occupiedLevels.end();
+             ++levelIt)
+        {
+            if (!includeSelf && *levelIt == key.level)
             {
                 continue;
             }
 
-            const auto ancestor = ancestorAtLevel(key, level);
-            const auto *record = findOverlayRecord(ancestor);
-            if (record && renderReadyUniform(*record))
-            {
-                return record;
-            }
+            consider(findInIndex(baseIndex, ancestorAtLevel(key, *levelIt)));
         }
-        return nullptr;
+        return best;
     };
 
     const auto markErase = [&pending](const TileKey &key)
@@ -868,6 +901,38 @@ TileDebugCounts TileCache::debugCountsForFormula(const FormulaSemanticsHash sema
         }
     }
     return counts;
+}
+
+TileQueuedRecoveryResult TileCache::recoverQueuedWork(const FormulaSemanticsHash semanticsHash)
+{
+    TileQueuedRecoveryResult result;
+    const auto formulaIt = formulas.find(semanticsHash.value);
+    if (formulaIt == formulas.end())
+    {
+        return result;
+    }
+
+    for (auto &[level, bucket] : formulaIt->second.levels)
+    {
+        (void)level;
+        for (auto &[xy, record] : bucket.records)
+        {
+            (void)xy;
+            if (record.workState == TileWorkState::IntervalQueued)
+            {
+                applyTransitionToRecord(record, TileStage::Unknown);
+                ++result.intervalQueued;
+            }
+            else if (record.workState == TileWorkState::RegionQueued)
+            {
+                applyTransitionToRecord(
+                    record,
+                    record.interval ? TileStage::MixedNeedsRegion : TileStage::Unknown);
+                ++result.regionQueued;
+            }
+        }
+    }
+    return result;
 }
 
 size_t TileCache::size() const

@@ -20,8 +20,8 @@ public:
     explicit Renderer(const GLADloadproc &gladLoader);
 
     void clear();
-    void draw(const gx::FrameCommandBuffer &commands);
-    void draw(std::span<const gx::DrawCommand> commands);
+    void draw(const gx::FrameCommandBuffer &commands, const gx::UploadBudget &uploadBudget = gx::UploadBudget{});
+    void draw(std::span<const gx::DrawCommand> commands, const gx::UploadBudget &uploadBudget = gx::UploadBudget{});
     void setResourceManager(gx::RenderResourceManager *resources);
 
     void onWindowSizeChanged(int width, int height);

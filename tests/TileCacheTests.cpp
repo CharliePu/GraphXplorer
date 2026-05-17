@@ -132,8 +132,72 @@ gx::TileTransaction uniformFalseTransaction(const gx::FormulaSemanticsHash seman
 TEST_CASE("TileCache accepts only valid state transitions", "[TileCache]")
 {
     CHECK(gx::TileCache::validTransition(gx::TileStage::Unknown, gx::TileStage::IntervalQueued));
+    CHECK(gx::TileCache::validTransition(gx::TileStage::IntervalQueued, gx::TileStage::Unknown));
     CHECK(gx::TileCache::validTransition(gx::TileStage::IntervalReady, gx::TileStage::MixedNeedsRegion));
+    CHECK(gx::TileCache::validTransition(gx::TileStage::RegionQueued, gx::TileStage::MixedNeedsRegion));
     CHECK_FALSE(gx::TileCache::validTransition(gx::TileStage::Unknown, gx::TileStage::GpuResident));
+}
+
+TEST_CASE("TileCache recovers queued work into schedulable states", "[TileCache]")
+{
+    gx::TileCache cache;
+    const gx::FormulaSemanticsHash semantics{122};
+    const gx::TileKey intervalKey{1, 2, 3};
+    const gx::TileKey regionKey{2, 3, 3};
+
+    REQUIRE(cache.transition(intervalKey, semantics, gx::TileStage::IntervalQueued));
+    REQUIRE(cache.apply(gx::TileTransaction{
+        .header = {.requestId = 1, .generation = 2},
+        .semanticsHash = semantics,
+        .deltas = {
+            gx::TileDelta{
+                .header = {.requestId = 1, .generation = 2},
+                .semanticsHash = semantics,
+                .key = regionKey,
+                .stage = gx::TileStage::IntervalQueued
+            },
+            gx::TileDelta{
+                .header = {.requestId = 1, .generation = 2},
+                .semanticsHash = semantics,
+                .key = regionKey,
+                .stage = gx::TileStage::IntervalReady,
+                .classification = gx::TileClassification::Mixed,
+                .interval = Interval{-1.0, 1.0}
+            },
+            gx::TileDelta{
+                .header = {.requestId = 1, .generation = 2},
+                .semanticsHash = semantics,
+                .key = regionKey,
+                .stage = gx::TileStage::MixedNeedsRegion,
+                .classification = gx::TileClassification::Mixed,
+                .interval = Interval{-1.0, 1.0}
+            },
+            gx::TileDelta{
+                .header = {.requestId = 1, .generation = 2},
+                .semanticsHash = semantics,
+                .key = regionKey,
+                .stage = gx::TileStage::RegionQueued,
+                .classification = gx::TileClassification::Mixed
+            }
+        }
+    }).rejected == 0);
+
+    const auto recovered = cache.recoverQueuedWork(semantics);
+    CHECK(recovered.intervalQueued == 1);
+    CHECK(recovered.regionQueued == 1);
+
+    const auto *intervalRecord = cache.find(intervalKey, semantics);
+    REQUIRE(intervalRecord != nullptr);
+    CHECK(intervalRecord->valueState == gx::TileValueState::Unknown);
+    CHECK(intervalRecord->workState == gx::TileWorkState::Idle);
+
+    const auto *regionRecord = cache.find(regionKey, semantics);
+    REQUIRE(regionRecord != nullptr);
+    CHECK(regionRecord->valueState == gx::TileValueState::Mixed);
+    CHECK(regionRecord->workState == gx::TileWorkState::Idle);
+    REQUIRE(regionRecord->interval.has_value());
+    CHECK(regionRecord->interval->lower == -1.0);
+    CHECK(regionRecord->interval->upper == 1.0);
 }
 
 TEST_CASE("TileCache applies transactions by formula semantics instead of generation", "[TileCache]")

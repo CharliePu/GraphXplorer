@@ -77,6 +77,17 @@ struct TileDebugCounts
     size_t stuckRegionQueued{0};
 };
 
+struct TileQueuedRecoveryResult
+{
+    size_t intervalQueued{0};
+    size_t regionQueued{0};
+
+    [[nodiscard]] size_t total() const
+    {
+        return intervalQueued + regionQueued;
+    }
+};
+
 class TileCache
 {
 public:
@@ -102,6 +113,7 @@ public:
     [[nodiscard]] std::vector<int> occupiedLevelsForFormula(FormulaSemanticsHash semanticsHash) const;
     [[nodiscard]] std::vector<TileRecord> recordsForFormula(FormulaSemanticsHash semanticsHash) const;
     [[nodiscard]] TileDebugCounts debugCountsForFormula(FormulaSemanticsHash semanticsHash) const;
+    TileQueuedRecoveryResult recoverQueuedWork(FormulaSemanticsHash semanticsHash);
     [[nodiscard]] size_t size() const;
     void clear();
 

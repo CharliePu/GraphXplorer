@@ -295,7 +295,10 @@ TEST_CASE("TilePlanner never schedules cached descendants below the viewport lea
         .framebufferHeight = 800,
         .devicePixelRatio = 1.0
     };
-    const auto leafLevel = gx::leafTileLevel(request);
+    constexpr auto refinementDepth = 1;
+    const auto seedLevel = gx::seedTileLevelForViewport(request);
+    const auto leafLevel = gx::leafTileLevelForSeed(seedLevel, refinementDepth);
+    REQUIRE(seedLevel == 10);
     REQUIRE(leafLevel == 9);
 
     gx::TileCache cache;
@@ -303,7 +306,7 @@ TEST_CASE("TilePlanner never schedules cached descendants below the viewport lea
     auto result = cache.apply(uniformTrueTransaction(formula.handle.semanticsHash, staleFineTile, 1));
     REQUIRE(result.rejected == 0);
 
-    const auto plan = gx::TilePlanner{}.plan(request, cache, gx::TilePlanBudget{});
+    const auto plan = gx::TilePlanner{}.plan(request, cache, gx::TilePlanBudget{}, 4, refinementDepth);
     CHECK(std::ranges::none_of(plan.jobs, [leafLevel](const gx::TileJob &job)
     {
         return job.key.level < leafLevel;
@@ -358,6 +361,33 @@ TEST_CASE("TilePlanner creates seed authority even when cached descendants exist
     }
 }
 
+TEST_CASE("TilePlanner schedules huge zoom-out viewports above the old fixed level cap", "[TilePlanner]")
+{
+    const auto formula = gx::FormulaCompiler{}.compile("x>y");
+    REQUIRE(formula.diagnostics.ok);
+
+    const gx::ViewportRequest request{
+        .header = {.requestId = 5, .generation = 7},
+        .formula = formula.handle,
+        .xRange = Interval{-1.0e12, 1.0e12},
+        .yRange = Interval{-1.0e12, 1.0e12},
+        .framebufferWidth = 1600,
+        .framebufferHeight = 1000,
+        .devicePixelRatio = 1.0
+    };
+    const auto seedLevel = gx::seedTileLevelForViewport(request);
+    REQUIRE(seedLevel > 30);
+
+    gx::TileCache cache;
+    const auto plan = gx::TilePlanner{}.plan(request, cache, gx::TilePlanBudget{});
+
+    REQUIRE_FALSE(plan.jobs.empty());
+    CHECK(std::ranges::all_of(plan.jobs, [seedLevel](const gx::TileJob &job)
+    {
+        return job.kind == gx::JobKind::ClassifyInterval && job.key.level == seedLevel;
+    }));
+}
+
 TEST_CASE("CpuComputeBackend classifies interval batches without renderer dependencies", "[ComputeBackend]")
 {
     const auto formula = gx::FormulaCompiler{}.compile("x+y>0");
@@ -378,6 +408,61 @@ TEST_CASE("CpuComputeBackend classifies interval batches without renderer depend
     CHECK(result.ok);
     CHECK(result.completed == 1);
     CHECK(out.front().classification == gx::TileClassification::Mixed);
+}
+
+TEST_CASE("CpuComputeBackend rasterizer stores subpixel coverage instead of binary samples", "[ComputeBackend]")
+{
+    const auto formula = gx::FormulaCompiler{}.compile("x<=y");
+    REQUIRE(formula.diagnostics.ok);
+
+    std::array keys{gx::TileKey{0, 0, 0}};
+    std::array xMin{0.0};
+    std::array xMax{1.0};
+    std::array yMin{0.0};
+    std::array yMax{1.0};
+    std::array offsets{uint32_t{0}};
+    std::array<gx::RegionOutput, 1> out{};
+
+    gx::CpuComputeBackend backend;
+    const auto result = backend.rasterizeRegions(
+        gx::RasterBatchView{&formula, keys, xMin, xMax, yMin, yMax, offsets, 1},
+        out);
+
+    REQUIRE(result.ok);
+    REQUIRE(out.front().pixels.size() == 1);
+    CHECK(static_cast<int>(out.front().pixels.front()) == 128);
+}
+
+TEST_CASE("CpuComputeBackend rasterizer marks tan pole pixels unresolved", "[ComputeBackend]")
+{
+    const auto formula = gx::FormulaCompiler{}.compile("y<=tan(x*y)");
+    REQUIRE(formula.diagnostics.ok);
+
+    std::array keys{gx::TileKey{0, 0, 0}};
+    std::array xMin{1.5};
+    std::array xMax{1.6};
+    std::array yMin{1.0};
+    std::array yMax{1.0};
+    std::array offsets{uint32_t{0}};
+    std::array<gx::RegionOutput, 1> out{};
+
+    gx::CpuComputeBackend backend;
+    const auto result = backend.rasterizeRegions(
+        gx::RasterBatchView{&formula, keys, xMin, xMax, yMin, yMax, offsets, 1},
+        out);
+
+    REQUIRE(result.ok);
+    REQUIRE(out.front().pixels.size() == 1);
+    CHECK(out.front().pixels.front() == 127);
+}
+
+TEST_CASE("Default ComputeBackend is the concrete CPU backend while OpenCL is ruled out",
+          "[ComputeBackend]")
+{
+    auto backend = gx::makeDefaultComputeBackend();
+
+    REQUIRE(dynamic_cast<gx::CpuComputeBackend *>(backend.get()) != nullptr);
+    CHECK_FALSE(backend->capabilities().supportsOpenCl);
 }
 
 TEST_CASE("Default ComputeBackend rasterizes through the preferred backend with CPU-equivalent output",

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <iomanip>
 #include <optional>
@@ -76,11 +77,11 @@ struct DebugOverlayLayout
     float panelBottom{-0.98f};
     float panelTop{-0.72f};
     float textX{-0.95f};
-    std::array<float, 6> textY{-0.76f, -0.81f, -0.86f, -0.91f, -0.95f, -0.98f};
-    std::array<float, 6> pixelHeights{12.0f, 12.0f, 12.0f, 12.0f, 12.0f, 12.0f};
+    std::array<float, 7> textY{-0.74f, -0.78f, -0.82f, -0.86f, -0.90f, -0.94f, -0.98f};
+    std::array<float, 7> pixelHeights{12.0f, 12.0f, 12.0f, 12.0f, 12.0f, 12.0f, 12.0f};
 };
 
-std::array<std::string, 6> debugOverlayLines(const gx::FramePipelineDebugStats &stats,
+std::array<std::string, 7> debugOverlayLines(const gx::FramePipelineDebugStats &stats,
                                              const gx::FramePipelineCounters &counters)
 {
     const auto processingTiles = stats.queuedIntervalTiles + stats.queuedRegionTiles;
@@ -93,6 +94,8 @@ std::array<std::string, 6> debugOverlayLines(const gx::FramePipelineDebugStats &
             + " missing:" + std::to_string(stats.missingTiles),
         "fallback:" + std::to_string(stats.fallbackTiles)
             + " clipped:" + std::to_string(stats.clippedFallbackTiles),
+        std::string{"budget:"} + (stats.interactiveBudget ? "interactive" : "steady")
+            + " depth:" + std::to_string(stats.refinementDepth),
         "processing:" + std::to_string(processingTiles)
             + " running:" + std::to_string(stats.inFlightJobs)
             + " done:" + std::to_string(stats.completedJobs),
@@ -114,7 +117,7 @@ DebugOverlayLayout debugOverlayLayoutFor(const gx::FramePipelineDebugStats &stat
     const auto width = std::max(1, framebufferWidth);
     const auto height = std::max(1, framebufferHeight);
     const auto lines = debugOverlayLines(stats, counters);
-    std::array<float, 6> pixelHeights{};
+    std::array<float, 7> pixelHeights{};
     pixelHeights.fill(12.0f * scale);
     auto textWidthPx = 0.0f;
     for (size_t index = 0; index < lines.size(); ++index)
@@ -137,7 +140,7 @@ DebugOverlayLayout debugOverlayLayoutFor(const gx::FramePipelineDebugStats &stat
     const auto panelBottomPx = static_cast<float>(height) - marginPx;
     const auto panelTopPx = std::max(marginPx, panelBottomPx - panelHeightPx);
     const auto textXPx = panelLeftPx + paddingX;
-    std::array<float, 6> textYPx{};
+    std::array<float, 7> textYPx{};
     for (size_t index = 0; index < textYPx.size(); ++index)
     {
         textYPx[index] = panelTopPx + paddingY + static_cast<float>(index) * lineGapPx;
@@ -244,7 +247,11 @@ std::string FramePipelineCounters::toDebugString() const
     return out.str();
 }
 
-FramePipeline::FramePipeline(std::unique_ptr<ComputeBackend> backend): tileRuntime{std::move(backend)}
+FramePipeline::FramePipeline(std::unique_ptr<ComputeBackend> backend,
+                             FramePipelineOptions nextOptions)
+    : tileRuntime{std::move(backend), 0, nextOptions.tileRuntime},
+      frameBudgetController{nextOptions.frameBudget},
+      options{nextOptions}
 {
     compiledFormula = formulaCompiler.compile(appState.formulaExpression);
     if (compiledFormula && compiledFormula->diagnostics.ok)
@@ -256,6 +263,7 @@ FramePipeline::FramePipeline(std::unique_ptr<ComputeBackend> backend): tileRunti
 FrameSnapshot FramePipeline::process(const InputEvent &event)
 {
     GRAPHX_PROFILE_SCOPE("pipeline.process");
+    const auto frameStart = std::chrono::steady_clock::now();
     ++frameId;
     std::optional<InputEvent> substitutedEvent;
     if (std::holds_alternative<SubmitFormulaInputEvent>(event) && appState.formulaInput.active)
@@ -323,10 +331,22 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
         GRAPHX_PROFILE_SCOPE("pipeline.setLatestRequest");
         tileRuntime.setLatestRequest(request, *compiledFormula);
     }
+    const auto pendingBeforeDrain = tileRuntime.pendingCompletionCount();
+    const auto inFlightBeforeDrain = tileRuntime.inFlightCount();
+    const auto frameBudget = frameBudgetController.beginFrame(
+        effectiveEvent,
+        diff,
+        pendingBeforeDrain,
+        inFlightBeforeDrain);
+    latestFrameBudget = frameBudget;
+    tileRuntime.setGpuRasterAllowed(!frameBudget.interactive);
     TileRuntimeDrainResult drainResult;
     {
         GRAPHX_PROFILE_SCOPE("pipeline.drainCompleted");
-        drainResult = tileRuntime.drainCompleted(tileCache, regionPayloads);
+        drainResult = tileRuntime.drainCompleted(
+            tileCache,
+            regionPayloads,
+            frameBudget.completedTileApplyBudget);
     }
     pipelineCounters.tileDeltasApplied += drainResult.applied;
     pipelineCounters.tileDeltasRejected += drainResult.rejected;
@@ -335,13 +355,20 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
     TilePlan tilePlan;
     {
         GRAPHX_PROFILE_SCOPE("pipeline.planWork");
-        tilePlan = tilePlanner.plan(request, tileCache, TilePlanBudget{}, 4);
+        tilePlan = tilePlanner.plan(
+            request,
+            tileCache,
+            frameBudget.tilePlan,
+            frameBudget.maxSeedCells,
+            frameBudget.refinementDepth);
     }
+    size_t submittedJobCount = 0;
+    if (frameBudget.submitTileJobs)
     {
         GRAPHX_PROFILE_SCOPE("pipeline.submitJobs");
         tileRuntime.submitJobs(tilePlan.jobs);
+        submittedJobCount += tilePlan.jobs.size();
     }
-    pipelineCounters.tileJobsScheduled += tilePlan.jobs.size();
     hasRequestedTiles = true;
 
     TileDebugCounts tileDebugCounts;
@@ -357,7 +384,38 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
     {
         tileDebugCounts.stuckIntervalQueued = tileDebugCounts.intervalQueued;
         tileDebugCounts.stuckRegionQueued = tileDebugCounts.regionQueued;
+        if (tileDebugCounts.stuckIntervalQueued > 0 || tileDebugCounts.stuckRegionQueued > 0)
+        {
+            const auto recovered = tileCache.recoverQueuedWork(request.formula.semanticsHash);
+            if (recovered.total() > 0)
+            {
+                PipelineLog::log(
+                    "pipeline.recover queued interval=%zu region=%zu",
+                    recovered.intervalQueued,
+                    recovered.regionQueued);
+
+                GRAPHX_PROFILE_SCOPE("pipeline.replanRecoveredWork");
+                tilePlan = tilePlanner.plan(
+                    request,
+                    tileCache,
+                    frameBudget.tilePlan,
+                    frameBudget.maxSeedCells,
+                    frameBudget.refinementDepth);
+                if (frameBudget.submitTileJobs && !tilePlan.jobs.empty())
+                {
+                    tileRuntime.submitJobs(tilePlan.jobs);
+                    submittedJobCount += tilePlan.jobs.size();
+                }
+
+                tileDebugCounts = tileCache.debugCountsForFormula(request.formula.semanticsHash);
+                tileDebugCounts.stuckIntervalQueued = recovered.intervalQueued;
+                tileDebugCounts.stuckRegionQueued = recovered.regionQueued;
+                inFlightCount = tileRuntime.inFlightCount();
+                pendingCompletionCount = tileRuntime.pendingCompletionCount();
+            }
+        }
     }
+    pipelineCounters.tileJobsScheduled += submittedJobCount;
     snapshot.schedulerSummary = "inFlight=" + std::to_string(inFlightCount)
         + ",completed=" + std::to_string(pendingCompletionCount)
         + ",queuedInterval=" + std::to_string(tileDebugCounts.intervalQueued)
@@ -371,7 +429,12 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
     VisualFrame visualFrame;
     {
         GRAPHX_PROFILE_SCOPE("pipeline.visualCover");
-        visualFrame = visualCoverBuilder.build(request, tileCache, previousFrame, 4);
+        visualFrame = visualCoverBuilder.build(
+            request,
+            tileCache,
+            previousFrame,
+            frameBudget.maxSeedCells,
+            frameBudget.refinementDepth);
     }
     snapshot.displayTiles = std::move(visualFrame.tiles);
     snapshot.visibleCover.reserve(snapshot.displayTiles.size());
@@ -385,7 +448,9 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
         .queuedRegionTiles = tileDebugCounts.regionQueued,
         .stuckIntervalTiles = tileDebugCounts.stuckIntervalQueued,
         .stuckRegionTiles = tileDebugCounts.stuckRegionQueued,
-        .submittedJobs = tilePlan.jobs.size()
+        .submittedJobs = frameBudget.submitTileJobs ? tilePlan.jobs.size() : 0,
+        .refinementDepth = frameBudget.refinementDepth,
+        .interactiveBudget = frameBudget.interactive
     };
     for (auto &tile : snapshot.displayTiles)
     {
@@ -430,7 +495,7 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
             || drainResult.rejected > 0))
     {
         PipelineLog::log(
-            "frame=%llu view=[%.3f,%.3f]x[%.3f,%.3f] root=%d leaf=%d "
+            "frame=%llu view=[%.3f,%.3f]x[%.3f,%.3f] root=%d seed=%d leaf=%d depth=%d interactive=%d "
             "tiles=%zu plot=%zu uniform=%zu mixed=%zu missing=%zu fallback=%zu clipped=%zu "
             "inFlight=%zu completed=%zu queuedI=%zu queuedR=%zu stuckI=%zu stuckR=%zu jobs=%zu applied=%zu rejected=%zu",
             static_cast<unsigned long long>(frameId),
@@ -439,7 +504,10 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
             request.yRange.lower,
             request.yRange.upper,
             rootTileLevel(request),
-            leafTileLevel(request),
+            seedTileLevelForViewport(request, frameBudget.maxSeedCells),
+            leafTileLevel(request, frameBudget.maxSeedCells, frameBudget.refinementDepth),
+            frameBudget.refinementDepth,
+            frameBudget.interactive ? 1 : 0,
             debugStats.displayTiles,
             debugStats.plotTiles,
             debugStats.uniformTiles,
@@ -463,7 +531,7 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
     }
     {
         GRAPHX_PROFILE_SCOPE("pipeline.uploadPlan");
-        snapshot.uploadPlan = uploadPlanner.planVisible(snapshot.displayTiles, UploadBudget{});
+        snapshot.uploadPlan = uploadPlanner.planVisible(snapshot.displayTiles, frameBudget.upload);
     }
 
     FrameCommandBuffer commands;
@@ -498,6 +566,15 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
         };
     }
 
+    frameBudgetController.endFrame(FrameBudgetFeedback{
+        .pipelineLatency = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - frameStart),
+        .pendingCompletions = tileRuntime.pendingCompletionCount(),
+        .submittedJobs = tilePlan.jobs.size(),
+        .displayTiles = debugStats.displayTiles,
+        .missingTiles = debugStats.missingTiles
+    });
+
     return snapshot;
 }
 
@@ -519,6 +596,26 @@ const FramePipelineCounters &FramePipeline::counters() const
 RenderResourceManager &FramePipeline::renderResources()
 {
     return resources;
+}
+
+const UploadBudget &FramePipeline::renderUploadBudget() const
+{
+    return latestFrameBudget.renderUpload;
+}
+
+void FramePipeline::setFrameWakeCallback(std::function<void()> callback)
+{
+    tileRuntime.setCompletionCallback(std::move(callback));
+}
+
+size_t FramePipeline::pendingCompletionCount() const
+{
+    return tileRuntime.pendingCompletionCount();
+}
+
+size_t FramePipeline::inFlightCount() const
+{
+    return tileRuntime.inFlightCount();
 }
 
 ViewportRequest FramePipeline::makeViewportRequest(const StateDiff &diff) const
@@ -559,7 +656,8 @@ FrameCommandBuffer FramePipeline::buildCommands(std::vector<DisplayTile> &displa
                 if (const auto payloadIt = regionPayloads.find(tile.cpuRegion->id);
                     payloadIt != regionPayloads.end())
                 {
-                    regionSlice = resources.registerRegionImage(*tile.cpuRegion, payloadIt->second.pixels);
+                    (void)resources.registerRegionImage(*tile.cpuRegion, payloadIt->second.pixels);
+                    regionSlice = resources.findRegionImage(*tile.cpuRegion);
                     tile.gpuSlice = regionSlice;
                 }
             }

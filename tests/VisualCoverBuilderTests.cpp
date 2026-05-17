@@ -181,7 +181,12 @@ TEST_CASE("VisualCoverBuilder keeps partial previous cover during zoom-out", "[V
     };
 
     gx::TileCache cache;
-    const auto frame = gx::VisualCoverBuilder{}.build(request, cache, &previous);
+    const auto frame = gx::VisualCoverBuilder{}.build(
+        request,
+        cache,
+        &previous,
+        4,
+        1);
 
     const auto previousIt = std::ranges::find_if(frame.tiles, [previousChild](const gx::DisplayTile &tile)
     {
@@ -266,7 +271,13 @@ TEST_CASE("VisualCoverBuilder keeps previous children until the current leaf til
     gx::TileCache cache;
     REQUIRE(cache.apply(mixedNeedsRegionTransaction(formula.handle.semanticsHash, mixedLeaf)).rejected == 0);
 
-    const auto frame = gx::VisualCoverBuilder{}.build(request, cache, &previous);
+    const auto seedLevel = gx::seedTileLevelForViewport(request);
+    const auto frame = gx::VisualCoverBuilder{}.build(
+        request,
+        cache,
+        &previous,
+        4,
+        seedLevel - mixedLeaf.level);
 
     CHECK(std::ranges::none_of(frame.tiles, [mixedLeaf](const gx::DisplayTile &tile)
     {
@@ -321,7 +332,10 @@ TEST_CASE("VisualCoverBuilder replaces stale descendants at the current leaf lev
         formula.handle,
         Interval{0.0, 1024.0},
         Interval{0.0, 1024.0});
-    const auto leafLevel = gx::leafTileLevel(request);
+    constexpr auto refinementDepth = 1;
+    const auto seedLevel = gx::seedTileLevelForViewport(request);
+    const auto leafLevel = gx::leafTileLevelForSeed(seedLevel, refinementDepth);
+    REQUIRE(seedLevel == 9);
     REQUIRE(leafLevel == 8);
 
     const gx::TileKey seed{0, 0, 9};
@@ -346,7 +360,7 @@ TEST_CASE("VisualCoverBuilder replaces stale descendants at the current leaf lev
         }
     };
 
-    const auto frame = gx::VisualCoverBuilder{}.build(request, cache, &previous);
+    const auto frame = gx::VisualCoverBuilder{}.build(request, cache, &previous, 4, refinementDepth);
 
     CHECK(std::ranges::any_of(frame.tiles, [leaf](const gx::DisplayTile &tile)
     {
@@ -358,5 +372,29 @@ TEST_CASE("VisualCoverBuilder replaces stale descendants at the current leaf lev
     CHECK(std::ranges::none_of(frame.tiles, [leafLevel](const gx::DisplayTile &tile)
     {
         return tile.desiredKey.level < leafLevel;
+    }));
+}
+
+TEST_CASE("VisualCoverBuilder keeps huge zoom-out viewports covered above the old fixed level cap",
+          "[VisualCoverBuilder]")
+{
+    const auto formula = gx::FormulaCompiler{}.compile("x<=y");
+    REQUIRE(formula.diagnostics.ok);
+
+    const auto request = requestFor(
+        formula.handle,
+        Interval{-1.0e12, 1.0e12},
+        Interval{-1.0e12, 1.0e12});
+    const auto seedLevel = gx::seedTileLevelForViewport(request);
+    REQUIRE(seedLevel > 30);
+
+    gx::TileCache cache;
+    const auto frame = gx::VisualCoverBuilder{}.build(request, cache);
+
+    REQUIRE_FALSE(frame.tiles.empty());
+    CHECK(std::ranges::all_of(frame.tiles, [seedLevel](const gx::DisplayTile &tile)
+    {
+        return tile.desiredKey.level == seedLevel
+            && tile.visualState == gx::TileVisualState::Missing;
     }));
 }

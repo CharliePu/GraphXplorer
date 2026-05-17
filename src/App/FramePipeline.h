@@ -1,7 +1,9 @@
 #ifndef FRAMEPIPELINE_H
 #define FRAMEPIPELINE_H
 
+#include <chrono>
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -19,6 +21,7 @@
 #include "../Tile/TileCache.h"
 #include "../Util/Contracts.h"
 #include "AppState.h"
+#include "FrameBudgetController.h"
 
 namespace gx
 {
@@ -49,18 +52,31 @@ struct FramePipelineDebugStats
     size_t stuckIntervalTiles{0};
     size_t stuckRegionTiles{0};
     size_t submittedJobs{0};
+    int refinementDepth{DefaultRefinementDepth};
+    bool interactiveBudget{false};
+};
+
+struct FramePipelineOptions
+{
+    TileRuntimeOptions tileRuntime{};
+    FrameBudgetControllerOptions frameBudget{};
 };
 
 class FramePipeline
 {
 public:
-    explicit FramePipeline(std::unique_ptr<ComputeBackend> backend = nullptr);
+    explicit FramePipeline(std::unique_ptr<ComputeBackend> backend = nullptr,
+                           FramePipelineOptions options = {});
 
     [[nodiscard]] FrameSnapshot process(const InputEvent &event);
     [[nodiscard]] const AppState &state() const;
     [[nodiscard]] const TileCache &tiles() const;
     [[nodiscard]] const FramePipelineCounters &counters() const;
     [[nodiscard]] RenderResourceManager &renderResources();
+    [[nodiscard]] const UploadBudget &renderUploadBudget() const;
+    void setFrameWakeCallback(std::function<void()> callback);
+    [[nodiscard]] size_t pendingCompletionCount() const;
+    [[nodiscard]] size_t inFlightCount() const;
 
 private:
     [[nodiscard]] ViewportRequest makeViewportRequest(const StateDiff &diff) const;
@@ -81,10 +97,13 @@ private:
     TileCache tileCache{};
     UploadPlanner uploadPlanner{};
     RenderResourceManager resources{};
+    FrameBudgetController frameBudgetController;
+    FrameWorkBudget latestFrameBudget{};
     std::unordered_map<uint64_t, RegionOutput> regionPayloads;
     std::optional<CommittedVisualFrame> committedVisualFrame{};
     FramePipelineCounters pipelineCounters{};
     FramePipelineDebugStats debugStats{};
+    FramePipelineOptions options{};
     uint64_t frameId{0};
     bool hasRequestedTiles{false};
 };

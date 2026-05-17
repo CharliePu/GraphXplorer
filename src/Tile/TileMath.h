@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <utility>
 
 #include "../Math/Interval.h"
@@ -14,15 +15,36 @@
 namespace gx
 {
 inline constexpr int RasterTileScreenPixels = 256;
-inline constexpr int RasterTexturePixels = 256;
+inline constexpr int RasterTexturePixels = RasterTileScreenPixels * 2;
 inline constexpr int RootRefinementLevels = 2;
 inline constexpr int LeafRefinementLevels = 0;
-inline constexpr int MinTileLevel = -30;
-inline constexpr int MaxTileLevel = 30;
+inline constexpr int DefaultRefinementDepth = 3;
+inline constexpr int LowestFiniteTileLevel =
+    std::numeric_limits<double>::min_exponent - std::numeric_limits<double>::digits;
+inline constexpr int HighestFiniteTileLevel = std::numeric_limits<double>::max_exponent - 1;
 
-[[nodiscard]] inline int clampTileLevel(const int level)
+[[nodiscard]] inline int clampFiniteTileLevel(const int level)
 {
-    return std::clamp(level, MinTileLevel, MaxTileLevel);
+    return std::clamp(level, LowestFiniteTileLevel, HighestFiniteTileLevel);
+}
+
+[[nodiscard]] inline int floorLog2ToFiniteTileLevel(const double value)
+{
+    if (!std::isfinite(value) || value <= 0.0)
+    {
+        return 0;
+    }
+
+    const auto level = std::floor(std::log2(value));
+    if (level <= static_cast<double>(LowestFiniteTileLevel))
+    {
+        return LowestFiniteTileLevel;
+    }
+    if (level >= static_cast<double>(HighestFiniteTileLevel))
+    {
+        return HighestFiniteTileLevel;
+    }
+    return static_cast<int>(level);
 }
 
 [[nodiscard]] inline double tileSizeForLevel(const int level)
@@ -32,7 +54,20 @@ inline constexpr int MaxTileLevel = 30;
 
 [[nodiscard]] inline int64_t worldToTileIndex(const double value, const int level)
 {
-    return static_cast<int64_t>(std::floor(value / tileSizeForLevel(level)));
+    const auto scaled = std::floor(value / tileSizeForLevel(level));
+    if (!std::isfinite(scaled))
+    {
+        return scaled < 0.0 ? std::numeric_limits<int64_t>::min() : std::numeric_limits<int64_t>::max();
+    }
+    if (scaled <= static_cast<double>(std::numeric_limits<int64_t>::min()))
+    {
+        return std::numeric_limits<int64_t>::min();
+    }
+    if (scaled >= static_cast<double>(std::numeric_limits<int64_t>::max()))
+    {
+        return std::numeric_limits<int64_t>::max();
+    }
+    return static_cast<int64_t>(scaled);
 }
 
 [[nodiscard]] inline Interval tileIndexToRange(const int64_t index, const int level)
@@ -118,12 +153,12 @@ inline constexpr int MaxTileLevel = 30;
     }
     const auto rangePerPixel = minRangeSize / static_cast<double>(maxFramebufferSize);
     const auto rangePerTile = rangePerPixel * static_cast<double>(RasterTileScreenPixels);
-    return clampTileLevel(static_cast<int>(std::floor(std::log2(rangePerTile))));
+    return floorLog2ToFiniteTileLevel(rangePerTile);
 }
 
 [[nodiscard]] inline int rootTileLevel(const ViewportRequest &request)
 {
-    return clampTileLevel(targetTileLevel(
+    return clampFiniteTileLevel(targetTileLevel(
         request.xRange,
         request.yRange,
         request.framebufferWidth,
@@ -132,7 +167,7 @@ inline constexpr int MaxTileLevel = 30;
 
 [[nodiscard]] inline int leafTileLevel(const ViewportRequest &request)
 {
-    return clampTileLevel(targetTileLevel(
+    return clampFiniteTileLevel(targetTileLevel(
         request.xRange,
         request.yRange,
         request.framebufferWidth,
@@ -146,41 +181,103 @@ inline constexpr int MaxTileLevel = 30;
         const auto index = worldToTileIndex(range.lower, level);
         return {index, index};
     }
-    const auto tileSize = tileSizeForLevel(level);
     const auto minIndex = worldToTileIndex(range.lower, level);
-    const auto scaledUpper = range.upper / tileSize;
-    const auto upperInclusiveScaled = std::nextafter(scaledUpper, -std::numeric_limits<double>::infinity());
-    const auto maxIndex = static_cast<int64_t>(std::floor(upperInclusiveScaled));
+    const auto upperInclusive = std::nextafter(range.upper, -std::numeric_limits<double>::infinity());
+    const auto maxIndex = worldToTileIndex(upperInclusive, level);
     return {minIndex, maxIndex};
+}
+
+[[nodiscard]] inline std::optional<int64_t> tileCountForViewportAtLevel(
+    const ViewportRequest &request,
+    const int level,
+    const int64_t maxCount)
+{
+    const auto countForAxis = [](const int64_t minIndex,
+                                 const int64_t maxIndex) -> std::optional<unsigned long long>
+    {
+        if (maxIndex < minIndex)
+        {
+            return 0ull;
+        }
+
+        const auto count = static_cast<long double>(maxIndex)
+            - static_cast<long double>(minIndex)
+            + 1.0L;
+        if (count > static_cast<long double>(std::numeric_limits<unsigned long long>::max()))
+        {
+            return std::nullopt;
+        }
+        return static_cast<unsigned long long>(count);
+    };
+
+    const auto [minX, maxX] = tileIndexBounds(request.xRange, level);
+    const auto [minY, maxY] = tileIndexBounds(request.yRange, level);
+    const auto width = countForAxis(minX, maxX);
+    const auto height = countForAxis(minY, maxY);
+    if (!width || !height)
+    {
+        return std::nullopt;
+    }
+
+    const auto limit = static_cast<unsigned long long>(std::max<int64_t>(0, maxCount));
+    if (*width == 0 || *height == 0)
+    {
+        return 0;
+    }
+    if (*width > limit || *height > limit || *width > limit / *height)
+    {
+        return std::nullopt;
+    }
+    return static_cast<int64_t>(*width * *height);
 }
 
 [[nodiscard]] inline int seedTileLevelForViewport(const ViewportRequest &request, const int maxSeedCells = 4)
 {
     if (!request.valid() || maxSeedCells <= 0)
     {
-        return MaxTileLevel;
+        return 0;
     }
 
-    for (auto level = MinTileLevel; level <= MaxTileLevel; ++level)
+    const auto maxSpan = std::max(request.xRange.size(), request.yRange.size());
+    auto level = floorLog2ToFiniteTileLevel(
+        maxSpan / std::max(1.0, std::sqrt(static_cast<double>(maxSeedCells))));
+
+    while (level < HighestFiniteTileLevel)
     {
-        const auto [minX, maxX] = tileIndexBounds(request.xRange, level);
-        const auto [minY, maxY] = tileIndexBounds(request.yRange, level);
-        const auto width = maxX - minX + 1;
-        const auto height = maxY - minY + 1;
-        if (width <= 0 || height <= 0)
+        const auto count = tileCountForViewportAtLevel(request, level, maxSeedCells);
+        if (count && *count <= maxSeedCells)
         {
-            continue;
+            break;
         }
-
-        if (width <= maxSeedCells
-            && height <= maxSeedCells
-            && width <= maxSeedCells / std::max<int64_t>(1, height))
-        {
-            return level;
-        }
+        ++level;
     }
 
-    return MaxTileLevel;
+    while (level > LowestFiniteTileLevel)
+    {
+        const auto previous = level - 1;
+        const auto previousCount = tileCountForViewportAtLevel(request, previous, maxSeedCells);
+        if (!previousCount || *previousCount > maxSeedCells)
+        {
+            break;
+        }
+        level = previous;
+    }
+
+    return level;
+}
+
+[[nodiscard]] inline int leafTileLevelForSeed(const int seedLevel, const int refinementDepth)
+{
+    return clampFiniteTileLevel(seedLevel - std::max(0, refinementDepth));
+}
+
+[[nodiscard]] inline int leafTileLevel(const ViewportRequest &request,
+                                       const int maxSeedCells,
+                                       const int refinementDepth)
+{
+    return leafTileLevelForSeed(
+        seedTileLevelForViewport(request, maxSeedCells),
+        refinementDepth);
 }
 }
 

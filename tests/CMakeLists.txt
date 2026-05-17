@@ -1,18 +1,23 @@
 add_executable(GraphXplorerTests
         ArchitectureBoundaryTests.cpp
         AsyncFrameInboxTests.cpp
+        BatchOptimizerTests.cpp
         ContractTests.cpp
         FormulaCompilerTests.cpp
         EvaluatorTests.cpp
+        FrameBudgetControllerTests.cpp
         FramePipelineTests.cpp
         FormulaTests.cpp
         InputScenarioRunnerTests.cpp
         InteractionControllerTests.cpp
+        MainThreadRequestMailboxTests.cpp
         ParserTests.cpp
         RenderCommandTests.cpp
         TilePlannerBackendTests.cpp
+        TileMathTests.cpp
         VisualCoverBuilderTests.cpp
         TileCacheTests.cpp
+        TileRuntimeTests.cpp
         TrigSupportTests.cpp
         TokenizerTests.cpp
 )

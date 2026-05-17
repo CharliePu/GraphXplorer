@@ -65,7 +65,7 @@ public:
     void setOverlayRects(std::vector<OverlayRect> rects);
     void setOverlayTextRuns(std::vector<OverlayTextRun> runs);
 
-    void draw(const DrawCommand &command);
+    void draw(const DrawCommand &command, const UploadBudget &uploadBudget = UploadBudget{});
     [[nodiscard]] size_t plotInstanceCount() const;
     [[nodiscard]] size_t debugPlotInstanceCount() const;
     [[nodiscard]] size_t overlayRectCount() const;
@@ -140,13 +140,13 @@ private:
         std::unordered_map<uint64_t, std::vector<uint8_t>> pixels;
         std::vector<uint32_t> freeSlices;
         std::unordered_set<uint64_t> visibleRefs;
+        std::unordered_set<uint64_t> uploadedRefs;
     };
 
     struct PendingRegionUpload
     {
         RegionImageRef ref{};
         TextureSlice slice{};
-        std::vector<uint8_t> pixels;
     };
 
     struct TextGlyph
@@ -182,15 +182,16 @@ private:
     void bindPlotInstanceAttributes(uint32_t firstInstance);
     void bindOverlayInstanceAttributes(uint32_t firstInstance);
     void ensureRegionTextureArray(int width, int height);
-    void queueRegionUpload(const RegionImageRef &ref, TextureSlice slice, std::span<const uint8_t> pixels);
+    void queueRegionUpload(const RegionImageRef &ref, TextureSlice slice);
     void queueResidentRegionUploads();
+    [[nodiscard]] uint32_t requiredRegionTextureCapacity() const;
     [[nodiscard]] uint32_t maxRegionArrayLayers();
     void uploadPlotInstancesIfDirty();
     void uploadPlotInstanceFloats(std::span<const float> floats);
     void uploadOverlayRectsIfDirty();
     void rebuildTextVerticesIfDirty();
     void uploadTextVerticesIfDirty();
-    void uploadPendingRegionImages();
+    void uploadPendingRegionImages(const UploadBudget &budget);
     void destroyPlotResources();
     void destroyGridResources();
     void destroyOverlayResources();

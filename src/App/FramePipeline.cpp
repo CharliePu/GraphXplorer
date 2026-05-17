@@ -14,6 +14,7 @@
 #include <variant>
 
 #include "../Tile/TileMath.h"
+#include "../Util/PerformanceProfiler.h"
 #include "../Util/PipelineLog.h"
 #include "UiLayout.h"
 
@@ -254,6 +255,7 @@ FramePipeline::FramePipeline(std::unique_ptr<ComputeBackend> backend): tileRunti
 
 FrameSnapshot FramePipeline::process(const InputEvent &event)
 {
+    GRAPHX_PROFILE_SCOPE("pipeline.process");
     ++frameId;
     std::optional<InputEvent> substitutedEvent;
     if (std::holds_alternative<SubmitFormulaInputEvent>(event) && appState.formulaInput.active)
@@ -273,11 +275,20 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
     }
 
     const auto &effectiveEvent = substitutedEvent ? *substitutedEvent : event;
-    const auto diff = reducer.reduce(appState, effectiveEvent);
-    const auto effects = effectPlanner.plan(diff);
+    StateDiff diff;
+    {
+        GRAPHX_PROFILE_SCOPE("pipeline.reduce");
+        diff = reducer.reduce(appState, effectiveEvent);
+    }
+    EffectPlan effects;
+    {
+        GRAPHX_PROFILE_SCOPE("pipeline.effects");
+        effects = effectPlanner.plan(diff);
+    }
 
     if (effects.compileFormula)
     {
+        GRAPHX_PROFILE_SCOPE("pipeline.compileFormula");
         auto nextFormula = formulaCompiler.compile(appState.formulaExpression);
         if (nextFormula.diagnostics.ok)
         {
@@ -308,20 +319,40 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
     const auto request = makeViewportRequest(diff);
     snapshot.viewportRequest = request;
 
-    tileRuntime.setLatestRequest(request, *compiledFormula);
-    const auto drainResult = tileRuntime.drainCompleted(tileCache, regionPayloads);
+    {
+        GRAPHX_PROFILE_SCOPE("pipeline.setLatestRequest");
+        tileRuntime.setLatestRequest(request, *compiledFormula);
+    }
+    TileRuntimeDrainResult drainResult;
+    {
+        GRAPHX_PROFILE_SCOPE("pipeline.drainCompleted");
+        drainResult = tileRuntime.drainCompleted(tileCache, regionPayloads);
+    }
     pipelineCounters.tileDeltasApplied += drainResult.applied;
     pipelineCounters.tileDeltasRejected += drainResult.rejected;
     snapshot.appliedTransactions = drainResult.transactions;
 
-    const auto tilePlan = tilePlanner.plan(request, tileCache, TilePlanBudget{}, 4);
-    tileRuntime.submitJobs(tilePlan.jobs);
+    TilePlan tilePlan;
+    {
+        GRAPHX_PROFILE_SCOPE("pipeline.planWork");
+        tilePlan = tilePlanner.plan(request, tileCache, TilePlanBudget{}, 4);
+    }
+    {
+        GRAPHX_PROFILE_SCOPE("pipeline.submitJobs");
+        tileRuntime.submitJobs(tilePlan.jobs);
+    }
     pipelineCounters.tileJobsScheduled += tilePlan.jobs.size();
     hasRequestedTiles = true;
 
-    auto tileDebugCounts = tileCache.debugCountsForFormula(request.formula.semanticsHash);
-    const auto inFlightCount = tileRuntime.inFlightCount();
-    const auto pendingCompletionCount = tileRuntime.pendingCompletionCount();
+    TileDebugCounts tileDebugCounts;
+    size_t inFlightCount = 0;
+    size_t pendingCompletionCount = 0;
+    {
+        GRAPHX_PROFILE_SCOPE("pipeline.debugCounts");
+        tileDebugCounts = tileCache.debugCountsForFormula(request.formula.semanticsHash);
+        inFlightCount = tileRuntime.inFlightCount();
+        pendingCompletionCount = tileRuntime.pendingCompletionCount();
+    }
     if (inFlightCount == 0 && pendingCompletionCount == 0 && tilePlan.jobs.empty())
     {
         tileDebugCounts.stuckIntervalQueued = tileDebugCounts.intervalQueued;
@@ -337,7 +368,11 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
         && committedVisualFrame->semantics == request.formula.semanticsHash
         ? &*committedVisualFrame
         : nullptr;
-    auto visualFrame = visualCoverBuilder.build(request, tileCache, previousFrame, 4);
+    VisualFrame visualFrame;
+    {
+        GRAPHX_PROFILE_SCOPE("pipeline.visualCover");
+        visualFrame = visualCoverBuilder.build(request, tileCache, previousFrame, 4);
+    }
     snapshot.displayTiles = std::move(visualFrame.tiles);
     snapshot.visibleCover.reserve(snapshot.displayTiles.size());
     std::vector<RegionImageRef> visibleRegions;
@@ -422,15 +457,29 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
             drainResult.applied,
             drainResult.rejected);
     }
-    resources.beginRegionFrame(visibleRegions);
-    snapshot.uploadPlan = uploadPlanner.planVisible(snapshot.displayTiles, UploadBudget{});
+    {
+        GRAPHX_PROFILE_SCOPE("pipeline.beginRegionFrame");
+        resources.beginRegionFrame(visibleRegions);
+    }
+    {
+        GRAPHX_PROFILE_SCOPE("pipeline.uploadPlan");
+        snapshot.uploadPlan = uploadPlanner.planVisible(snapshot.displayTiles, UploadBudget{});
+    }
 
-    auto commands = buildCommands(snapshot.displayTiles, request, snapshot.uploadPlan);
+    FrameCommandBuffer commands;
+    {
+        GRAPHX_PROFILE_SCOPE("pipeline.buildCommands");
+        commands = buildCommands(snapshot.displayTiles, request, snapshot.uploadPlan);
+    }
     snapshot.drawCommands.assign(commands.commands().begin(), commands.commands().end());
     pipelineCounters.drawCommandsBuilt += snapshot.drawCommands.size();
     snapshot.counters = pipelineCounters.toDebugString();
 
-    auto presentableTiles = presentableDisplayTiles(snapshot.displayTiles);
+    auto presentableTiles = std::vector<DisplayTile>{};
+    {
+        GRAPHX_PROFILE_SCOPE("pipeline.presentableTiles");
+        presentableTiles = presentableDisplayTiles(snapshot.displayTiles);
+    }
     if (!committedVisualFrame
         || committedVisualFrame->semantics != request.formula.semanticsHash)
     {

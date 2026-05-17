@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "../Util/PerformanceProfiler.h"
 #include "../Util/PipelineLog.h"
 
 #ifdef _WIN32
@@ -451,6 +452,7 @@ public:
 
     [[nodiscard]] static std::unique_ptr<OpenClRasterizer> create()
     {
+        GRAPHX_PROFILE_SCOPE("opencl.create");
         auto api = OpenClApi::load();
         if (!api)
         {
@@ -498,6 +500,7 @@ public:
 
     [[nodiscard]] BatchResult rasterize(const RasterBatchView &batch, std::span<RegionOutput> out)
     {
+        GRAPHX_PROFILE_SCOPE("opencl.rasterize");
         if (!batch.formula || batch.keys.size() != out.size()
             || batch.xMin.size() != batch.keys.size()
             || batch.xMax.size() != batch.keys.size()
@@ -710,7 +713,10 @@ private:
             return {};
         }
 
-        error = api->clBuildProgram(program, 1, &device, nullptr, nullptr, nullptr);
+        {
+            GRAPHX_PROFILE_SCOPE("opencl.buildProgram");
+            error = api->clBuildProgram(program, 1, &device, nullptr, nullptr, nullptr);
+        }
         if (error != CL_SUCCESS)
         {
             api->clReleaseProgram(program);
@@ -846,6 +852,7 @@ private:
 std::unique_ptr<ComputeBackend> makeDefaultComputeBackend()
 {
 #ifdef _WIN32
+    GRAPHX_PROFILE_SCOPE("compute.makeDefaultBackend");
     return std::make_unique<OpenClPreferredComputeBackend>(OpenClRasterizer::create());
 #else
     return std::make_unique<CpuComputeBackend>();

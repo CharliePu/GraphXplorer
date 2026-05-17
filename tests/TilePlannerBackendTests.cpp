@@ -379,3 +379,50 @@ TEST_CASE("CpuComputeBackend classifies interval batches without renderer depend
     CHECK(result.completed == 1);
     CHECK(out.front().classification == gx::TileClassification::Mixed);
 }
+
+TEST_CASE("Default ComputeBackend rasterizes through the preferred backend with CPU-equivalent output",
+          "[ComputeBackend]")
+{
+    const std::array formulas{
+        "x<=y",
+        "sin(x*y)<sin(sin(y))"
+    };
+    std::array keys{gx::TileKey{0, 0, 0}, gx::TileKey{1, 0, 0}, gx::TileKey{12, 12, 1}};
+    std::array xMin{0.0, 1.0, 24.0};
+    std::array xMax{1.0, 2.0, 26.0};
+    std::array yMin{0.0, 0.0, 24.0};
+    std::array yMax{1.0, 1.0, 26.0};
+    constexpr auto pixelsPerAxis = uint32_t{16};
+    constexpr auto pixelsPerTile = pixelsPerAxis * pixelsPerAxis;
+    std::array offsets{uint32_t{0}, pixelsPerTile, pixelsPerTile * 2};
+
+    for (const auto *source : formulas)
+    {
+        const auto formula = gx::FormulaCompiler{}.compile(source);
+        REQUIRE(formula.diagnostics.ok);
+        std::array<gx::RegionOutput, 3> preferredOut{};
+        std::array<gx::RegionOutput, 3> cpuOut{};
+
+        auto preferred = gx::makeDefaultComputeBackend();
+        gx::CpuComputeBackend cpu;
+
+        const auto preferredResult = preferred->rasterizeRegions(
+            gx::RasterBatchView{&formula, keys, xMin, xMax, yMin, yMax, offsets, pixelsPerAxis},
+            preferredOut);
+        const auto cpuResult = cpu.rasterizeRegions(
+            gx::RasterBatchView{&formula, keys, xMin, xMax, yMin, yMax, offsets, pixelsPerAxis},
+            cpuOut);
+
+        REQUIRE(preferredResult.ok);
+        REQUIRE(cpuResult.ok);
+        REQUIRE(preferredResult.completed == keys.size());
+        REQUIRE(cpuResult.completed == keys.size());
+        for (size_t index = 0; index < keys.size(); ++index)
+        {
+            CHECK(preferredOut[index].key == cpuOut[index].key);
+            CHECK(preferredOut[index].width == pixelsPerAxis);
+            CHECK(preferredOut[index].height == pixelsPerAxis);
+            CHECK(preferredOut[index].pixels == cpuOut[index].pixels);
+        }
+    }
+}

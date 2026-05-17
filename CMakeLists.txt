@@ -49,6 +49,7 @@ target_link_libraries(GraphXplorerTile PUBLIC GraphXplorerFormula GraphXplorerUt
 add_library(GraphXplorerCompute
         src/Compute/ComputeBackend.h
         src/Compute/CpuComputeBackend.cpp
+        src/Compute/OpenClComputeBackend.cpp
         src/Compute/TileJob.h
         src/Compute/TilePlanner.cpp
         src/Compute/TilePlanner.h

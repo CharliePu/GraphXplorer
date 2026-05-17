@@ -106,6 +106,7 @@ public:
                                       std::span<gx::TileClassificationResult> out) override
     {
         ++classifyCalls;
+        recordMax(maxClassifyBatch, batch.keys.size());
         waitUntilReleased(batch.cancelled);
         for (size_t i = 0; i < out.size(); ++i)
         {
@@ -118,6 +119,7 @@ public:
                                      std::span<gx::RegionOutput> out) override
     {
         ++rasterCalls;
+        recordMax(maxRasterBatch, batch.keys.size());
         waitUntilReleased(batch.cancelled);
         for (size_t i = 0; i < out.size(); ++i)
         {
@@ -131,8 +133,19 @@ public:
 
     std::atomic<int> classifyCalls{0};
     std::atomic<int> rasterCalls{0};
+    std::atomic<size_t> maxClassifyBatch{0};
+    std::atomic<size_t> maxRasterBatch{0};
 
 private:
+    static void recordMax(std::atomic<size_t> &target, const size_t value)
+    {
+        auto current = target.load(std::memory_order_relaxed);
+        while (current < value
+            && !target.compare_exchange_weak(current, value, std::memory_order_relaxed))
+        {
+        }
+    }
+
     void waitUntilReleased(const std::function<bool()> &cancelled) const
     {
         while (!release.load(std::memory_order_acquire))
@@ -395,6 +408,16 @@ TEST_CASE("FramePipeline debug mode adds chunk-frame instances through command r
         return command.layer == gx::RenderLayer::Contour
             && command.instanceRange.count == static_cast<uint32_t>(debugInstanceCount);
     }));
+    const auto overlayText = pipeline.renderResources().overlayTextRunData();
+    CHECK(std::ranges::none_of(overlayText, [](const gx::OverlayTextRun &run) {
+        return run.text == "debug frames";
+    }));
+    CHECK(std::ranges::any_of(overlayText, [](const gx::OverlayTextRun &run) {
+        return run.text.find("tiles:") == 0;
+    }));
+    CHECK(std::ranges::any_of(overlayText, [](const gx::OverlayTextRun &run) {
+        return run.text.find("processing:") == 0;
+    }));
 }
 
 TEST_CASE("FramePipeline viewport events return without waiting for compute backend", "[FramePipeline][Responsiveness]")
@@ -460,6 +483,29 @@ TEST_CASE("FramePipeline keeps same-formula tile work across viewport requests",
         return tx.header.requestId == first.viewportRequest->header.requestId
             && tx.semanticsHash == first.viewportRequest->formula.semanticsHash;
     }));
+}
+
+TEST_CASE("FramePipeline submits visible tile work in backend batches", "[FramePipeline][Responsiveness]")
+{
+    std::atomic<bool> releaseBackend{true};
+    auto backend = std::make_unique<BlockingBackend>(releaseBackend);
+    auto *backendView = backend.get();
+    gx::FramePipeline pipeline{std::move(backend)};
+
+    [[maybe_unused]] const auto snapshot = pipeline.process(gx::ViewportChangedEvent{
+        .xRange = Interval{-2.0, 2.0},
+        .yRange = Interval{-2.0, 2.0},
+        .framebufferWidth = 512,
+        .framebufferHeight = 512
+    });
+
+    for (auto spin = 0; spin < 100 && backendView->classifyCalls.load() == 0; ++spin)
+    {
+        std::this_thread::sleep_for(1ms);
+    }
+
+    REQUIRE(backendView->classifyCalls.load() > 0);
+    CHECK(backendView->maxClassifyBatch.load() > 1);
 }
 
 TEST_CASE("FramePipeline render ticks do not synchronously wait for compute backend", "[FramePipeline][Responsiveness]")

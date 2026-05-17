@@ -32,7 +32,7 @@ struct TileRuntimeDrainResult
 class TileRuntime
 {
 public:
-    explicit TileRuntime(std::unique_ptr<ComputeBackend> backend = std::make_unique<CpuComputeBackend>(),
+    explicit TileRuntime(std::unique_ptr<ComputeBackend> backend = nullptr,
                          size_t workerCount = 0);
     ~TileRuntime();
 
@@ -50,7 +50,7 @@ public:
 private:
     struct TileWorkResult
     {
-        TileTransaction transaction{};
+        std::vector<TileTransaction> transactions{};
         std::vector<std::pair<uint64_t, RegionOutput>> regions{};
     };
 
@@ -68,16 +68,20 @@ private:
         size_t operator()(const WorkKey &key) const noexcept;
     };
 
-    void enqueueJob(const ViewportRequest &request, const CompiledFormula &formula, const TileJob &job);
-    [[nodiscard]] TileWorkResult classifyTile(const ViewportRequest &request,
-                                              const CompiledFormula &formula,
-                                              const TileJob &job);
-    [[nodiscard]] TileWorkResult rasterizeTile(const ViewportRequest &request,
+    void enqueueBatch(const ViewportRequest &request,
+                      const CompiledFormula &formula,
+                      JobKind kind,
+                      std::vector<TileJob> jobs);
+    [[nodiscard]] TileWorkResult classifyTiles(const ViewportRequest &request,
                                                const CompiledFormula &formula,
-                                               const TileJob &job);
+                                               std::span<const TileJob> jobs);
+    [[nodiscard]] TileWorkResult rasterizeTiles(const ViewportRequest &request,
+                                                const CompiledFormula &formula,
+                                                std::span<const TileJob> jobs);
     [[nodiscard]] bool isCurrent(const ViewportRequest &request) const;
     [[nodiscard]] bool isCurrent(const ContractHeader &header, FormulaSemanticsHash semanticsHash) const;
     void removeInFlight(const WorkKey &key);
+    void removeInFlight(const ViewportRequest &request, std::span<const TileJob> jobs);
     void discardInFlightExcept(FormulaSemanticsHash semanticsHash);
     [[nodiscard]] static size_t defaultWorkerCount();
     [[nodiscard]] static WorkKey workKeyFor(const ViewportRequest &request, const TileJob &job);

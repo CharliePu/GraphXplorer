@@ -87,7 +87,8 @@ void Application::run()
                         onTextEntered(static_cast<unsigned char>(ch));
                     }
                 },
-                [this](const double x, const double y) { onMouseClicked(x, y); }
+                [this](const double x, const double y) { onMouseClicked(x, y); },
+                [this] { window->getGlfwWindow()->setShouldClose(true); }
             );
         }
 

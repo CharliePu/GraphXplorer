@@ -1,6 +1,7 @@
 #ifndef FRAMEPIPELINE_H
 #define FRAMEPIPELINE_H
 
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
@@ -32,10 +33,28 @@ struct FramePipelineCounters
     [[nodiscard]] std::string toDebugString() const;
 };
 
+struct FramePipelineDebugStats
+{
+    size_t displayTiles{0};
+    size_t plotTiles{0};
+    size_t missingTiles{0};
+    size_t mixedTiles{0};
+    size_t uniformTiles{0};
+    size_t fallbackTiles{0};
+    size_t clippedFallbackTiles{0};
+    size_t inFlightJobs{0};
+    size_t completedJobs{0};
+    size_t queuedIntervalTiles{0};
+    size_t queuedRegionTiles{0};
+    size_t stuckIntervalTiles{0};
+    size_t stuckRegionTiles{0};
+    size_t submittedJobs{0};
+};
+
 class FramePipeline
 {
 public:
-    explicit FramePipeline(std::unique_ptr<ComputeBackend> backend = std::make_unique<CpuComputeBackend>());
+    explicit FramePipeline(std::unique_ptr<ComputeBackend> backend = nullptr);
 
     [[nodiscard]] FrameSnapshot process(const InputEvent &event);
     [[nodiscard]] const AppState &state() const;
@@ -65,6 +84,7 @@ private:
     std::unordered_map<uint64_t, RegionOutput> regionPayloads;
     std::optional<CommittedVisualFrame> committedVisualFrame{};
     FramePipelineCounters pipelineCounters{};
+    FramePipelineDebugStats debugStats{};
     uint64_t frameId{0};
     bool hasRequestedTiles{false};
 };

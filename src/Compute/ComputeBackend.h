@@ -50,6 +50,7 @@ struct RasterBatchView
     std::span<const double> yMax{};
     std::span<const uint32_t> outputOffsets{};
     uint32_t pixelsPerAxis{RasterTexturePixels};
+    bool allowGpu{true};
     std::function<bool()> cancelled{};
 };
 

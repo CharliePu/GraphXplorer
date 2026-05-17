@@ -5,6 +5,7 @@
 
 #include "TileJob.h"
 #include "../Tile/TileCache.h"
+#include "../Tile/TileMath.h"
 #include "../Util/Contracts.h"
 
 namespace gx
@@ -21,7 +22,8 @@ public:
     [[nodiscard]] TilePlan plan(const ViewportRequest &request,
                                 TileCache &tileCache,
                                 const TilePlanBudget &budget = TilePlanBudget{},
-                                int maxSeedCells = 4) const;
+                                int maxSeedCells = 4,
+                                int refinementDepth = DefaultRefinementDepth) const;
 
 private:
     struct BudgetState

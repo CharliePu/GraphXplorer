@@ -4,7 +4,9 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <thread>
 #include <utility>
@@ -506,6 +508,37 @@ TEST_CASE("FramePipeline submits visible tile work in backend batches", "[FrameP
 
     REQUIRE(backendView->classifyCalls.load() > 0);
     CHECK(backendView->maxClassifyBatch.load() > 1);
+}
+
+TEST_CASE("FramePipeline forwards worker completions to a frame wake callback", "[FramePipeline][Responsiveness]")
+{
+    std::atomic<bool> releaseBackend{true};
+    auto backend = std::make_unique<BlockingBackend>(releaseBackend);
+    gx::FramePipeline pipeline{std::move(backend)};
+
+    std::mutex mutex;
+    std::condition_variable completed;
+    auto wakeCount = 0;
+    pipeline.setFrameWakeCallback([&]
+    {
+        {
+            std::lock_guard lock(mutex);
+            ++wakeCount;
+        }
+        completed.notify_one();
+    });
+
+    [[maybe_unused]] const auto snapshot = pipeline.process(gx::ViewportChangedEvent{
+        .xRange = Interval{-2.0, 2.0},
+        .yRange = Interval{-2.0, 2.0},
+        .framebufferWidth = 512,
+        .framebufferHeight = 512
+    });
+
+    std::unique_lock lock(mutex);
+    REQUIRE(completed.wait_for(lock, 1s, [&] { return wakeCount > 0; }));
+    lock.unlock();
+    CHECK(pipeline.pendingCompletionCount() > 0);
 }
 
 TEST_CASE("FramePipeline render ticks do not synchronously wait for compute backend", "[FramePipeline][Responsiveness]")

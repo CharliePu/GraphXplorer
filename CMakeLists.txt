@@ -47,9 +47,10 @@ add_library(GraphXplorerTile
 target_link_libraries(GraphXplorerTile PUBLIC GraphXplorerFormula GraphXplorerUtil)
 
 add_library(GraphXplorerCompute
+        src/Compute/BatchOptimizer.cpp
+        src/Compute/BatchOptimizer.h
         src/Compute/ComputeBackend.h
         src/Compute/CpuComputeBackend.cpp
-        src/Compute/OpenClComputeBackend.cpp
         src/Compute/TileJob.h
         src/Compute/TilePlanner.cpp
         src/Compute/TilePlanner.h
@@ -87,6 +88,8 @@ target_link_libraries(GraphXplorerUI PUBLIC glfw)
 add_library(GraphXplorerApp
         src/App/AppState.cpp
         src/App/AppState.h
+        src/App/FrameBudgetController.cpp
+        src/App/FrameBudgetController.h
         src/App/FramePipeline.cpp
         src/App/FramePipeline.h
         src/App/InteractionController.cpp
@@ -95,6 +98,8 @@ add_library(GraphXplorerApp
         src/App/UiLayout.h
         src/Core/Application.cpp
         src/Core/Application.h
+        src/Core/MainThreadRequestMailbox.cpp
+        src/Core/MainThreadRequestMailbox.h
 )
 target_include_directories(GraphXplorerApp PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(GraphXplorerApp PUBLIC GraphXplorerUI GraphXplorerCompute GraphXplorerRender GraphXplorerFormula GraphXplorerTile GraphXplorerUtil glfw glad::glad glm::glm Freetype::Freetype)

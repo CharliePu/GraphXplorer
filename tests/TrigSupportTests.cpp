@@ -67,6 +67,7 @@ TEST_CASE("Interval trig functions conservatively bound sampled values", "[Inter
 
         REQUIRE(std::isfinite(range.lower));
         REQUIRE(std::isfinite(range.upper));
+        REQUIRE_FALSE(range.hasDiscontinuity());
 
         for (int i = 0; i <= 1000; ++i)
         {
@@ -83,5 +84,6 @@ TEST_CASE("Interval trig functions conservatively bound sampled values", "[Inter
         REQUIRE(std::isinf(range.upper));
         REQUIRE(range.lower < 0.0);
         REQUIRE(range.upper > 0.0);
+        REQUIRE(range.hasDiscontinuity());
     }
 }

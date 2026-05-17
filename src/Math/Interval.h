@@ -5,12 +5,18 @@
 #include <ostream>
 
 struct Interval {
-    double lower;
-    double upper;
+    double lower{0.0};
+    double upper{0.0};
+    bool discontinuity{false};
 
     constexpr Interval() = default;
-    constexpr Interval(double lower, double upper): lower{lower}, upper{upper} {}
-    constexpr explicit Interval(double value): lower{value}, upper{value} {}
+    constexpr Interval(double lower, double upper, bool discontinuity = false):
+        lower{lower},
+        upper{upper},
+        discontinuity{discontinuity}
+    {
+    }
+    constexpr explicit Interval(double value): lower{value}, upper{value}, discontinuity{false} {}
 
     [[nodiscard]] double size() const;
     [[nodiscard]] bool contains(const Interval& interval) const;
@@ -31,10 +37,11 @@ struct Interval {
     [[nodiscard]] constexpr bool allTrue() const;
     [[nodiscard]] constexpr bool allFalse() const;
     [[nodiscard]] constexpr bool undefined() const;
+    [[nodiscard]] constexpr bool hasDiscontinuity() const;
 
 };
 
-static constexpr auto INTERVAL_UNDEFINED = Interval{1.0, 0.0};
+static constexpr auto INTERVAL_UNDEFINED = Interval{1.0, 0.0, true};
 
 constexpr bool Interval::contains(double value) const
 {
@@ -69,6 +76,11 @@ constexpr bool Interval::allFalse() const
 constexpr bool Interval::undefined() const
 {
     return lower > upper;
+}
+
+constexpr bool Interval::hasDiscontinuity() const
+{
+    return discontinuity;
 }
 
 template<typename T>

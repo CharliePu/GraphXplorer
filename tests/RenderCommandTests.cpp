@@ -89,3 +89,35 @@ TEST_CASE("RenderResourceManager assigns slices for the whole visible region set
         CHECK(slice.slice < visibleRefs.size());
     }
 }
+
+TEST_CASE("RenderResourceManager reuses low free region slices after visibility shrinks", "[Render]")
+{
+    gx::RenderResourceManager resources;
+    std::vector<gx::RegionImageRef> largeVisibleRefs;
+    largeVisibleRefs.reserve(600);
+    for (auto id = uint64_t{1}; id <= 600; ++id)
+    {
+        largeVisibleRefs.push_back(gx::RegionImageRef{.id = id, .width = 1, .height = 1});
+    }
+
+    resources.beginRegionFrame(largeVisibleRefs);
+    const std::array pixel{uint8_t{255}};
+    for (const auto &ref : largeVisibleRefs)
+    {
+        (void)resources.registerRegionImage(ref, pixel);
+    }
+
+    const std::array smallVisibleRefs{
+        gx::RegionImageRef{.id = 1001, .width = 1, .height = 1},
+        gx::RegionImageRef{.id = 1002, .width = 1, .height = 1},
+        gx::RegionImageRef{.id = 1003, .width = 1, .height = 1},
+        gx::RegionImageRef{.id = 1004, .width = 1, .height = 1}
+    };
+
+    resources.beginRegionFrame(smallVisibleRefs);
+    for (const auto &ref : smallVisibleRefs)
+    {
+        const auto slice = resources.registerRegionImage(ref, pixel);
+        CHECK(slice.slice < smallVisibleRefs.size());
+    }
+}

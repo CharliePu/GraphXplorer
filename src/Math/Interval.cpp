@@ -10,17 +10,65 @@
 #include <string>
 #include <cmath>
 
+namespace
+{
+bool carriesUnresolvedDomain(const Interval &interval)
+{
+    return interval.hasDiscontinuity() || interval.undefined();
+}
+
+bool carriesUnresolvedDomain(const Interval &lhs, const Interval &rhs)
+{
+    return carriesUnresolvedDomain(lhs) || carriesUnresolvedDomain(rhs);
+}
+
+Interval undefinedIntervalFrom(const Interval &interval)
+{
+    return {1.0, 0.0, carriesUnresolvedDomain(interval)};
+}
+
+Interval undefinedIntervalFrom(const Interval &lhs, const Interval &rhs)
+{
+    return {1.0, 0.0, carriesUnresolvedDomain(lhs, rhs)};
+}
+
+Interval unknownTruthFrom(const Interval &lhs, const Interval &rhs)
+{
+    return {0.0, 1.0, carriesUnresolvedDomain(lhs, rhs)};
+}
+
+Interval truthIntervalFromCandidates(const bool (&candidates)[4], const bool unresolvedDomain)
+{
+    return Interval{
+        static_cast<double>(candidates[0] && candidates[1] && candidates[2] && candidates[3]),
+        static_cast<double>(candidates[0] || candidates[1] || candidates[2] || candidates[3]),
+        unresolvedDomain
+    };
+}
+}
+
 bool sameInterval(const Interval &lhs, const Interval &rhs)
 {
-    return lhs.lower == rhs.lower && lhs.upper == rhs.upper;
+    return lhs.lower == rhs.lower
+        && lhs.upper == rhs.upper
+        && lhs.discontinuity == rhs.discontinuity;
 }
 
 std::ostream& operator<<(std::ostream& os, const Interval& interval) {
     os << "[" << interval.lower << ", " << interval.upper << "]";
+    if (interval.hasDiscontinuity())
+    {
+        os << "!";
+    }
     return os;
 }
 
 Interval operator>(const Interval& lhs, const Interval& rhs) {
+    if (lhs.undefined() || rhs.undefined())
+    {
+        return unknownTruthFrom(lhs, rhs);
+    }
+
     const bool candidates[] = {
         lhs.lower > rhs.lower,
         lhs.lower > rhs.upper,
@@ -28,13 +76,15 @@ Interval operator>(const Interval& lhs, const Interval& rhs) {
         lhs.upper > rhs.upper
     };
 
-    return Interval{
-        static_cast<double>(candidates[0] && candidates[1] && candidates[2] && candidates[3]),
-        static_cast<double>(candidates[0] || candidates[1] || candidates[2] || candidates[3])
-    };
+    return truthIntervalFromCandidates(candidates, carriesUnresolvedDomain(lhs, rhs));
 }
 
 Interval operator<(const Interval& lhs, const Interval& rhs) {
+    if (lhs.undefined() || rhs.undefined())
+    {
+        return unknownTruthFrom(lhs, rhs);
+    }
+
     const bool candidates[] = {
         lhs.lower < rhs.lower,
         lhs.lower < rhs.upper,
@@ -42,13 +92,15 @@ Interval operator<(const Interval& lhs, const Interval& rhs) {
         lhs.upper < rhs.upper
     };
 
-    return Interval{
-        static_cast<double>(candidates[0] && candidates[1] && candidates[2] && candidates[3]),
-        static_cast<double>(candidates[0] || candidates[1] || candidates[2] || candidates[3])
-    };
+    return truthIntervalFromCandidates(candidates, carriesUnresolvedDomain(lhs, rhs));
 }
 
 Interval operator>=(const Interval& lhs, const Interval& rhs) {
+    if (lhs.undefined() || rhs.undefined())
+    {
+        return unknownTruthFrom(lhs, rhs);
+    }
+
     const bool candidates[] = {
         lhs.lower >= rhs.lower,
         lhs.lower >= rhs.upper,
@@ -56,13 +108,15 @@ Interval operator>=(const Interval& lhs, const Interval& rhs) {
         lhs.upper >= rhs.upper
     };
 
-    return Interval{
-        static_cast<double>(candidates[0] && candidates[1] && candidates[2] && candidates[3]),
-        static_cast<double>(candidates[0] || candidates[1] || candidates[2] || candidates[3])
-    };
+    return truthIntervalFromCandidates(candidates, carriesUnresolvedDomain(lhs, rhs));
 }
 
 Interval operator<=(const Interval& lhs, const Interval& rhs) {
+    if (lhs.undefined() || rhs.undefined())
+    {
+        return unknownTruthFrom(lhs, rhs);
+    }
+
     const bool candidates[] = {
         lhs.lower <= rhs.lower,
         lhs.lower <= rhs.upper,
@@ -70,13 +124,15 @@ Interval operator<=(const Interval& lhs, const Interval& rhs) {
         lhs.upper <= rhs.upper
     };
 
-    return Interval{
-        static_cast<double>(candidates[0] && candidates[1] && candidates[2] && candidates[3]),
-        static_cast<double>(candidates[0] || candidates[1] || candidates[2] || candidates[3])
-    };
+    return truthIntervalFromCandidates(candidates, carriesUnresolvedDomain(lhs, rhs));
 }
 
 Interval operator&&(const Interval& lhs, const Interval& rhs) {
+    if (lhs.undefined() || rhs.undefined())
+    {
+        return unknownTruthFrom(lhs, rhs);
+    }
+
     const bool candidates[] = {
         lhs.lower && rhs.lower,
         lhs.lower && rhs.upper,
@@ -84,13 +140,15 @@ Interval operator&&(const Interval& lhs, const Interval& rhs) {
         lhs.upper && rhs.upper
     };
 
-    return Interval{
-        static_cast<double>(candidates[0] && candidates[1] && candidates[2] && candidates[3]),
-        static_cast<double>(candidates[0] || candidates[1] || candidates[2] || candidates[3])
-    };
+    return truthIntervalFromCandidates(candidates, carriesUnresolvedDomain(lhs, rhs));
 }
 
 Interval operator||(const Interval& lhs, const Interval& rhs) {
+    if (lhs.undefined() || rhs.undefined())
+    {
+        return unknownTruthFrom(lhs, rhs);
+    }
+
     const bool candidates[] = {
         lhs.lower || rhs.lower,
         lhs.lower || rhs.upper,
@@ -98,50 +156,65 @@ Interval operator||(const Interval& lhs, const Interval& rhs) {
         lhs.upper || rhs.upper
     };
 
-    return Interval{
-        static_cast<double>(candidates[0] && candidates[1] && candidates[2] && candidates[3]),
-        static_cast<double>(candidates[0] || candidates[1] || candidates[2] || candidates[3])
-    };
+    return truthIntervalFromCandidates(candidates, carriesUnresolvedDomain(lhs, rhs));
 }
 
 Interval operator==(const Interval& lhs, const Interval& rhs) {
+    if (lhs.undefined() || rhs.undefined())
+    {
+        return unknownTruthFrom(lhs, rhs);
+    }
+
     if (lhs.upper < rhs.lower || rhs.upper < lhs.lower)
     {
-        return {0.0, 0.0};
+        return {0.0, 0.0, carriesUnresolvedDomain(lhs, rhs)};
     }
 
     if (lhs.allConstant() && rhs.allConstant() && lhs.lower == rhs.lower)
     {
-        return {1.0, 1.0};
+        return {1.0, 1.0, carriesUnresolvedDomain(lhs, rhs)};
     }
 
-    return {0.0, 1.0};
+    return {0.0, 1.0, carriesUnresolvedDomain(lhs, rhs)};
 }
 
 Interval operator!=(const Interval& lhs, const Interval& rhs) {
     const auto equalRange = lhs == rhs;
     if (equalRange.allTrue())
     {
-        return {0.0, 0.0};
+        return {0.0, 0.0, equalRange.hasDiscontinuity()};
     }
 
     if (equalRange.allFalse())
     {
-        return {1.0, 1.0};
+        return {1.0, 1.0, equalRange.hasDiscontinuity()};
     }
 
-    return {0.0, 1.0};
+    return {0.0, 1.0, equalRange.hasDiscontinuity()};
 }
 
 Interval operator+(const Interval& lhs, const Interval& rhs) {
-    return {lhs.lower + rhs.lower, lhs.upper + rhs.upper};
+    if (lhs.undefined() || rhs.undefined())
+    {
+        return undefinedIntervalFrom(lhs, rhs);
+    }
+    return {lhs.lower + rhs.lower, lhs.upper + rhs.upper, carriesUnresolvedDomain(lhs, rhs)};
 }
 
 Interval operator-(const Interval& lhs, const Interval& rhs) {
-    return {lhs.lower - rhs.lower, lhs.upper - rhs.upper};
+    if (lhs.undefined() || rhs.undefined())
+    {
+        return undefinedIntervalFrom(lhs, rhs);
+    }
+    return {lhs.lower - rhs.lower, lhs.upper - rhs.upper, carriesUnresolvedDomain(lhs, rhs)};
 }
 
 Interval operator*(const Interval& lhs, const Interval& rhs) {
+    if (lhs.undefined() || rhs.undefined())
+    {
+        return undefinedIntervalFrom(lhs, rhs);
+    }
+
     std::array candidates = {
         lhs.lower * rhs.lower,
         lhs.lower * rhs.upper,
@@ -152,12 +225,17 @@ Interval operator*(const Interval& lhs, const Interval& rhs) {
     double min_val = std::min({ candidates[0], candidates[1], candidates[2], candidates[3] });
     double max_val = std::max({ candidates[0], candidates[1], candidates[2], candidates[3] });
 
-    return Interval(min_val, max_val);
+    return Interval(min_val, max_val, carriesUnresolvedDomain(lhs, rhs));
 }
 
 Interval operator/(const Interval& lhs, const Interval& rhs) {
+    if (lhs.undefined() || rhs.undefined())
+    {
+        return undefinedIntervalFrom(lhs, rhs);
+    }
+
     if (rhs.lower <= 0.0 && rhs.upper >= 0.0) {
-        return {-std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()};
+        return {-std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(), true};
     }
 
     // Use reciprocals of the divisor interval
@@ -172,15 +250,20 @@ Interval operator/(const Interval& lhs, const Interval& rhs) {
     double min_val = std::min({ candidates[0], candidates[1], candidates[2], candidates[3] });
     double max_val = std::max({ candidates[0], candidates[1], candidates[2], candidates[3] });
 
-    return Interval(min_val, max_val);
+    return Interval(min_val, max_val, carriesUnresolvedDomain(lhs, rhs));
 }
 
 Interval pow(const Interval& base, const Interval& exp) {
+    if (base.undefined() || exp.undefined())
+    {
+        return undefinedIntervalFrom(base, exp);
+    }
+
     const auto computeIntegerPower = [](const Interval &baseInterval, const long long exponent) -> Interval
     {
         if (exponent == 0)
         {
-            return {1.0, 1.0};
+            return {1.0, 1.0, baseInterval.hasDiscontinuity()};
         }
 
         const auto absExponent = exponent < 0 ? -exponent : exponent;
@@ -208,22 +291,22 @@ Interval pow(const Interval& base, const Interval& exp) {
 
         if (exponent > 0)
         {
-            return powered;
+            return {powered.lower, powered.upper, baseInterval.hasDiscontinuity()};
         }
 
         if (powered.contains(0.0))
         {
-            return {-std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()};
+            return {-std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(), true};
         }
 
         const auto reciprocalLower = 1.0 / powered.upper;
         const auto reciprocalUpper = 1.0 / powered.lower;
         if (reciprocalLower <= reciprocalUpper)
         {
-            return {reciprocalLower, reciprocalUpper};
+            return {reciprocalLower, reciprocalUpper, baseInterval.hasDiscontinuity()};
         }
 
-        return {reciprocalUpper, reciprocalLower};
+        return {reciprocalUpper, reciprocalLower, baseInterval.hasDiscontinuity()};
     };
 
     // non-positive exp => if base is zero, undefined
@@ -250,7 +333,7 @@ Interval pow(const Interval& base, const Interval& exp) {
 
     double min_val = *std::ranges::min_element(results);
     double max_val = *std::ranges::max_element(results);
-    return Interval(min_val, max_val);
+    return Interval(min_val, max_val, carriesUnresolvedDomain(base, exp));
 }
 
 
@@ -267,7 +350,7 @@ bool Interval::strictlyContains(const Interval& interval) const {
 }
 
 bool Interval::anyZero() const {
-    return lower < 0 && upper > 0;
+    return lower <= 0 && upper >= 0;
 }
 
 bool Interval::anyPositive() const
@@ -324,9 +407,14 @@ Interval computeInterval(double lower, double upper, Func func, const std::vecto
 Interval sin(const Interval& interval) {
     constexpr auto pi = std::numbers::pi;
     constexpr auto fullPeriod = 2.0 * pi;
+    if (interval.undefined())
+    {
+        return undefinedIntervalFrom(interval);
+    }
+
     if (!std::isfinite(interval.lower) || !std::isfinite(interval.upper) || interval.size() >= fullPeriod)
     {
-        return {-1.0, 1.0};
+        return {-1.0, 1.0, interval.hasDiscontinuity()};
     }
 
     // Critical points where derivative is zero: multiples of pi/2
@@ -341,15 +429,21 @@ Interval sin(const Interval& interval) {
         }
     }
 
-    return computeInterval(interval.lower, interval.upper, static_cast<Func>(std::sin), criticals);
+    const auto range = computeInterval(interval.lower, interval.upper, static_cast<Func>(std::sin), criticals);
+    return {range.lower, range.upper, interval.hasDiscontinuity()};
 }
 
 Interval cos(const Interval& interval) {
     constexpr auto pi = std::numbers::pi;
     constexpr auto fullPeriod = 2.0 * pi;
+    if (interval.undefined())
+    {
+        return undefinedIntervalFrom(interval);
+    }
+
     if (!std::isfinite(interval.lower) || !std::isfinite(interval.upper) || interval.size() >= fullPeriod)
     {
-        return {-1.0, 1.0};
+        return {-1.0, 1.0, interval.hasDiscontinuity()};
     }
 
     // Critical points where derivative is zero: multiples of pi
@@ -364,11 +458,17 @@ Interval cos(const Interval& interval) {
         }
     }
 
-    return computeInterval(interval.lower, interval.upper, static_cast<Func>(std::cos), criticals);
+    const auto range = computeInterval(interval.lower, interval.upper, static_cast<Func>(std::cos), criticals);
+    return {range.lower, range.upper, interval.hasDiscontinuity()};
 }
 
 Interval tan(const Interval& interval) {
     constexpr auto pi = std::numbers::pi;
+    if (interval.undefined())
+    {
+        return undefinedIntervalFrom(interval);
+    }
+
     // Check for discontinuities at (pi/2) + k*pi
     double k_min = std::ceil((interval.lower - pi / 2) / pi);
     double k_max = std::floor((interval.upper - pi / 2) / pi);
@@ -377,7 +477,8 @@ Interval tan(const Interval& interval) {
         if (asymptote > interval.lower && asymptote < interval.upper) {
             // Interval crosses a discontinuity; tan approaches -inf and +inf
             return Interval(-std::numeric_limits<double>::infinity(),
-                            std::numeric_limits<double>::infinity());
+                            std::numeric_limits<double>::infinity(),
+                            true);
         }
     }
 
@@ -385,37 +486,60 @@ Interval tan(const Interval& interval) {
     double tan_lower = std::tan(interval.lower);
     double tan_upper = std::tan(interval.upper);
     if (tan_lower < tan_upper) {
-        return Interval(tan_lower, tan_upper);
+        return Interval(tan_lower, tan_upper, interval.hasDiscontinuity());
     } else {
-        return Interval(tan_upper, tan_lower);
+        return Interval(tan_upper, tan_lower, interval.hasDiscontinuity());
     }
 }
 
 Interval log(const Interval& interval) {
+    if (interval.undefined())
+    {
+        return undefinedIntervalFrom(interval);
+    }
+
+    if (interval.upper <= 0.0) {
+        return INTERVAL_UNDEFINED;
+    }
+
     if (interval.lower <= 0.0) {
-        throw std::domain_error("Log undefined for non-positive values.");
+        return {-std::numeric_limits<double>::infinity(), std::log(interval.upper), true};
     }
 
     // Log is strictly increasing
     double log_lower = std::log(interval.lower);
     double log_upper = std::log(interval.upper);
-    return Interval(log_lower, log_upper);
+    return Interval(log_lower, log_upper, interval.hasDiscontinuity());
 }
 
 Interval exp(const Interval& interval) {
+    if (interval.undefined())
+    {
+        return undefinedIntervalFrom(interval);
+    }
+
     // Exp is strictly increasing
     double exp_lower = std::exp(interval.lower);
     double exp_upper = std::exp(interval.upper);
-    return Interval(exp_lower, exp_upper);
+    return Interval(exp_lower, exp_upper, interval.hasDiscontinuity());
 }
 
 Interval sqrt(const Interval& interval) {
+    if (interval.undefined())
+    {
+        return undefinedIntervalFrom(interval);
+    }
+
+    if (interval.upper < 0.0) {
+        return INTERVAL_UNDEFINED;
+    }
+
     if (interval.lower < 0.0) {
-        throw std::domain_error("Sqrt undefined for negative values.");
+        return {0.0, std::sqrt(interval.upper), true};
     }
 
     // Sqrt is strictly increasing
     double sqrt_lower = std::sqrt(interval.lower);
     double sqrt_upper = std::sqrt(interval.upper);
-    return Interval(sqrt_lower, sqrt_upper);
+    return Interval(sqrt_lower, sqrt_upper, interval.hasDiscontinuity());
 }

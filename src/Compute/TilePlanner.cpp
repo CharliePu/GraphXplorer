@@ -10,7 +10,8 @@ namespace gx
 TilePlan TilePlanner::plan(const ViewportRequest &request,
                            TileCache &tileCache,
                            const TilePlanBudget &budget,
-                           const int maxSeedCells) const
+                           const int maxSeedCells,
+                           const int refinementDepth) const
 {
     TilePlan result;
     if (!request.valid() || maxSeedCells <= 0)
@@ -32,7 +33,7 @@ TilePlan TilePlanner::plan(const ViewportRequest &request,
         .interval = budget.maxIntervalJobsPerFrame,
         .raster = budget.maxRasterJobsPerFrame
     };
-    const auto leafLevel = leafTileLevel(request);
+    const auto leafLevel = leafTileLevelForSeed(level, refinementDepth);
 
     for (auto y = minY; y <= maxY; ++y)
     {
@@ -164,12 +165,13 @@ void TilePlanner::enqueueRasterIfIdle(TilePlan &plan,
     }
 
     --budget.raster;
-    plan.jobs.push_back({
-        JobKind::RasterizeRegion,
-        WorkClass::VisibleRefinement,
-        key,
-        priorityFor(request, key),
-        {.interval = true}
+    plan.jobs.push_back(TileJob{
+        .kind = JobKind::RasterizeRegion,
+        .workClass = WorkClass::VisibleRefinement,
+        .key = key,
+        .priority = priorityFor(request, key),
+        .dependencies = {.interval = true},
+        .interval = record.interval
     });
 }
 

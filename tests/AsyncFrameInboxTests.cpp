@@ -45,3 +45,16 @@ TEST_CASE("AsyncFrameInbox HandleAll drains all queued items", "[AsyncFrameInbox
     REQUIRE(inbox.empty());
 }
 
+TEST_CASE("AsyncFrameInbox can defer drained work to the front", "[AsyncFrameInbox]")
+{
+    AsyncFrameInbox<int> inbox{{AsyncFrameInbox<int>::Mode::HandleAll, 8}};
+    inbox.push(3);
+    inbox.push(4);
+    inbox.pushFront(2);
+    std::vector<int> deferred{0, 1};
+    inbox.pushFrontRange(deferred.begin(), deferred.end());
+
+    const auto frame = inbox.drainForFrame();
+    REQUIRE(frame == std::vector<int>{0, 1, 2, 3, 4});
+    REQUIRE(inbox.empty());
+}

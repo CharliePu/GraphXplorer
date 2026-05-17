@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "TileMath.h"
+#include "../Util/PerformanceProfiler.h"
 
 namespace gx
 {
@@ -526,6 +527,7 @@ void TileCache::normalizeUniformAuthority(
 
 TileApplyResult TileCache::apply(const TileTransaction &transaction)
 {
+    GRAPHX_PROFILE_SCOPE("tileCache.apply");
     if (!transaction.valid())
     {
         return {.applied = 0, .rejected = transaction.deltas.size()};

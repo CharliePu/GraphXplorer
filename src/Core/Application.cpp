@@ -50,13 +50,16 @@ Application::Application(const int width, const int height, const std::string &n
     const auto framebufferHeight = window->getHeight();
     const auto devicePixelRatio = window->getContentScaleFactor();
     pendingWindowSize = std::make_pair(framebufferWidth, framebufferHeight);
-    latestFrameSnapshot = framePipeline->process(gx::ViewportChangedEvent{
-        Interval{-20.0, 20.0},
-        Interval{-20.0, 20.0},
-        framebufferWidth,
-        framebufferHeight,
-        devicePixelRatio
-    });
+    {
+        GRAPHX_PROFILE_SCOPE("app.initialFrame");
+        latestFrameSnapshot = framePipeline->process(gx::ViewportChangedEvent{
+            Interval{-20.0, 20.0},
+            Interval{-20.0, 20.0},
+            framebufferWidth,
+            framebufferHeight,
+            devicePixelRatio
+        });
+    }
 }
 
 void Application::run()
@@ -92,10 +95,18 @@ void Application::run()
             );
         }
 
-        applyPendingWindowSizeChange();
-        const auto processedInputFrame = processQueuedFrameEvents();
+        {
+            GRAPHX_PROFILE_SCOPE("main.applyPendingWindowSizeChange");
+            applyPendingWindowSizeChange();
+        }
+        auto processedInputFrame = false;
+        {
+            GRAPHX_PROFILE_SCOPE("main.processQueuedFrameEvents");
+            processedInputFrame = processQueuedFrameEvents();
+        }
         if (!processedInputFrame)
         {
+            GRAPHX_PROFILE_SCOPE("main.renderTickProcess");
             processFrameEvent(gx::RenderTickEvent{});
         }
 
@@ -120,7 +131,10 @@ void Application::run()
 
         GRAPHX_PROFILE_FLUSH_IF_DUE();
 
-        window->swapBuffers();
+        {
+            GRAPHX_PROFILE_SCOPE("main.swapBuffers");
+            window->swapBuffers();
+        }
         if (inputScenarioRunner && inputScenarioRunner->shouldCloseOnComplete())
         {
             window->getGlfwWindow()->setShouldClose(true);
@@ -133,10 +147,12 @@ void Application::run()
 
         if (inputScenarioRunner && inputScenarioRunner->isActive())
         {
+            GRAPHX_PROFILE_SCOPE("main.waitEvents");
             glfw::waitEvents(std::min(inputScenarioRunner->waitTimeoutSeconds(), 1.0 / 60.0));
         }
         else
         {
+            GRAPHX_PROFILE_SCOPE("main.waitEvents");
             glfw::waitEvents(1.0 / 60.0);
         }
     }
@@ -292,6 +308,7 @@ bool Application::processQueuedFrameEvents()
 
 void Application::processFrameEvent(const gx::InputEvent &event)
 {
+    GRAPHX_PROFILE_SCOPE("app.processFrameEvent");
     latestFrameSnapshot = framePipeline->process(event);
 }
 

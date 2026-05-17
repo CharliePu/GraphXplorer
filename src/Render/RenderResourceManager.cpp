@@ -13,6 +13,7 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 
+#include "../Util/PerformanceProfiler.h"
 #include "../Util/PipelineLog.h"
 
 namespace gx
@@ -518,6 +519,7 @@ void RenderResourceManager::draw(const DrawCommand &command)
 {
     if (command.pipeline == GridPipeline && command.geometry == StaticQuadGeometry)
     {
+        GRAPHX_PROFILE_SCOPE("render.draw.grid");
         ensureGridResources();
 
         const auto span = [](const Interval &range, const int pixels) {
@@ -555,6 +557,7 @@ void RenderResourceManager::draw(const DrawCommand &command)
 
     if (command.pipeline == OverlayPipeline && command.geometry == StaticQuadGeometry)
     {
+        GRAPHX_PROFILE_SCOPE("render.draw.overlay");
         ensureOverlayResources();
         uploadOverlayRectsIfDirty();
         if (overlayRects.empty())
@@ -576,6 +579,7 @@ void RenderResourceManager::draw(const DrawCommand &command)
 
     if (command.pipeline == TextPipeline)
     {
+        GRAPHX_PROFILE_SCOPE("render.draw.text");
         ensureTextResources();
         uploadTextVerticesIfDirty();
         if (!textGpu.initialized || textGpu.texture == 0 || textVertexFloats.empty())
@@ -596,6 +600,7 @@ void RenderResourceManager::draw(const DrawCommand &command)
 
     if (command.pipeline == DebugPlotPipeline && command.geometry == StaticQuadGeometry)
     {
+        GRAPHX_PROFILE_SCOPE("render.draw.debugPlot");
         ensurePlotResources();
         if (debugPlotInstances.empty())
         {
@@ -630,9 +635,16 @@ void RenderResourceManager::draw(const DrawCommand &command)
         return;
     }
 
+    GRAPHX_PROFILE_SCOPE("render.draw.plot");
     ensurePlotResources();
-    uploadPlotInstancesIfDirty();
-    uploadPendingRegionImages();
+    {
+        GRAPHX_PROFILE_SCOPE("render.uploadPlotInstancesIfDirty");
+        uploadPlotInstancesIfDirty();
+    }
+    {
+        GRAPHX_PROFILE_SCOPE("render.uploadPendingRegionImages");
+        uploadPendingRegionImages();
+    }
     if (plotInstances.empty())
     {
         return;
@@ -943,6 +955,7 @@ void RenderResourceManager::queueResidentRegionUploads()
 
 void RenderResourceManager::ensureRegionTextureArray(const int width, const int height)
 {
+    GRAPHX_PROFILE_SCOPE("render.ensureRegionTextureArray");
     const auto requiredCapacity = std::max({1u, regionTextures.desiredCapacity, regionTextures.nextSlice});
     const auto maxLayers = maxRegionArrayLayers();
     const auto targetCapacity = std::min(nextPowerOfTwoAtLeast(requiredCapacity), maxLayers);
@@ -980,17 +993,20 @@ void RenderResourceManager::ensureRegionTextureArray(const int width, const int 
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage3D(
-        GL_TEXTURE_2D_ARRAY,
-        0,
-        GL_R8,
-        width,
-        height,
-        static_cast<GLsizei>(regionTextures.capacity),
-        0,
-        GL_RED,
-        GL_UNSIGNED_BYTE,
-        nullptr);
+    {
+        GRAPHX_PROFILE_SCOPE("render.glTexImage3D.regionArray");
+        glTexImage3D(
+            GL_TEXTURE_2D_ARRAY,
+            0,
+            GL_R8,
+            width,
+            height,
+            static_cast<GLsizei>(regionTextures.capacity),
+            0,
+            GL_RED,
+            GL_UNSIGNED_BYTE,
+            nullptr);
+    }
     regionTextures.initialized = true;
     queueResidentRegionUploads();
     PipelineLog::log(
@@ -1165,6 +1181,7 @@ void RenderResourceManager::uploadTextVerticesIfDirty()
 
 void RenderResourceManager::uploadPendingRegionImages()
 {
+    GRAPHX_PROFILE_SCOPE("render.uploadPendingRegionImages.impl");
     if (pendingRegionUploads.empty())
     {
         return;
@@ -1189,18 +1206,21 @@ void RenderResourceManager::uploadPendingRegionImages()
             ++skippedForSize;
             continue;
         }
-        glTexSubImage3D(
-            GL_TEXTURE_2D_ARRAY,
-            0,
-            0,
-            0,
-            static_cast<GLint>(upload.slice.slice),
-            upload.ref.width,
-            upload.ref.height,
-            1,
-            GL_RED,
-            GL_UNSIGNED_BYTE,
-            upload.pixels.data());
+        {
+            GRAPHX_PROFILE_SCOPE("render.glTexSubImage3D.regionSlice");
+            glTexSubImage3D(
+                GL_TEXTURE_2D_ARRAY,
+                0,
+                0,
+                0,
+                static_cast<GLint>(upload.slice.slice),
+                upload.ref.width,
+                upload.ref.height,
+                1,
+                GL_RED,
+                GL_UNSIGNED_BYTE,
+                upload.pixels.data());
+        }
     }
     if (skippedForCapacity > 0 || skippedForSize > 0)
     {

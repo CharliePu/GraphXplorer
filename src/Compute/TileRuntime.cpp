@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "../Tile/TileMath.h"
+#include "../Util/PerformanceProfiler.h"
 
 namespace gx
 {
@@ -56,6 +57,7 @@ void TileRuntime::setLatestRequest(const ViewportRequest &request,
 
 void TileRuntime::submitJobs(const std::span<const TileJob> jobs)
 {
+    GRAPHX_PROFILE_SCOPE("runtime.submitJobs");
     std::optional<ViewportRequest> request;
     std::optional<CompiledFormula> formula;
     {
@@ -112,6 +114,7 @@ TileRuntimeDrainResult TileRuntime::drainCompleted(TileCache &tileCache,
                                                    std::unordered_map<uint64_t, RegionOutput> &regionPayloads,
                                                    const std::chrono::microseconds applyBudget)
 {
+    GRAPHX_PROFILE_SCOPE("runtime.drainCompleted");
     (void)applyBudget;
     TileRuntimeDrainResult result;
     for (auto &work : completed.drainForFrame())
@@ -133,7 +136,11 @@ TileRuntimeDrainResult TileRuntime::drainCompleted(TileCache &tileCache,
                 continue;
             }
 
-            const auto applyResult = tileCache.apply(transaction);
+            TileApplyResult applyResult;
+            {
+                GRAPHX_PROFILE_SCOPE("runtime.applyTransaction");
+                applyResult = tileCache.apply(transaction);
+            }
             result.applied += applyResult.applied;
             result.rejected += applyResult.rejected;
             result.transactions.push_back(std::move(transaction));
@@ -161,6 +168,7 @@ void TileRuntime::enqueueBatch(const ViewportRequest &request,
 {
     workers.addTask([this, request, formula, kind, jobs = std::move(jobs)]()
     {
+        GRAPHX_PROFILE_SCOPE("runtime.workerBatch");
         if (!isCurrent(request))
         {
             removeInFlight(request, jobs);
@@ -190,6 +198,7 @@ TileRuntime::TileWorkResult TileRuntime::classifyTiles(const ViewportRequest &re
                                                        const CompiledFormula &formula,
                                                        const std::span<const TileJob> jobs)
 {
+    GRAPHX_PROFILE_SCOPE("runtime.classifyTiles");
     TileWorkResult work;
     if (jobs.empty())
     {
@@ -220,6 +229,7 @@ TileRuntime::TileWorkResult TileRuntime::classifyTiles(const ViewportRequest &re
     BatchResult batchResult;
     {
         std::lock_guard lock(backendMutex);
+        GRAPHX_PROFILE_SCOPE("runtime.backend.classify");
         batchResult = backend->classifyIntervals(
             IntervalBatchView{
                 &formula,
@@ -290,6 +300,7 @@ TileRuntime::TileWorkResult TileRuntime::rasterizeTiles(const ViewportRequest &r
                                                         const CompiledFormula &formula,
                                                         const std::span<const TileJob> jobs)
 {
+    GRAPHX_PROFILE_SCOPE("runtime.rasterizeTiles");
     TileWorkResult work;
     if (jobs.empty())
     {
@@ -324,6 +335,7 @@ TileRuntime::TileWorkResult TileRuntime::rasterizeTiles(const ViewportRequest &r
     BatchResult batchResult;
     {
         std::lock_guard lock(backendMutex);
+        GRAPHX_PROFILE_SCOPE("runtime.backend.raster");
         batchResult = backend->rasterizeRegions(
             RasterBatchView{
                 &formula,

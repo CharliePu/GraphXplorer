@@ -35,7 +35,10 @@ bool TileCache::validTransition(const TileStage from, const TileStage to)
     case TileStage::RegionQueued:
         return to == TileStage::RegionReady || to == TileStage::MixedNeedsRegion || to == TileStage::Evicted;
     case TileStage::RegionReady:
-        return to == TileStage::ContourQueued || to == TileStage::UploadQueued || to == TileStage::Evicted;
+        return to == TileStage::RegionQueued
+            || to == TileStage::ContourQueued
+            || to == TileStage::UploadQueued
+            || to == TileStage::Evicted;
     case TileStage::ContourQueued:
         return to == TileStage::ContourReady || to == TileStage::Evicted;
     case TileStage::ContourReady:
@@ -179,6 +182,7 @@ void TileCache::applyDeltaToRecord(TileRecord &record, const TileDelta &delta)
     case TileStage::Unknown:
         record.valueState = TileValueState::Unknown;
         record.workState = TileWorkState::Idle;
+        record.existence = TileExistenceState::Unknown;
         record.interval.reset();
         record.regionPixels.reset();
         record.contourSegments.reset();
@@ -190,14 +194,24 @@ void TileCache::applyDeltaToRecord(TileRecord &record, const TileDelta &delta)
     case TileStage::IntervalReady:
         record.valueState = valueStateForClassification(delta.classification);
         record.workState = TileWorkState::Idle;
+        if (record.valueState == TileValueState::UniformTrue)
+        {
+            record.existence = TileExistenceState::Exists;
+        }
+        else if (record.valueState == TileValueState::UniformFalse)
+        {
+            record.existence = TileExistenceState::Empty;
+        }
         break;
     case TileStage::UniformTrue:
         record.valueState = TileValueState::UniformTrue;
         record.workState = TileWorkState::Idle;
+        record.existence = TileExistenceState::Exists;
         break;
     case TileStage::UniformFalse:
         record.valueState = TileValueState::UniformFalse;
         record.workState = TileWorkState::Idle;
+        record.existence = TileExistenceState::Empty;
         break;
     case TileStage::MixedNeedsRegion:
         record.valueState = TileValueState::Mixed;
@@ -252,12 +266,17 @@ void TileCache::applyDeltaToRecord(TileRecord &record, const TileDelta &delta)
     case TileStage::Evicted:
         record.valueState = TileValueState::Unknown;
         record.workState = TileWorkState::Idle;
+        record.existence = TileExistenceState::Unknown;
         break;
     }
 
     if (delta.interval)
     {
         record.interval = delta.interval;
+    }
+    if (delta.existence)
+    {
+        record.existence = *delta.existence;
     }
     if (record.valueState == TileValueState::UniformTrue
         || record.valueState == TileValueState::UniformFalse)
@@ -384,6 +403,37 @@ bool TileCache::hasDescendantRecordInIndex(const FormulaTileIndex &index, const 
     return false;
 }
 
+bool TileCache::eraseProofTree(FormulaTileIndex &index, const TileKey &rootKey)
+{
+    const auto it = index.proofTrees.find(rootKey);
+    if (it == index.proofTrees.end())
+    {
+        return false;
+    }
+
+    index.proofNodeCount -= it->second.nodes.size();
+    index.proofTrees.erase(it);
+    return true;
+}
+
+void TileCache::pruneProofTrees(FormulaTileIndex &index, const TileKey &parent)
+{
+    std::vector<TileKey> toErase;
+    for (const auto &[rootKey, tree] : index.proofTrees)
+    {
+        (void)tree;
+        if (parentCoversChild(parent, rootKey))
+        {
+            toErase.push_back(rootKey);
+        }
+    }
+
+    for (const auto &rootKey : toErase)
+    {
+        eraseProofTree(index, rootKey);
+    }
+}
+
 TileRecord &TileCache::putRecord(FormulaTileIndex &index, TileRecord record)
 {
     auto &bucket = index.levels[record.key.level];
@@ -401,15 +451,18 @@ bool TileCache::eraseRecord(FormulaTileIndex &index, const TileKey &key)
     auto levelIt = index.levels.find(key.level);
     if (levelIt == index.levels.end())
     {
+        eraseProofTree(index, key);
         return false;
     }
 
     const auto erased = levelIt->second.records.erase(xyKeyFor(key)) > 0;
     if (!erased)
     {
+        eraseProofTree(index, key);
         return false;
     }
 
+    eraseProofTree(index, key);
     --index.recordCount;
     if (levelIt->second.records.empty())
     {
@@ -421,6 +474,9 @@ bool TileCache::eraseRecord(FormulaTileIndex &index, const TileKey &key)
 
 void TileCache::pruneDescendants(FormulaTileIndex &index, const TileKey &parent)
 {
+    eraseProofTree(index, parent);
+    pruneProofTrees(index, parent);
+
     std::vector<TileKey> toErase;
     for (auto levelIt = index.occupiedLevels.begin();
          levelIt != index.occupiedLevels.end() && *levelIt < parent.level;
@@ -490,6 +546,9 @@ bool TileCache::promoteParentIfChildrenAgree(
     parentRecord.semanticsHash = semanticsHash;
     parentRecord.valueState = *valueState;
     parentRecord.workState = TileWorkState::Idle;
+    parentRecord.existence = *valueState == TileValueState::UniformTrue
+        ? TileExistenceState::Exists
+        : TileExistenceState::Empty;
     parentRecord.interval = interval;
     parentRecord.regionPixels.reset();
     parentRecord.contourSegments.reset();
@@ -841,6 +900,64 @@ bool TileCache::hasDescendantRecord(const TileKey &key, const FormulaSemanticsHa
         return false;
     }
     return hasDescendantRecordInIndex(formulaIt->second, key);
+}
+
+TileApplyResult TileCache::applyProofTree(TileProofTreePatch patch)
+{
+    if (!patch.valid())
+    {
+        return {.applied = 0, .rejected = 1};
+    }
+
+    auto formulaIt = formulas.find(patch.semanticsHash.value);
+    if (formulaIt == formulas.end())
+    {
+        return {.applied = 0, .rejected = 1};
+    }
+
+    auto &index = formulaIt->second;
+    auto *rootRecord = findMutableInIndex(index, patch.tree.rootKey);
+    if (!rootRecord || rootRecord->valueState != TileValueState::Mixed)
+    {
+        return {.applied = 0, .rejected = 1};
+    }
+
+    if (patch.tree.existence != TileExistenceState::Unknown)
+    {
+        rootRecord->existence = patch.tree.existence;
+    }
+    patch.tree.existence = rootRecord->existence;
+    if (rootRecord->regionPixels)
+    {
+        patch.tree.certainty = rootRecord->regionPixels->certainty;
+    }
+
+    eraseProofTree(index, patch.tree.rootKey);
+    index.proofNodeCount += patch.tree.nodes.size();
+    index.proofTrees.insert_or_assign(patch.tree.rootKey, std::move(patch.tree));
+    return {.applied = 1, .rejected = 0};
+}
+
+const TileProofTree *TileCache::findProofTree(
+    const TileKey &rootKey,
+    const FormulaSemanticsHash semanticsHash) const
+{
+    const auto formulaIt = formulas.find(semanticsHash.value);
+    if (formulaIt == formulas.end())
+    {
+        return nullptr;
+    }
+
+    const auto treeIt = formulaIt->second.proofTrees.find(rootKey);
+    return treeIt == formulaIt->second.proofTrees.end()
+        ? nullptr
+        : &treeIt->second;
+}
+
+size_t TileCache::proofNodeCountForFormula(const FormulaSemanticsHash semanticsHash) const
+{
+    const auto formulaIt = formulas.find(semanticsHash.value);
+    return formulaIt == formulas.end() ? size_t{0} : formulaIt->second.proofNodeCount;
 }
 
 std::vector<int> TileCache::occupiedLevelsForFormula(const FormulaSemanticsHash semanticsHash) const

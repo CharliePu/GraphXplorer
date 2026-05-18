@@ -50,13 +50,14 @@ public:
             std::lock_guard lock(mutex);
             rasterBatchSizes.push_back(batch.keys.size());
             rasterPixelsPerAxisValues.push_back(batch.pixelsPerAxis);
-            rasterAllowGpuValues.push_back(batch.allowGpu);
+            rasterAllowGpuValues.push_back(batch.mode == gx::TexturePreparationMode::GpuPreview);
         }
         for (size_t index = 0; index < out.size(); ++index)
         {
             out[index].key = batch.keys[index];
             out[index].width = batch.pixelsPerAxis;
             out[index].height = batch.pixelsPerAxis;
+            out[index].certainty = gx::TextureCertainty::Precise;
             out[index].pixels.assign(
                 static_cast<size_t>(batch.pixelsPerAxis) * batch.pixelsPerAxis,
                 uint8_t{255});
@@ -148,6 +149,65 @@ public:
         }
         return {true, out.size(), {}};
     }
+};
+
+class GpuUnavailableBackend final : public gx::ComputeBackend
+{
+public:
+    [[nodiscard]] gx::BackendCapabilities capabilities() const override
+    {
+        return {};
+    }
+
+    gx::BatchResult classifyIntervals(const gx::IntervalBatchView &batch,
+                                      std::span<gx::TileClassificationResult> out) override
+    {
+        for (size_t index = 0; index < out.size(); ++index)
+        {
+            out[index] = {
+                batch.keys[index],
+                gx::TileClassification::Mixed,
+                Interval{-1.0, 1.0}
+            };
+        }
+        return {true, batch.keys.size(), {}};
+    }
+
+    gx::BatchResult rasterizeRegions(const gx::RasterBatchView &batch,
+                                     std::span<gx::RegionOutput> out) override
+    {
+        {
+            std::lock_guard lock(mutex);
+            allowGpuCalls.push_back(batch.mode == gx::TexturePreparationMode::GpuPreview);
+        }
+        if (batch.mode == gx::TexturePreparationMode::GpuPreview)
+        {
+            return {false, 0, "GPU preview unavailable: simulated"};
+        }
+
+        for (size_t index = 0; index < out.size(); ++index)
+        {
+            out[index].key = batch.keys[index];
+            out[index].width = batch.pixelsPerAxis;
+            out[index].height = batch.pixelsPerAxis;
+            out[index].certainty = gx::TextureCertainty::Precise;
+            out[index].existence = gx::TileExistenceState::Exists;
+            out[index].pixels.assign(
+                static_cast<size_t>(batch.pixelsPerAxis) * batch.pixelsPerAxis,
+                uint8_t{255});
+        }
+        return {true, out.size(), {}};
+    }
+
+    [[nodiscard]] std::vector<bool> allowGpuHistory() const
+    {
+        std::lock_guard lock(mutex);
+        return allowGpuCalls;
+    }
+
+private:
+    mutable std::mutex mutex;
+    std::vector<bool> allowGpuCalls;
 };
 
 class FixedBatchPolicy final : public gx::BackendBatchPolicy
@@ -481,7 +541,7 @@ TEST_CASE("TileRuntime defaults raster sampling resolution to one screen tile",
     CHECK(pixels.front() == gx::RasterTileScreenPixels);
 }
 
-TEST_CASE("TileRuntime propagates GPU raster admission to backend batches",
+TEST_CASE("TileRuntime propagates GPU preview admission to backend batches",
           "[TileRuntime][Responsiveness]")
 {
     auto backend = std::make_unique<RecordingBackend>();
@@ -498,7 +558,7 @@ TEST_CASE("TileRuntime propagates GPU raster admission to backend batches",
     const auto formula = gx::FormulaCompiler{}.compile("x < y");
     REQUIRE(formula.diagnostics.ok);
     runtime.setLatestRequest(requestFor(formula), formula);
-    runtime.setGpuRasterAllowed(false);
+    runtime.setGpuPreviewAllowed(false);
 
     runtime.submitJobs(std::vector<gx::TileJob>{
         tileJob(gx::JobKind::RasterizeRegion, 0),
@@ -510,6 +570,178 @@ TEST_CASE("TileRuntime propagates GPU raster admission to backend batches",
     const auto allowGpu = backendView->rasterAllowGpu();
     REQUIRE_FALSE(allowGpu.empty());
     CHECK(std::ranges::none_of(allowGpu, [](const bool value) { return value; }));
+}
+
+TEST_CASE("TileRuntime honors per-job CPU raster upgrades",
+          "[TileRuntime][Responsiveness]")
+{
+    auto backend = std::make_unique<RecordingBackend>();
+    auto *backendView = backend.get();
+    gx::TileRuntime runtime{
+        std::move(backend),
+        1,
+        gx::TileRuntimeOptions{
+            .batchOptimizer = {
+                .initialRasterBatchSize = 8
+            }
+        }
+    };
+    const auto formula = gx::FormulaCompiler{}.compile("x < y");
+    REQUIRE(formula.diagnostics.ok);
+    runtime.setLatestRequest(requestFor(formula), formula);
+    runtime.setGpuPreviewAllowed(true);
+
+    auto job = tileJob(gx::JobKind::RasterizeRegion, 0);
+    job.textureMode = gx::TexturePreparationMode::Refined;
+    runtime.submitJobs(std::array{job});
+
+    waitForRuntimeIdle(runtime);
+
+    const auto allowGpu = backendView->rasterAllowGpu();
+    REQUIRE_FALSE(allowGpu.empty());
+    CHECK(std::ranges::none_of(allowGpu, [](const bool value) { return value; }));
+}
+
+TEST_CASE("TileRuntime waits for CPU refinement when GPU preview is unavailable",
+          "[TileRuntime]")
+{
+    auto backend = std::make_unique<GpuUnavailableBackend>();
+    auto *backendView = backend.get();
+    gx::TileRuntime runtime{
+        std::move(backend),
+        1,
+        gx::TileRuntimeOptions{
+            .batchOptimizer = {
+                .initialRasterBatchSize = 8
+            },
+            .rasterPixelsPerAxis = 1
+        }
+    };
+    const auto formula = gx::FormulaCompiler{}.compile("x < y");
+    REQUIRE(formula.diagnostics.ok);
+    const auto request = requestFor(formula);
+    runtime.setLatestRequest(request, formula);
+    runtime.setGpuPreviewAllowed(true);
+
+    auto job = tileJob(gx::JobKind::RasterizeRegion, 0);
+    job.textureMode = gx::TexturePreparationMode::GpuPreview;
+    job.dependencies.interval = true;
+    job.interval = Interval{-1.0, 1.0};
+
+    gx::TileCache cache;
+    REQUIRE(cache.apply(mixedNeedsRegionTransaction(request, job.key)).rejected == 0);
+    REQUIRE(cache.transition(job.key, request.formula.semanticsHash, gx::TileStage::RegionQueued));
+
+    runtime.submitJobs(std::array{job});
+    waitForRuntimeIdle(runtime);
+
+    std::unordered_map<uint64_t, gx::RegionOutput> regions;
+    const auto drained = runtime.drainCompleted(cache, regions, 1s);
+    CHECK(drained.rejected == 0);
+
+    CHECK(backendView->allowGpuHistory() == std::vector<bool>{true, false});
+
+    const auto *record = cache.find(job.key, request.formula.semanticsHash);
+    REQUIRE(record != nullptr);
+    REQUIRE(record->regionPixels.has_value());
+    CHECK(record->regionPixels->certainty == gx::TextureCertainty::Precise);
+    CHECK(record->existence == gx::TileExistenceState::Exists);
+}
+
+TEST_CASE("TileRuntime carries raster certainty into region references",
+          "[TileRuntime]")
+{
+    auto backend = std::make_unique<RecordingBackend>();
+    gx::TileRuntime runtime{
+        std::move(backend),
+        1,
+        gx::TileRuntimeOptions{
+            .batchOptimizer = {
+                .initialRasterBatchSize = 8
+            }
+        }
+    };
+    const auto formula = gx::FormulaCompiler{}.compile("x < y");
+    REQUIRE(formula.diagnostics.ok);
+    const auto request = requestFor(formula);
+    runtime.setLatestRequest(request, formula);
+
+    auto job = tileJob(gx::JobKind::RasterizeRegion, 0);
+    job.dependencies.interval = true;
+    job.interval = Interval{-1.0, 1.0};
+
+    gx::TileCache cache;
+    REQUIRE(cache.apply(mixedNeedsRegionTransaction(request, job.key)).rejected == 0);
+    REQUIRE(cache.transition(job.key, request.formula.semanticsHash, gx::TileStage::RegionQueued));
+
+    runtime.submitJobs(std::array{job});
+    waitForRuntimeIdle(runtime);
+    REQUIRE(runtime.inFlightCount() == 0);
+
+    std::unordered_map<uint64_t, gx::RegionOutput> regions;
+    const auto drained = runtime.drainCompleted(cache, regions, 1s);
+    CHECK(drained.rejected == 0);
+
+    const auto *record = cache.find(job.key, request.formula.semanticsHash);
+    REQUIRE(record != nullptr);
+    REQUIRE(record->regionPixels.has_value());
+    CHECK(record->regionPixels->certainty == gx::TextureCertainty::Precise);
+
+    const auto payloadIt = regions.find(record->regionPixels->id);
+    REQUIRE(payloadIt != regions.end());
+    CHECK(payloadIt->second.certainty == gx::TextureCertainty::Precise);
+}
+
+TEST_CASE("TileRuntime commits CPU refinement proof trees into TileCache",
+          "[TileRuntime]")
+{
+    gx::TileRuntime runtime{
+        std::make_unique<gx::CpuComputeBackend>(),
+        1,
+        gx::TileRuntimeOptions{
+            .batchOptimizer = {
+                .initialRasterBatchSize = 8
+            },
+            .rasterPixelsPerAxis = 1
+        }
+    };
+    const auto formula = gx::FormulaCompiler{}.compile("x > 0");
+    REQUIRE(formula.diagnostics.ok);
+    const auto request = requestFor(formula);
+    runtime.setLatestRequest(request, formula);
+
+    auto job = tileJob(gx::JobKind::RasterizeRegion, 0);
+    job.textureMode = gx::TexturePreparationMode::Refined;
+    job.dependencies.interval = true;
+    job.interval = Interval{0.0, 1.0};
+
+    gx::TileCache cache;
+    REQUIRE(cache.apply(mixedNeedsRegionTransaction(request, job.key, *job.interval)).rejected == 0);
+    REQUIRE(cache.transition(job.key, request.formula.semanticsHash, gx::TileStage::RegionQueued));
+
+    runtime.submitJobs(std::array{job});
+    waitForRuntimeIdle(runtime);
+
+    std::unordered_map<uint64_t, gx::RegionOutput> regions;
+    const auto drained = runtime.drainCompleted(cache, regions, 1s);
+    CHECK(drained.rejected == 0);
+
+    const auto *root = cache.find(job.key, request.formula.semanticsHash);
+    REQUIRE(root != nullptr);
+    REQUIRE(root->regionPixels.has_value());
+    CHECK(root->regionPixels->certainty == gx::TextureCertainty::Precise);
+    CHECK(root->existence == gx::TileExistenceState::Exists);
+
+    const auto *proofTree = cache.findProofTree(job.key, request.formula.semanticsHash);
+    REQUIRE(proofTree != nullptr);
+    CHECK(proofTree->rootKey == job.key);
+    CHECK(proofTree->existence == gx::TileExistenceState::Exists);
+    CHECK(proofTree->certainty == gx::TextureCertainty::Precise);
+    CHECK_FALSE(proofTree->nodes.empty());
+    CHECK(cache.proofNodeCountForFormula(request.formula.semanticsHash) == proofTree->nodes.size());
+
+    const auto firstChild = gx::TileKey{job.key.x * 2, job.key.y * 2, job.key.level - 1};
+    CHECK(cache.find(firstChild, request.formula.semanticsHash) == nullptr);
 }
 
 TEST_CASE("TileRuntime resets interval queued tiles after backend classification failure",

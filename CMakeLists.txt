@@ -51,6 +51,8 @@ add_library(GraphXplorerCompute
         src/Compute/BatchOptimizer.h
         src/Compute/ComputeBackend.h
         src/Compute/CpuComputeBackend.cpp
+        src/Compute/InequalityTileRefiner.cpp
+        src/Compute/InequalityTileRefiner.h
         src/Compute/OpenClComputeBackend.cpp
         src/Compute/TileJob.h
         src/Compute/TilePlanner.cpp

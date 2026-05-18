@@ -34,6 +34,7 @@ struct TileJob
     int priority{0};
     JobDependencyMask dependencies{};
     std::optional<Interval> interval{};
+    TexturePreparationMode textureMode{TexturePreparationMode::GpuPreview};
     bool operator==(const TileJob &) const = default;
 };
 

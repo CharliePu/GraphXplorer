@@ -775,6 +775,7 @@ public:
             output.key = batch.keys[index];
             output.width = pixelsPerAxis;
             output.height = pixelsPerAxis;
+            output.certainty = TextureCertainty::Imprecise;
             const auto offset = static_cast<size_t>(batch.outputOffsets[index]);
             output.pixels.assign(
                 outputPixels.begin() + static_cast<std::ptrdiff_t>(offset),
@@ -905,7 +906,7 @@ public:
                                  std::span<RegionOutput> out) override
     {
         const auto needsIntervalAwareRaster = batch.formula && requiresIntervalAwareRaster(*batch.formula);
-        if (batch.allowGpu && !needsIntervalAwareRaster)
+        if (batch.mode == TexturePreparationMode::GpuPreview && !needsIntervalAwareRaster)
         {
             refreshRasterizer();
         }
@@ -917,27 +918,46 @@ public:
             loggedOpenClReady = openClReady;
         }
 
-        const auto now = std::chrono::steady_clock::now();
-        const auto openClInCooldown = now < openClCooldownUntil;
-        auto cpuFallbackReason = std::string_view{"opencl-rejected"};
-        if (!batch.allowGpu)
+        if (batch.mode == TexturePreparationMode::Refined)
         {
-            cpuFallbackReason = "gpu-disabled";
-        }
-        else if (needsIntervalAwareRaster)
-        {
-            cpuFallbackReason = "interval-aware-formula";
-        }
-        else if (!rasterizer)
-        {
-            cpuFallbackReason = "opencl-unavailable";
-        }
-        else if (openClInCooldown)
-        {
-            cpuFallbackReason = "opencl-cooldown";
+            const auto cpuResult = cpu.rasterizeRegions(batch, out);
+            if (cpuResult.ok)
+            {
+                const auto stats = summarizeRasterOutputs(out, cpuResult.completed);
+                if (loggedRasterBatches < 80 || stats.zeroTiles == cpuResult.completed)
+                {
+                    PipelineLog::log(
+                        "compute.raster backend=cpu-refine batch=%zu completed=%zu pixels=%u zero=%zu full=%zu mixed=%zu formula=%llu firstTile=%s",
+                        batch.keys.size(),
+                        cpuResult.completed,
+                        batch.pixelsPerAxis,
+                        stats.zeroTiles,
+                        stats.fullTiles,
+                        stats.mixedTiles,
+                        batch.formula ? static_cast<unsigned long long>(batch.formula->handle.semanticsHash.value) : 0ull,
+                        batch.keys.empty() ? "(none)" : toDebugString(batch.keys.front()).c_str());
+                    ++loggedRasterBatches;
+                }
+            }
+            return cpuResult;
         }
 
-        if (rasterizer && !needsIntervalAwareRaster && !openClInCooldown)
+        const auto now = std::chrono::steady_clock::now();
+        const auto openClInCooldown = now < openClCooldownUntil;
+        if (needsIntervalAwareRaster)
+        {
+            return {false, 0, "GPU preview unavailable: interval-aware formula"};
+        }
+        if (!rasterizer)
+        {
+            return {false, 0, "GPU preview unavailable: opencl-unavailable"};
+        }
+        if (openClInCooldown)
+        {
+            return {false, 0, "GPU preview unavailable: opencl-cooldown"};
+        }
+
+        if (rasterizer)
         {
             const auto gpuResult = rasterizer->rasterize(batch, out);
             if (gpuResult.ok || gpuResult.message == "Invalid raster batch shape")
@@ -973,28 +993,9 @@ public:
                 gpuResult.message.c_str(),
                 batch.formula ? static_cast<unsigned long long>(batch.formula->handle.semanticsHash.value) : 0ull,
                 batch.keys.empty() ? "(none)" : toDebugString(batch.keys.front()).c_str());
+            return {false, gpuResult.completed, "GPU preview unavailable: " + gpuResult.message};
         }
-        const auto cpuResult = cpu.rasterizeRegions(batch, out);
-        if (cpuResult.ok)
-        {
-            const auto stats = summarizeRasterOutputs(out, cpuResult.completed);
-            if (loggedRasterBatches < 80 || stats.zeroTiles == cpuResult.completed)
-            {
-                PipelineLog::log(
-                    "compute.raster backend=cpu reason=%s batch=%zu completed=%zu pixels=%u zero=%zu full=%zu mixed=%zu formula=%llu firstTile=%s",
-                    cpuFallbackReason.data(),
-                    batch.keys.size(),
-                    cpuResult.completed,
-                    batch.pixelsPerAxis,
-                    stats.zeroTiles,
-                    stats.fullTiles,
-                    stats.mixedTiles,
-                    batch.formula ? static_cast<unsigned long long>(batch.formula->handle.semanticsHash.value) : 0ull,
-                    batch.keys.empty() ? "(none)" : toDebugString(batch.keys.front()).c_str());
-                ++loggedRasterBatches;
-            }
-        }
-        return cpuResult;
+        return {false, 0, "GPU preview unavailable: opencl-unavailable"};
     }
 
 private:

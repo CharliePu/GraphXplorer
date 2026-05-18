@@ -26,7 +26,7 @@ struct FrameBudgetControllerOptions
     size_t maxPendingCompletionsBeforeBackpressure{64};
     int refinementDepth{DefaultRefinementDepth};
     int maxRefinementDepth{8};
-    bool gpuRasterAllowed{true};
+    bool gpuPreviewAllowed{true};
 };
 
 struct FrameWorkBudget
@@ -38,7 +38,7 @@ struct FrameWorkBudget
     int maxSeedCells{4};
     int refinementDepth{DefaultRefinementDepth};
     bool submitTileJobs{true};
-    bool allowGpuRaster{true};
+    bool allowGpuPreview{true};
 };
 
 struct FrameBudgetFeedback

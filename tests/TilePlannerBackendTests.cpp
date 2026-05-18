@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <string>
 
 #include "../src/Compute/ComputeBackend.h"
 #include "../src/Compute/TilePlanner.h"
@@ -491,7 +492,7 @@ TEST_CASE("CpuComputeBackend classifies interval batches without renderer depend
     CHECK(out.front().classification == gx::TileClassification::Mixed);
 }
 
-TEST_CASE("CpuComputeBackend rasterizer stores binary any-hit subpixel results", "[ComputeBackend]")
+TEST_CASE("CpuComputeBackend proves subpixel existence when interval subdivision succeeds", "[ComputeBackend]")
 {
     const auto formula = gx::FormulaCompiler{}.compile("x<=y");
     REQUIRE(formula.diagnostics.ok);
@@ -512,9 +513,58 @@ TEST_CASE("CpuComputeBackend rasterizer stores binary any-hit subpixel results",
     REQUIRE(result.ok);
     REQUIRE(out.front().pixels.size() == 1);
     CHECK(static_cast<int>(out.front().pixels.front()) == 255);
+    CHECK(out.front().certainty == gx::TextureCertainty::Precise);
 }
 
-TEST_CASE("CpuComputeBackend rasterizer marks tan pole pixels unresolved", "[ComputeBackend]")
+TEST_CASE("CpuComputeBackend marks fully interval-proven raster output precise", "[ComputeBackend]")
+{
+    const auto formula = gx::FormulaCompiler{}.compile("x<2");
+    REQUIRE(formula.diagnostics.ok);
+
+    std::array keys{gx::TileKey{0, 0, 0}};
+    std::array xMin{0.0};
+    std::array xMax{1.0};
+    std::array yMin{0.0};
+    std::array yMax{1.0};
+    std::array offsets{uint32_t{0}};
+    std::array<gx::RegionOutput, 1> out{};
+
+    gx::CpuComputeBackend backend;
+    const auto result = backend.rasterizeRegions(
+        gx::RasterBatchView{&formula, keys, xMin, xMax, yMin, yMax, offsets, 1},
+        out);
+
+    REQUIRE(result.ok);
+    REQUIRE(out.front().pixels.size() == 1);
+    CHECK(static_cast<int>(out.front().pixels.front()) == 255);
+    CHECK(out.front().certainty == gx::TextureCertainty::Precise);
+}
+
+TEST_CASE("CpuComputeBackend proves threshold pixels precise through subpixel refinement", "[ComputeBackend]")
+{
+    const auto formula = gx::FormulaCompiler{}.compile("x>4");
+    REQUIRE(formula.diagnostics.ok);
+
+    std::array keys{gx::TileKey{0, 0, 0}};
+    std::array xMin{3.0};
+    std::array xMax{5.0};
+    std::array yMin{0.0};
+    std::array yMax{1.0};
+    std::array offsets{uint32_t{0}};
+    std::array<gx::RegionOutput, 1> out{};
+
+    gx::CpuComputeBackend backend;
+    const auto result = backend.rasterizeRegions(
+        gx::RasterBatchView{&formula, keys, xMin, xMax, yMin, yMax, offsets, 1},
+        out);
+
+    REQUIRE(result.ok);
+    REQUIRE(out.front().pixels.size() == 1);
+    CHECK(static_cast<int>(out.front().pixels.front()) == 255);
+    CHECK(out.front().certainty == gx::TextureCertainty::Precise);
+}
+
+TEST_CASE("CpuComputeBackend rasterizer proves inequality pixels across tan poles", "[ComputeBackend]")
 {
     const auto formula = gx::FormulaCompiler{}.compile("y<=tan(x*y)");
     REQUIRE(formula.diagnostics.ok);
@@ -534,10 +584,11 @@ TEST_CASE("CpuComputeBackend rasterizer marks tan pole pixels unresolved", "[Com
 
     REQUIRE(result.ok);
     REQUIRE(out.front().pixels.size() == 1);
-    CHECK(out.front().pixels.front() == 127);
+    CHECK(static_cast<int>(out.front().pixels.front()) == 255);
+    CHECK(out.front().certainty == gx::TextureCertainty::Precise);
 }
 
-TEST_CASE("Default ComputeBackend keeps CPU fallback for interval-aware formulas",
+TEST_CASE("Default ComputeBackend does not CPU-render GPU preview fallback",
           "[ComputeBackend]")
 {
     auto backend = gx::makeDefaultComputeBackend();
@@ -557,9 +608,69 @@ TEST_CASE("Default ComputeBackend keeps CPU fallback for interval-aware formulas
         gx::RasterBatchView{&formula, keys, xMin, xMax, yMin, yMax, offsets, 1},
         out);
 
+    CHECK_FALSE(result.ok);
+    CHECK(result.completed == 0);
+    CHECK(result.message.find("GPU preview unavailable") != std::string::npos);
+}
+
+TEST_CASE("Default ComputeBackend runs CPU refinement only when GPU is disabled",
+          "[ComputeBackend]")
+{
+    auto backend = gx::makeDefaultComputeBackend();
+    REQUIRE(backend);
+
+    const auto formula = gx::FormulaCompiler{}.compile("y<=tan(x*y)");
+    REQUIRE(formula.diagnostics.ok);
+    std::array keys{gx::TileKey{0, 0, 0}};
+    std::array xMin{1.5};
+    std::array xMax{1.6};
+    std::array yMin{1.0};
+    std::array yMax{1.0};
+    std::array offsets{uint32_t{0}};
+    std::array<gx::RegionOutput, 1> out{};
+
+    const auto result = backend->rasterizeRegions(
+        gx::RasterBatchView{
+            &formula,
+            keys,
+            xMin,
+            xMax,
+            yMin,
+            yMax,
+            offsets,
+            1,
+            gx::TexturePreparationMode::Refined
+        },
+        out);
+
     REQUIRE(result.ok);
     REQUIRE(out.front().pixels.size() == 1);
-    CHECK(out.front().pixels.front() == 127);
+    CHECK(static_cast<int>(out.front().pixels.front()) == 255);
+    CHECK(out.front().certainty == gx::TextureCertainty::Precise);
+}
+
+TEST_CASE("CpuComputeBackend marks exhausted inequality pixels best-estimate", "[ComputeBackend]")
+{
+    const auto formula = gx::FormulaCompiler{}.compile("y<log(x)");
+    REQUIRE(formula.diagnostics.ok);
+
+    std::array keys{gx::TileKey{0, 0, 0}};
+    std::array xMin{-2.0};
+    std::array xMax{-1.0};
+    std::array yMin{0.0};
+    std::array yMax{1.0};
+    std::array offsets{uint32_t{0}};
+    std::array<gx::RegionOutput, 1> out{};
+
+    gx::CpuComputeBackend backend;
+    const auto result = backend.rasterizeRegions(
+        gx::RasterBatchView{&formula, keys, xMin, xMax, yMin, yMax, offsets, 1},
+        out);
+
+    REQUIRE(result.ok);
+    REQUIRE(out.front().pixels.size() == 1);
+    CHECK(static_cast<int>(out.front().pixels.front()) == 127);
+    CHECK(out.front().certainty == gx::TextureCertainty::BestEstimate);
 }
 
 TEST_CASE("Default ComputeBackend rasterizes through the preferred backend with CPU-equivalent output",
@@ -589,10 +700,30 @@ TEST_CASE("Default ComputeBackend rasterizes through the preferred backend with 
         gx::CpuComputeBackend cpu;
 
         const auto preferredResult = preferred->rasterizeRegions(
-            gx::RasterBatchView{&formula, keys, xMin, xMax, yMin, yMax, offsets, pixelsPerAxis},
+            gx::RasterBatchView{
+                &formula,
+                keys,
+                xMin,
+                xMax,
+                yMin,
+                yMax,
+                offsets,
+                pixelsPerAxis,
+                gx::TexturePreparationMode::Refined
+            },
             preferredOut);
         const auto cpuResult = cpu.rasterizeRegions(
-            gx::RasterBatchView{&formula, keys, xMin, xMax, yMin, yMax, offsets, pixelsPerAxis},
+            gx::RasterBatchView{
+                &formula,
+                keys,
+                xMin,
+                xMax,
+                yMin,
+                yMax,
+                offsets,
+                pixelsPerAxis,
+                gx::TexturePreparationMode::Refined
+            },
             cpuOut);
 
         REQUIRE(preferredResult.ok);

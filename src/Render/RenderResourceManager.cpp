@@ -61,6 +61,7 @@ out vec4 vColor;
 out vec2 vUv;
 flat out int vMode;
 flat out int vSlice;
+flat out int vCertainty;
 
 void main()
 {
@@ -71,6 +72,7 @@ void main()
     vUv = mix(iUvRect.xy, iUvRect.zw, aCorner);
     vMode = int(iMeta.x + 0.5);
     vSlice = int(iMeta.y + 0.5);
+    vCertainty = int(iMeta.z + 0.5);
 }
 )GLSL";
 
@@ -80,6 +82,7 @@ in vec4 vColor;
 in vec2 vUv;
 flat in int vMode;
 flat in int vSlice;
+flat in int vCertainty;
 out vec4 FragColor;
 
 uniform sampler2DArray uRegionTexture;
@@ -94,6 +97,26 @@ void main()
         if (edgeDistance >= borderWidth)
         {
             discard;
+        }
+        if (vMode == 7 && vCertainty != 0)
+        {
+            bool horizontal = min(vUv.y, 1.0 - vUv.y) < min(vUv.x, 1.0 - vUv.x);
+            float along = horizontal ? vUv.x : vUv.y;
+            if (vCertainty == 1)
+            {
+                if (fract(along / 0.055) > 0.34)
+                {
+                    discard;
+                }
+            }
+            else
+            {
+                float phase = fract(along / 0.16);
+                if (!(phase < 0.46 || (phase > 0.66 && phase < 0.78)))
+                {
+                    discard;
+                }
+            }
         }
         FragColor = vec4(vColor.rgb, 1.0);
         return;
@@ -384,7 +407,7 @@ void RenderResourceManager::setPlotInstances(std::vector<RenderTileInstance> ins
         plotInstanceFloats.push_back(hasRegionSlice
             ? static_cast<float>(instance.regionSlice.slice)
             : -1.0f);
-        plotInstanceFloats.push_back(0.0f);
+        plotInstanceFloats.push_back(static_cast<float>(static_cast<int>(instance.certainty)));
         plotInstanceFloats.push_back(0.0f);
         plotInstanceFloats.insert(plotInstanceFloats.end(), instance.uvRect.begin(), instance.uvRect.end());
     }
@@ -408,7 +431,7 @@ void RenderResourceManager::setDebugPlotInstances(std::vector<RenderTileInstance
         debugPlotInstanceFloats.insert(debugPlotInstanceFloats.end(), color.begin(), color.end());
         debugPlotInstanceFloats.push_back(static_cast<float>(static_cast<int>(instance.visualState)));
         debugPlotInstanceFloats.push_back(-1.0f);
-        debugPlotInstanceFloats.push_back(0.0f);
+        debugPlotInstanceFloats.push_back(static_cast<float>(static_cast<int>(instance.certainty)));
         debugPlotInstanceFloats.push_back(0.0f);
         debugPlotInstanceFloats.insert(debugPlotInstanceFloats.end(), instance.uvRect.begin(), instance.uvRect.end());
     }

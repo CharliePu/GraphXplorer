@@ -29,6 +29,8 @@ struct TileRuntimeDrainResult
 {
     size_t applied{0};
     size_t rejected{0};
+    size_t proofTreesApplied{0};
+    size_t proofTreesRejected{0};
     std::vector<TileTransaction> transactions{};
 };
 
@@ -53,7 +55,7 @@ public:
 
     void setLatestRequest(const ViewportRequest &request,
                           const CompiledFormula &formula);
-    void setGpuRasterAllowed(bool allowed);
+    void setGpuPreviewAllowed(bool allowed);
     void setCompletionCallback(CompletionCallback callback);
     void submitJobs(std::span<const TileJob> jobs);
     [[nodiscard]] TileRuntimeDrainResult drainCompleted(
@@ -73,6 +75,7 @@ private:
     {
         std::vector<TileTransaction> transactions{};
         std::vector<std::pair<uint64_t, RegionOutput>> regions{};
+        std::vector<TileProofTreePatch> proofTrees{};
     };
 
     struct WorkKey
@@ -80,6 +83,7 @@ private:
         TileKey tile{};
         FormulaSemanticsHash semanticsHash{};
         JobKind kind{JobKind::ClassifyInterval};
+        TexturePreparationMode textureMode{TexturePreparationMode::GpuPreview};
 
         bool operator==(const WorkKey &) const = default;
     };
@@ -93,19 +97,22 @@ private:
                       const CompiledFormula &formula,
                       JobKind kind,
                       std::vector<TileJob> jobs,
-                      uint32_t rasterPixelsPerAxis = 0);
+                      uint32_t rasterPixelsPerAxis = 0,
+                      TexturePreparationMode textureMode = TexturePreparationMode::GpuPreview);
     void enqueueBatches(const ViewportRequest &request,
                         const CompiledFormula &formula,
                         JobKind kind,
                         std::vector<TileJob> jobs,
-                        uint32_t rasterPixelsPerAxis = 0);
+                        uint32_t rasterPixelsPerAxis = 0,
+                        TexturePreparationMode textureMode = TexturePreparationMode::GpuPreview);
     [[nodiscard]] TileWorkResult classifyTiles(const ViewportRequest &request,
                                                const CompiledFormula &formula,
                                                std::span<const TileJob> jobs);
     [[nodiscard]] TileWorkResult rasterizeTiles(const ViewportRequest &request,
                                                 const CompiledFormula &formula,
                                                 std::span<const TileJob> jobs,
-                                                uint32_t pixelsPerAxis);
+                                                uint32_t pixelsPerAxis,
+                                                TexturePreparationMode textureMode);
     [[nodiscard]] static TileWorkResult recoveryWork(const ViewportRequest &request,
                                                      JobKind kind,
                                                      std::span<const TileJob> jobs);
@@ -133,7 +140,7 @@ private:
     std::optional<CompiledFormula> latestFormula{};
     std::atomic<uint64_t> latestSemanticsHash{0};
     std::atomic<uint64_t> nextRegionPayloadId{1};
-    std::atomic<bool> gpuRasterAllowed{true};
+    std::atomic<bool> gpuPreviewAllowed{true};
     AsyncFrameInbox<TileWorkResult> completed{
         {AsyncFrameInbox<TileWorkResult>::Mode::HandleN, 8}
     };

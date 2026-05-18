@@ -36,6 +36,7 @@ struct PlannerCandidate
     PlannerCandidateKind kind{PlannerCandidateKind::ClassifyInterval};
     TileKey key{};
     int priority{0};
+    TexturePreparationMode textureMode{TexturePreparationMode::GpuPreview};
 };
 
 struct CandidateIdentity
@@ -388,6 +389,17 @@ private:
                     .priority = priorityFor(request, key)
                 });
             }
+            else if (record->workState == TileWorkState::RegionReady
+                     && record->regionPixels
+                     && record->regionPixels->certainty == TextureCertainty::Imprecise)
+            {
+                out.push_back({
+                    .kind = PlannerCandidateKind::RasterizeRegion,
+                    .key = key,
+                    .priority = priorityFor(request, key),
+                    .textureMode = TexturePreparationMode::Refined
+                });
+            }
             return;
         }
 
@@ -564,8 +576,17 @@ void commitRasterCandidate(TilePlan &plan,
 
     const auto *record = tileCache.find(candidate.key, request.formula.semanticsHash);
     if (!record
-        || record->valueState != TileValueState::Mixed
-        || record->workState != TileWorkState::Idle)
+        || record->valueState != TileValueState::Mixed)
+    {
+        return;
+    }
+    const auto canStartPreview = record->workState == TileWorkState::Idle
+        && candidate.textureMode == TexturePreparationMode::GpuPreview;
+    const auto canStartProof = record->workState == TileWorkState::RegionReady
+        && candidate.textureMode == TexturePreparationMode::Refined
+        && record->regionPixels
+        && record->regionPixels->certainty == TextureCertainty::Imprecise;
+    if (!canStartPreview && !canStartProof)
     {
         return;
     }
@@ -583,7 +604,8 @@ void commitRasterCandidate(TilePlan &plan,
         .key = candidate.key,
         .priority = candidate.priority,
         .dependencies = {.interval = true},
-        .interval = interval
+        .interval = interval,
+        .textureMode = candidate.textureMode
     });
 }
 

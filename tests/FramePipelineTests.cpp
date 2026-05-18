@@ -162,6 +162,87 @@ private:
 
     std::atomic<bool> &release;
 };
+
+class FixedFrameBudgetPolicy final : public gx::FrameBudgetPolicy
+{
+public:
+    explicit FixedFrameBudgetPolicy(gx::FrameWorkBudget nextBudget): budget{nextBudget}
+    {
+    }
+
+    [[nodiscard]] gx::FrameWorkBudget beginFrame(const gx::FrameBudgetContext &context) override
+    {
+        lastContext = context;
+        ++beginCalls;
+        return budget;
+    }
+
+    void endFrame(const gx::FrameBudgetFeedback &feedback) override
+    {
+        lastFeedback = feedback;
+        ++endCalls;
+    }
+
+    gx::FrameWorkBudget budget{};
+    gx::FrameBudgetContext lastContext{};
+    gx::FrameBudgetFeedback lastFeedback{};
+    int beginCalls{0};
+    int endCalls{0};
+};
+}
+
+TEST_CASE("FramePipeline delegates tunable budgets to an injected policy",
+          "[FramePipeline][Responsiveness]")
+{
+    std::atomic<bool> releaseBackend{true};
+    auto backend = std::make_unique<BlockingBackend>(releaseBackend);
+    auto policy = std::make_unique<FixedFrameBudgetPolicy>(gx::FrameWorkBudget{
+        .completedTileApplyBudget = 500us,
+        .tilePlan = {
+            .maxIntervalJobsPerFrame = 0,
+            .maxRasterJobsPerFrame = 0
+        },
+        .upload = {
+            .maxTextureBytesPerFrame = 0,
+            .maxBufferBytesPerFrame = 0,
+            .maxTextureSlicesPerFrame = 0,
+            .maxTileInstanceUpdatesPerFrame = 0
+        },
+        .renderUpload = {
+            .maxTextureBytesPerFrame = 1234,
+            .maxBufferBytesPerFrame = 5678,
+            .maxTextureSlicesPerFrame = 3,
+            .maxTileInstanceUpdatesPerFrame = 9
+        },
+        .maxSeedCells = 1,
+        .refinementDepth = 1,
+        .submitTileJobs = false,
+        .allowGpuRaster = false
+    });
+    auto *policyView = policy.get();
+    gx::FramePipeline pipeline{std::move(backend), gx::FramePipelineOptions{}, std::move(policy)};
+
+    [[maybe_unused]] const auto snapshot = pipeline.process(gx::ViewportChangedEvent{
+        .xRange = Interval{-2.0, 2.0},
+        .yRange = Interval{-2.0, 2.0},
+        .framebufferWidth = 512,
+        .framebufferHeight = 512,
+        .devicePixelRatio = 2.0
+    });
+
+    CHECK(policyView->beginCalls == 1);
+    CHECK(policyView->endCalls == 1);
+    REQUIRE(policyView->lastContext.framebuffer.has_value());
+    CHECK(policyView->lastContext.framebuffer->framebufferWidth == 512);
+    CHECK(policyView->lastContext.framebuffer->framebufferHeight == 512);
+    CHECK(policyView->lastContext.framebuffer->devicePixelRatio == 2.0);
+    CHECK(policyView->lastContext.pendingCompletions == 0);
+    CHECK(policyView->lastContext.inFlightJobs == 0);
+    CHECK(policyView->lastFeedback.submittedJobs == 0);
+    CHECK(pipeline.renderUploadBudget().maxTextureBytesPerFrame == 1234);
+    CHECK(pipeline.renderUploadBudget().maxBufferBytesPerFrame == 5678);
+    CHECK(pipeline.renderUploadBudget().maxTextureSlicesPerFrame == 3);
+    CHECK(pipeline.renderUploadBudget().maxTileInstanceUpdatesPerFrame == 9);
 }
 
 TEST_CASE("FramePipeline drives contract-first flow from input event to frame snapshot", "[FramePipeline]")

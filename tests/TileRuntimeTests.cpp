@@ -150,6 +150,55 @@ public:
     }
 };
 
+class FixedBatchPolicy final : public gx::BackendBatchPolicy
+{
+public:
+    explicit FixedBatchPolicy(const size_t nextBatchSize): batchSize{nextBatchSize}
+    {
+    }
+
+    [[nodiscard]] size_t choose(const gx::JobKind kind,
+                                const size_t remainingJobs,
+                                const uint32_t pixelsPerAxis = 0) override
+    {
+        (void)kind;
+        (void)pixelsPerAxis;
+        std::lock_guard lock(mutex);
+        ++chooseCalls;
+        return std::min(batchSize, remainingJobs);
+    }
+
+    void observe(const gx::JobKind kind,
+                 const size_t observedBatchSize,
+                 const std::chrono::microseconds latency,
+                 const uint32_t pixelsPerAxis = 0) override
+    {
+        (void)kind;
+        (void)latency;
+        (void)pixelsPerAxis;
+        std::lock_guard lock(mutex);
+        observedBatchSizes.push_back(observedBatchSize);
+    }
+
+    [[nodiscard]] size_t choices() const
+    {
+        std::lock_guard lock(mutex);
+        return chooseCalls;
+    }
+
+    [[nodiscard]] std::vector<size_t> observations() const
+    {
+        std::lock_guard lock(mutex);
+        return observedBatchSizes;
+    }
+
+private:
+    size_t batchSize{1};
+    mutable std::mutex mutex;
+    size_t chooseCalls{0};
+    std::vector<size_t> observedBatchSizes;
+};
+
 gx::ViewportRequest requestFor(const gx::CompiledFormula &formula)
 {
     return {
@@ -213,6 +262,31 @@ void waitForRuntimeIdle(gx::TileRuntime &runtime)
         std::this_thread::sleep_for(1ms);
     }
 }
+}
+
+TEST_CASE("TileRuntime delegates batch-size decisions to an injected policy",
+          "[TileRuntime][Responsiveness]")
+{
+    auto backend = std::make_unique<RecordingBackend>();
+    auto *backendView = backend.get();
+    auto policy = std::make_unique<FixedBatchPolicy>(2);
+    auto *policyView = policy.get();
+    gx::TileRuntime runtime{std::move(backend), 1, gx::TileRuntimeOptions{}, std::move(policy)};
+    const auto formula = gx::FormulaCompiler{}.compile("x < y");
+    REQUIRE(formula.diagnostics.ok);
+    runtime.setLatestRequest(requestFor(formula), formula);
+
+    std::vector<gx::TileJob> jobs;
+    for (auto index = int64_t{0}; index < 5; ++index)
+    {
+        jobs.push_back(tileJob(gx::JobKind::ClassifyInterval, index));
+    }
+    runtime.submitJobs(jobs);
+    waitForRuntimeIdle(runtime);
+
+    CHECK(backendView->classifySizes() == std::vector<size_t>{2, 2, 1});
+    CHECK(policyView->choices() == 3);
+    CHECK(policyView->observations() == std::vector<size_t>{2, 2, 1});
 }
 
 TEST_CASE("TileRuntime splits backend work into bounded sub-batches", "[TileRuntime][Responsiveness]")

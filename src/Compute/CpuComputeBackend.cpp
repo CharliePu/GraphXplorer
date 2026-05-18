@@ -3,10 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <memory>
-
-#include "../Util/PerformanceProfiler.h"
-#include "../Util/PipelineLog.h"
 
 namespace gx
 {
@@ -239,10 +235,4 @@ BatchResult CpuComputeBackend::rasterizeRegions(const RasterBatchView &batch, st
     return {true, batch.keys.size(), {}};
 }
 
-std::unique_ptr<ComputeBackend> makeDefaultComputeBackend()
-{
-    GRAPHX_PROFILE_SCOPE("compute.makeDefaultBackend");
-    PipelineLog::log("compute.backend mode=cpu-only opencl=0");
-    return std::make_unique<CpuComputeBackend>();
-}
 }

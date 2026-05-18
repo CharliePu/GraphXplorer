@@ -94,8 +94,8 @@ std::array<std::string, 7> debugOverlayLines(const gx::FramePipelineDebugStats &
             + " missing:" + std::to_string(stats.missingTiles),
         "fallback:" + std::to_string(stats.fallbackTiles)
             + " clipped:" + std::to_string(stats.clippedFallbackTiles),
-        std::string{"budget:"} + (stats.interactiveBudget ? "interactive" : "steady")
-            + " depth:" + std::to_string(stats.refinementDepth),
+        std::string{"budget:adaptive depth:"} + std::to_string(stats.refinementDepth)
+            + " gpu:" + (stats.allowGpuRaster ? "on" : "off"),
         "processing:" + std::to_string(processingTiles)
             + " running:" + std::to_string(stats.inFlightJobs)
             + " done:" + std::to_string(stats.completedJobs),
@@ -248,11 +248,17 @@ std::string FramePipelineCounters::toDebugString() const
 }
 
 FramePipeline::FramePipeline(std::unique_ptr<ComputeBackend> backend,
-                             FramePipelineOptions nextOptions)
-    : tileRuntime{std::move(backend), 0, nextOptions.tileRuntime},
-      frameBudgetController{nextOptions.frameBudget},
+                             FramePipelineOptions nextOptions,
+                             std::unique_ptr<FrameBudgetPolicy> nextFrameBudgetPolicy,
+                             std::unique_ptr<BackendBatchPolicy> nextBatchPolicy)
+    : tileRuntime{std::move(backend), 0, nextOptions.tileRuntime, std::move(nextBatchPolicy)},
+      frameBudgetPolicy{std::move(nextFrameBudgetPolicy)},
       options{nextOptions}
 {
+    if (!frameBudgetPolicy)
+    {
+        frameBudgetPolicy = std::make_unique<FrameBudgetController>(options.frameBudget);
+    }
     compiledFormula = formulaCompiler.compile(appState.formulaExpression);
     if (compiledFormula && compiledFormula->diagnostics.ok)
     {
@@ -333,13 +339,18 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
     }
     const auto pendingBeforeDrain = tileRuntime.pendingCompletionCount();
     const auto inFlightBeforeDrain = tileRuntime.inFlightCount();
-    const auto frameBudget = frameBudgetController.beginFrame(
-        effectiveEvent,
-        diff,
-        pendingBeforeDrain,
-        inFlightBeforeDrain);
+    const auto frameBudget = frameBudgetPolicy->beginFrame(FrameBudgetContext{
+        .formulaChanged = diff.formulaChanged,
+        .framebuffer = FramebufferBudgetSignature{
+            .framebufferWidth = request.framebufferWidth,
+            .framebufferHeight = request.framebufferHeight,
+            .devicePixelRatio = request.devicePixelRatio
+        },
+        .pendingCompletions = pendingBeforeDrain,
+        .inFlightJobs = inFlightBeforeDrain
+    });
     latestFrameBudget = frameBudget;
-    tileRuntime.setGpuRasterAllowed(!frameBudget.interactive);
+    tileRuntime.setGpuRasterAllowed(frameBudget.allowGpuRaster);
     TileRuntimeDrainResult drainResult;
     {
         GRAPHX_PROFILE_SCOPE("pipeline.drainCompleted");
@@ -434,9 +445,14 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
             tileCache,
             previousFrame,
             frameBudget.maxSeedCells,
-            frameBudget.refinementDepth);
+            frameBudget.refinementDepth,
+            [this](const RegionImageRef &ref)
+            {
+                return resources.findRegionImage(ref).textureId != 0;
+            });
     }
     snapshot.displayTiles = std::move(visualFrame.tiles);
+    auto preloadTiles = std::move(visualFrame.preloadTiles);
     snapshot.visibleCover.reserve(snapshot.displayTiles.size());
     std::vector<RegionImageRef> visibleRegions;
     visibleRegions.reserve(snapshot.displayTiles.size());
@@ -450,7 +466,7 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
         .stuckRegionTiles = tileDebugCounts.stuckRegionQueued,
         .submittedJobs = frameBudget.submitTileJobs ? tilePlan.jobs.size() : 0,
         .refinementDepth = frameBudget.refinementDepth,
-        .interactiveBudget = frameBudget.interactive
+        .allowGpuRaster = frameBudget.allowGpuRaster
     };
     for (auto &tile : snapshot.displayTiles)
     {
@@ -495,7 +511,7 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
             || drainResult.rejected > 0))
     {
         PipelineLog::log(
-            "frame=%llu view=[%.3f,%.3f]x[%.3f,%.3f] root=%d seed=%d leaf=%d depth=%d interactive=%d "
+            "frame=%llu view=[%.3f,%.3f]x[%.3f,%.3f] root=%d seed=%d leaf=%d depth=%d gpu=%d "
             "tiles=%zu plot=%zu uniform=%zu mixed=%zu missing=%zu fallback=%zu clipped=%zu "
             "inFlight=%zu completed=%zu queuedI=%zu queuedR=%zu stuckI=%zu stuckR=%zu jobs=%zu applied=%zu rejected=%zu",
             static_cast<unsigned long long>(frameId),
@@ -507,7 +523,7 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
             seedTileLevelForViewport(request, frameBudget.maxSeedCells),
             leafTileLevel(request, frameBudget.maxSeedCells, frameBudget.refinementDepth),
             frameBudget.refinementDepth,
-            frameBudget.interactive ? 1 : 0,
+            frameBudget.allowGpuRaster ? 1 : 0,
             debugStats.displayTiles,
             debugStats.plotTiles,
             debugStats.uniformTiles,
@@ -531,13 +547,15 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
     }
     {
         GRAPHX_PROFILE_SCOPE("pipeline.uploadPlan");
-        snapshot.uploadPlan = uploadPlanner.planVisible(snapshot.displayTiles, frameBudget.upload);
+        auto uploadCandidates = snapshot.displayTiles;
+        uploadCandidates.insert(uploadCandidates.end(), preloadTiles.begin(), preloadTiles.end());
+        snapshot.uploadPlan = uploadPlanner.planVisible(uploadCandidates, frameBudget.upload);
     }
 
     FrameCommandBuffer commands;
     {
         GRAPHX_PROFILE_SCOPE("pipeline.buildCommands");
-        commands = buildCommands(snapshot.displayTiles, request, snapshot.uploadPlan);
+        commands = buildCommands(snapshot.displayTiles, preloadTiles, request, snapshot.uploadPlan);
     }
     snapshot.drawCommands.assign(commands.commands().begin(), commands.commands().end());
     pipelineCounters.drawCommandsBuilt += snapshot.drawCommands.size();
@@ -566,13 +584,11 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
         };
     }
 
-    frameBudgetController.endFrame(FrameBudgetFeedback{
+    frameBudgetPolicy->endFrame(FrameBudgetFeedback{
         .pipelineLatency = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - frameStart),
         .pendingCompletions = tileRuntime.pendingCompletionCount(),
-        .submittedJobs = tilePlan.jobs.size(),
-        .displayTiles = debugStats.displayTiles,
-        .missingTiles = debugStats.missingTiles
+        .submittedJobs = tilePlan.jobs.size()
     });
 
     return snapshot;
@@ -635,11 +651,29 @@ ViewportRequest FramePipeline::makeViewportRequest(const StateDiff &diff) const
 }
 
 FrameCommandBuffer FramePipeline::buildCommands(std::vector<DisplayTile> &displayTiles,
+                                                const std::span<const DisplayTile> preloadTiles,
                                                 const ViewportRequest &request,
                                                 const UploadPlan &uploadPlan)
 {
     resources.setPlotViewport(request.xRange, request.yRange);
     resources.setGridState(request.xRange, request.yRange, request.framebufferWidth, request.framebufferHeight);
+
+    const auto registerUploadCandidate = [&](const DisplayTile &tile)
+    {
+        if (!tile.cpuRegion || !containsTileKey(uploadPlan.textureUploads, tile.sourceKey))
+        {
+            return;
+        }
+        if (const auto payloadIt = regionPayloads.find(tile.cpuRegion->id);
+            payloadIt != regionPayloads.end())
+        {
+            (void)resources.registerRegionImage(*tile.cpuRegion, payloadIt->second.pixels);
+        }
+    };
+    for (const auto &tile : preloadTiles)
+    {
+        registerUploadCandidate(tile);
+    }
 
     std::vector<RenderTileInstance> instances;
     instances.reserve(displayTiles.size());
@@ -653,13 +687,9 @@ FrameCommandBuffer FramePipeline::buildCommands(std::vector<DisplayTile> &displa
             if (regionSlice.textureId == 0
                 && containsTileKey(uploadPlan.textureUploads, tile.sourceKey))
             {
-                if (const auto payloadIt = regionPayloads.find(tile.cpuRegion->id);
-                    payloadIt != regionPayloads.end())
-                {
-                    (void)resources.registerRegionImage(*tile.cpuRegion, payloadIt->second.pixels);
-                    regionSlice = resources.findRegionImage(*tile.cpuRegion);
-                    tile.gpuSlice = regionSlice;
-                }
+                registerUploadCandidate(tile);
+                regionSlice = resources.findRegionImage(*tile.cpuRegion);
+                tile.gpuSlice = regionSlice;
             }
         }
 
@@ -698,7 +728,7 @@ FrameCommandBuffer FramePipeline::buildCommands(std::vector<DisplayTile> &displa
         .material = resources.gridMaterial(),
         .sortKey = 10
     });
-    if (plotInstanceCount > 0)
+    if (plotInstanceCount > 0 || !uploadPlan.textureUploads.empty())
     {
         buffer.add({
             .layer = RenderLayer::Plot,

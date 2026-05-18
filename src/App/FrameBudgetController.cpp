@@ -44,26 +44,20 @@ namespace
 
 FrameBudgetController::FrameBudgetController(FrameBudgetControllerOptions nextOptions)
     : options{nextOptions},
-      applyBudget{nextOptions.steadyApplyBudget}
+      applyBudget{nextOptions.initialApplyBudget}
 {
     options.targetPipelineLatency = std::max(options.targetPipelineLatency, std::chrono::microseconds{1});
-    options.interactionHold = std::max(options.interactionHold, std::chrono::microseconds{0});
     options.minApplyBudget = std::max(options.minApplyBudget, std::chrono::microseconds{1});
     options.maxApplyBudget = std::max(options.maxApplyBudget, options.minApplyBudget);
-    options.steadyApplyBudget = clampDuration(options.steadyApplyBudget, options.minApplyBudget, options.maxApplyBudget);
-    options.interactiveApplyBudget = clampDuration(
-        options.interactiveApplyBudget,
-        options.minApplyBudget,
-        options.maxApplyBudget);
-    options.steadyMaxSeedCells = std::max(1, options.steadyMaxSeedCells);
-    options.interactiveMaxSeedCells = std::max(1, options.interactiveMaxSeedCells);
-    options.steadyMaxInFlightJobs = std::max<size_t>(1, options.steadyMaxInFlightJobs);
-    options.interactiveMaxInFlightJobs = std::max<size_t>(1, options.interactiveMaxInFlightJobs);
+    options.initialApplyBudget =
+        clampDuration(options.initialApplyBudget, options.minApplyBudget, options.maxApplyBudget);
+    options.maxSeedCells = std::max(1, options.maxSeedCells);
+    options.maxInFlightJobs = std::max<size_t>(1, options.maxInFlightJobs);
     options.maxPendingCompletionsBeforeBackpressure =
         std::max<size_t>(1, options.maxPendingCompletionsBeforeBackpressure);
     options.maxRefinementDepth = std::max(0, options.maxRefinementDepth);
     options.refinementDepth = std::clamp(options.refinementDepth, 0, options.maxRefinementDepth);
-    applyBudget = options.steadyApplyBudget;
+    applyBudget = options.initialApplyBudget;
     refinementDepth = options.refinementDepth;
 }
 
@@ -72,31 +66,36 @@ FrameWorkBudget FrameBudgetController::beginFrame(const InputEvent &event,
                                                   const size_t pendingCompletions,
                                                   const size_t inFlightJobs)
 {
-    const auto now = std::chrono::steady_clock::now();
-    if (diff.viewportChanged || std::holds_alternative<ViewportChangedEvent>(event))
-    {
-        lastInteraction = now;
-    }
-
-    auto framebufferChanged = false;
+    auto context = FrameBudgetContext{
+        .formulaChanged = diff.formulaChanged,
+        .pendingCompletions = pendingCompletions,
+        .inFlightJobs = inFlightJobs
+    };
     if (const auto *viewport = std::get_if<ViewportChangedEvent>(&event))
     {
-        const auto signature = signatureForViewport(*viewport);
+        context.framebuffer = signatureForViewport(*viewport);
+    }
+
+    return beginFrame(context);
+}
+
+FrameWorkBudget FrameBudgetController::beginFrame(const FrameBudgetContext &context)
+{
+    auto framebufferChanged = false;
+    if (context.framebuffer)
+    {
         framebufferChanged = !hasFramebufferSignature
-            || !sameFramebufferSignature(framebufferSignature, signature);
-        framebufferSignature = signature;
+            || !sameFramebufferSignature(framebufferSignature, *context.framebuffer);
+        framebufferSignature = *context.framebuffer;
         hasFramebufferSignature = true;
     }
 
-    if (diff.formulaChanged || framebufferChanged)
+    if (context.formulaChanged || framebufferChanged)
     {
         resetTopologyPolicy();
-        holdInteractiveBudgetsUntilPresentable = false;
     }
 
-    const auto interactive = recentlyInteractive(now) || holdInteractiveBudgetsUntilPresentable;
-    lastFrameInteractive = interactive;
-    return budgetForMode(interactive, pendingCompletions, inFlightJobs);
+    return budgetForFrame(context.pendingCompletions, context.inFlightJobs);
 }
 
 void FrameBudgetController::endFrame(const FrameBudgetFeedback &feedback)
@@ -104,16 +103,6 @@ void FrameBudgetController::endFrame(const FrameBudgetFeedback &feedback)
     const auto highLatency = feedback.pipelineLatency > options.targetPipelineLatency;
     const auto lowLatency = feedback.pipelineLatency < options.targetPipelineLatency * 3 / 5;
     const auto hasBacklog = feedback.pendingCompletions > 0 || feedback.submittedJobs > 0;
-
-    if (lastFrameInteractive)
-    {
-        holdInteractiveBudgetsUntilPresentable = feedback.missingTiles > 0;
-        if (highLatency)
-        {
-            applyBudget = clampDuration(applyBudget / 2, options.minApplyBudget, options.maxApplyBudget);
-        }
-        return;
-    }
 
     if (highLatency)
     {
@@ -129,7 +118,7 @@ void FrameBudgetController::endFrame(const FrameBudgetFeedback &feedback)
     }
     else if (!hasBacklog)
     {
-        applyBudget = clampDuration(options.steadyApplyBudget, options.minApplyBudget, options.maxApplyBudget);
+        applyBudget = clampDuration(options.initialApplyBudget, options.minApplyBudget, options.maxApplyBudget);
     }
 }
 
@@ -143,27 +132,18 @@ std::chrono::microseconds FrameBudgetController::dynamicApplyBudget() const
     return applyBudget;
 }
 
-bool FrameBudgetController::recentlyInteractive(const std::chrono::steady_clock::time_point now) const
-{
-    return lastInteraction.time_since_epoch().count() != 0
-        && now - lastInteraction <= options.interactionHold;
-}
-
-FrameWorkBudget FrameBudgetController::budgetForMode(const bool interactive,
-                                                     const size_t pendingCompletions,
-                                                     const size_t inFlightJobs) const
+FrameWorkBudget FrameBudgetController::budgetForFrame(const size_t pendingCompletions,
+                                                      const size_t inFlightJobs) const
 {
     auto budget = FrameWorkBudget{
-        .completedTileApplyBudget = interactive
-            ? std::min(applyBudget, options.interactiveApplyBudget)
-            : applyBudget,
-        .tilePlan = interactive ? options.interactiveTilePlanBudget : options.steadyTilePlanBudget,
-        .upload = interactive ? options.interactiveUploadBudget : options.steadyUploadBudget,
-        .renderUpload = interactive ? options.interactiveRenderUploadBudget : options.steadyRenderUploadBudget,
-        .maxSeedCells = interactive ? options.interactiveMaxSeedCells : options.steadyMaxSeedCells,
+        .completedTileApplyBudget = applyBudget,
+        .tilePlan = options.tilePlanBudget,
+        .upload = options.uploadBudget,
+        .renderUpload = options.renderUploadBudget,
+        .maxSeedCells = options.maxSeedCells,
         .refinementDepth = refinementDepth,
-        .interactive = interactive,
-        .submitTileJobs = true
+        .submitTileJobs = true,
+        .allowGpuRaster = options.gpuRasterAllowed
     };
 
     budget.completedTileApplyBudget = clampDuration(
@@ -172,11 +152,8 @@ FrameWorkBudget FrameBudgetController::budgetForMode(const bool interactive,
         options.maxApplyBudget);
     budget.refinementDepth = std::clamp(budget.refinementDepth, 0, options.maxRefinementDepth);
 
-    const auto maxInFlightJobs = interactive
-        ? options.interactiveMaxInFlightJobs
-        : options.steadyMaxInFlightJobs;
     const auto completionBacklogFull = pendingCompletions >= options.maxPendingCompletionsBeforeBackpressure;
-    if (completionBacklogFull || inFlightJobs >= maxInFlightJobs)
+    if (completionBacklogFull || inFlightJobs >= options.maxInFlightJobs)
     {
         budget.submitTileJobs = false;
         budget.tilePlan.maxIntervalJobsPerFrame = 0;
@@ -184,7 +161,7 @@ FrameWorkBudget FrameBudgetController::budgetForMode(const bool interactive,
         return budget;
     }
 
-    auto remainingJobHeadroom = maxInFlightJobs - inFlightJobs;
+    auto remainingJobHeadroom = options.maxInFlightJobs - inFlightJobs;
     const auto rasterBudget = std::min<size_t>(
         static_cast<size_t>(std::max(0, budget.tilePlan.maxRasterJobsPerFrame)),
         remainingJobHeadroom);
@@ -196,13 +173,6 @@ FrameWorkBudget FrameBudgetController::budgetForMode(const bool interactive,
     budget.tilePlan.maxIntervalJobsPerFrame = static_cast<int>(intervalBudget);
     budget.submitTileJobs = budget.tilePlan.maxIntervalJobsPerFrame > 0
         || budget.tilePlan.maxRasterJobsPerFrame > 0;
-
-    if (interactive && pendingCompletions > 0)
-    {
-        budget.tilePlan.maxRasterJobsPerFrame = std::min(budget.tilePlan.maxRasterJobsPerFrame, 4);
-        budget.submitTileJobs = budget.tilePlan.maxIntervalJobsPerFrame > 0
-            || budget.tilePlan.maxRasterJobsPerFrame > 0;
-    }
 
     return budget;
 }

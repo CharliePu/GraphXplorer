@@ -456,13 +456,29 @@ TEST_CASE("CpuComputeBackend rasterizer marks tan pole pixels unresolved", "[Com
     CHECK(out.front().pixels.front() == 127);
 }
 
-TEST_CASE("Default ComputeBackend is the concrete CPU backend while OpenCL is ruled out",
+TEST_CASE("Default ComputeBackend keeps CPU fallback for interval-aware formulas",
           "[ComputeBackend]")
 {
     auto backend = gx::makeDefaultComputeBackend();
+    REQUIRE(backend);
 
-    REQUIRE(dynamic_cast<gx::CpuComputeBackend *>(backend.get()) != nullptr);
-    CHECK_FALSE(backend->capabilities().supportsOpenCl);
+    const auto formula = gx::FormulaCompiler{}.compile("y<=tan(x*y)");
+    REQUIRE(formula.diagnostics.ok);
+    std::array keys{gx::TileKey{0, 0, 0}};
+    std::array xMin{1.5};
+    std::array xMax{1.6};
+    std::array yMin{1.0};
+    std::array yMax{1.0};
+    std::array offsets{uint32_t{0}};
+    std::array<gx::RegionOutput, 1> out{};
+
+    const auto result = backend->rasterizeRegions(
+        gx::RasterBatchView{&formula, keys, xMin, xMax, yMin, yMax, offsets, 1},
+        out);
+
+    REQUIRE(result.ok);
+    REQUIRE(out.front().pixels.size() == 1);
+    CHECK(out.front().pixels.front() == 127);
 }
 
 TEST_CASE("Default ComputeBackend rasterizes through the preferred backend with CPU-equivalent output",

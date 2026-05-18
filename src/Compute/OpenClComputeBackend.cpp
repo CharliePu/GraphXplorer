@@ -950,7 +950,8 @@ public:
     BatchResult rasterizeRegions(const RasterBatchView &batch,
                                  std::span<RegionOutput> out) override
     {
-        if (batch.allowGpu)
+        const auto needsIntervalAwareRaster = batch.formula && requiresIntervalAwareRaster(*batch.formula);
+        if (batch.allowGpu && !needsIntervalAwareRaster)
         {
             refreshRasterizer();
         }
@@ -962,9 +963,26 @@ public:
             loggedOpenClReady = openClReady;
         }
 
-        const auto needsIntervalAwareRaster = batch.formula && requiresIntervalAwareRaster(*batch.formula);
         const auto now = std::chrono::steady_clock::now();
         const auto openClInCooldown = now < openClCooldownUntil;
+        auto cpuFallbackReason = std::string_view{"opencl-rejected"};
+        if (!batch.allowGpu)
+        {
+            cpuFallbackReason = "gpu-disabled";
+        }
+        else if (needsIntervalAwareRaster)
+        {
+            cpuFallbackReason = "interval-aware-formula";
+        }
+        else if (!rasterizer)
+        {
+            cpuFallbackReason = "opencl-unavailable";
+        }
+        else if (openClInCooldown)
+        {
+            cpuFallbackReason = "opencl-cooldown";
+        }
+
         if (rasterizer && !needsIntervalAwareRaster && !openClInCooldown)
         {
             const auto gpuResult = rasterizer->rasterize(batch, out);
@@ -1009,7 +1027,8 @@ public:
             if (loggedRasterBatches < 80 || stats.zeroTiles == cpuResult.completed)
             {
                 PipelineLog::log(
-                    "compute.raster backend=cpu batch=%zu completed=%zu pixels=%u zero=%zu full=%zu mixed=%zu formula=%llu firstTile=%s",
+                    "compute.raster backend=cpu reason=%s batch=%zu completed=%zu pixels=%u zero=%zu full=%zu mixed=%zu formula=%llu firstTile=%s",
+                    cpuFallbackReason.data(),
                     batch.keys.size(),
                     cpuResult.completed,
                     batch.pixelsPerAxis,
@@ -1031,27 +1050,27 @@ private:
         {
             return;
         }
+
+        if (rasterizerFuture.valid())
+        {
+            if (rasterizerFuture.wait_for(std::chrono::milliseconds{0}) != std::future_status::ready)
+            {
+                return;
+            }
+            rasterizer = rasterizerFuture.get();
+            return;
+        }
+
         if (rasterizerCreationAttempted)
         {
             return;
         }
 
-        if (!rasterizerFuture.valid())
+        rasterizerCreationAttempted = true;
+        rasterizerFuture = std::async(std::launch::async, []
         {
-            rasterizerCreationAttempted = true;
-            rasterizerFuture = std::async(std::launch::async, []
-            {
-                return OpenClRasterizer::create();
-            });
-            return;
-        }
-
-        if (rasterizerFuture.wait_for(std::chrono::milliseconds{0}) != std::future_status::ready)
-        {
-            return;
-        }
-
-        rasterizer = rasterizerFuture.get();
+            return OpenClRasterizer::create();
+        });
     }
 
     CpuComputeBackend cpu;
@@ -1076,6 +1095,18 @@ private:
             message.c_str());
     }
 };
+#endif
+}
+
+std::unique_ptr<ComputeBackend> makeDefaultComputeBackend()
+{
+    GRAPHX_PROFILE_SCOPE("compute.makeDefaultBackend");
+#ifdef _WIN32
+    PipelineLog::log("compute.backend mode=opencl-preferred");
+    return std::make_unique<OpenClPreferredComputeBackend>();
+#else
+    PipelineLog::log("compute.backend mode=cpu-only opencl=0 reason=unsupported-platform");
+    return std::make_unique<CpuComputeBackend>();
 #endif
 }
 }

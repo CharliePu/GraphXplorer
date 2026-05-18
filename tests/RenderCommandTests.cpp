@@ -69,6 +69,31 @@ TEST_CASE("UploadPlanner prioritizes visible display tiles", "[Render]")
     CHECK_FALSE(plan.budgetExhausted);
 }
 
+TEST_CASE("RenderProgress requests follow-up frames for GPU upload progress", "[Render]")
+{
+    gx::RenderProgress idle;
+    CHECK_FALSE(idle.needsFollowupFrame());
+
+    gx::RenderProgress uploaded{
+        .regionUploadsThisFrame = 2,
+        .regionUploadBytesThisFrame = 512
+    };
+    CHECK(uploaded.needsFollowupFrame());
+
+    gx::RenderProgress pending{
+        .pendingRegionUploadsAfterFrame = 3,
+        .regionUploadStateObserved = true
+    };
+    CHECK(pending.needsFollowupFrame());
+
+    idle.merge(uploaded);
+    idle.merge(pending);
+    CHECK(idle.regionUploadsThisFrame == 2);
+    CHECK(idle.regionUploadBytesThisFrame == 512);
+    CHECK(idle.pendingRegionUploadsAfterFrame == 3);
+    CHECK(idle.needsFollowupFrame());
+}
+
 TEST_CASE("RenderResourceManager assigns slices for the whole visible region set", "[Render]")
 {
     gx::RenderResourceManager resources;

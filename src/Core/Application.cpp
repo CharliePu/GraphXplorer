@@ -317,13 +317,14 @@ void Application::run()
         }
 
         auto renderMs = 0.0;
+        auto renderProgress = gx::RenderProgress{};
         const auto renderStart = Clock::now();
         {
             GRAPHX_PROFILE_SCOPE("main.render");
             renderer->clear();
             if (latestFrameSnapshot)
             {
-                renderer->draw(std::span<const gx::DrawCommand>{
+                renderProgress = renderer->draw(std::span<const gx::DrawCommand>{
                     latestFrameSnapshot->drawCommands.data(),
                     latestFrameSnapshot->drawCommands.size()
                 }, framePipeline->renderUploadBudget());
@@ -343,6 +344,27 @@ void Application::run()
                 static_cast<unsigned long long>(frameCounter),
                 renderMs,
                 latestFrameSnapshot ? latestFrameSnapshot->drawCommands.size() : size_t{0});
+        }
+
+        const auto plannedTextureUploads = latestFrameSnapshot
+            && !latestFrameSnapshot->uploadPlan.textureUploads.empty();
+        const auto uploadBudgetLeftVisibleWork = latestFrameSnapshot
+            && latestFrameSnapshot->uploadPlan.budgetExhausted
+            && renderProgress.regionUploadsThisFrame > 0;
+        if (renderProgress.needsFollowupFrame() || plannedTextureUploads || uploadBudgetLeftVisibleWork)
+        {
+            if (detailedLoopLogging || renderProgress.needsFollowupFrame() || uploadBudgetLeftVisibleWork)
+            {
+                PipelineLog::log(
+                    "main.loop.renderUpload.progress frame=%llu uploaded=%zu bytes=%zu pending=%zu planned=%zu budgetExhausted=%d",
+                    static_cast<unsigned long long>(frameCounter),
+                    renderProgress.regionUploadsThisFrame,
+                    renderProgress.regionUploadBytesThisFrame,
+                    renderProgress.pendingRegionUploadsAfterFrame,
+                    latestFrameSnapshot ? latestFrameSnapshot->uploadPlan.textureUploads.size() : size_t{0},
+                    latestFrameSnapshot && latestFrameSnapshot->uploadPlan.budgetExhausted ? 1 : 0);
+            }
+            logPostedWake("renderUpload", requestMailbox.submitFrameWake("renderUpload"));
         }
 
         GRAPHX_PROFILE_FLUSH_IF_DUE();

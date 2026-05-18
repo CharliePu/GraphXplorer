@@ -32,56 +32,76 @@ gx::ViewportChangedEvent viewportEvent(const Interval &xRange = {-1.0, 1.0},
 }
 }
 
-TEST_CASE("FrameBudgetController uses interactive budgets without changing refinement depth",
+TEST_CASE("FrameBudgetController uses one configured budget path",
           "[FrameBudgetController][Responsiveness]")
 {
     gx::FrameBudgetController controller{gx::FrameBudgetControllerOptions{
-        .steadyApplyBudget = 2000us,
-        .interactiveApplyBudget = 500us,
-        .steadyTilePlanBudget = {256, 64},
-        .interactiveTilePlanBudget = {32, 4},
+        .initialApplyBudget = 1500us,
+        .minApplyBudget = 250us,
+        .maxApplyBudget = 4000us,
+        .tilePlanBudget = {256, 64},
+        .renderUploadBudget = {
+            .maxTextureBytesPerFrame = 4 * 1024 * 1024,
+            .maxTextureSlicesPerFrame = 32
+        },
+        .maxSeedCells = 6,
+        .maxInFlightJobs = 512,
         .refinementDepth = 3,
         .maxRefinementDepth = 8
     }};
 
     const auto budget = controller.beginFrame(viewportEvent(), viewportDiff(), 0, 0);
 
-    CHECK(budget.interactive);
-    CHECK(budget.completedTileApplyBudget == 500us);
-    CHECK(budget.tilePlan.maxIntervalJobsPerFrame == 32);
-    CHECK(budget.tilePlan.maxRasterJobsPerFrame == 4);
-    CHECK(budget.renderUpload.maxTextureSlicesPerFrame == 8);
-    CHECK(budget.renderUpload.maxTextureBytesPerFrame == 1024 * 1024);
+    CHECK(budget.completedTileApplyBudget == 1500us);
+    CHECK(budget.tilePlan.maxIntervalJobsPerFrame == 256);
+    CHECK(budget.tilePlan.maxRasterJobsPerFrame == 64);
+    CHECK(budget.renderUpload.maxTextureSlicesPerFrame == 32);
+    CHECK(budget.renderUpload.maxTextureBytesPerFrame == 4 * 1024 * 1024);
+    CHECK(budget.maxSeedCells == 6);
     CHECK(budget.refinementDepth == 3);
+    CHECK(budget.allowGpuRaster);
+}
+
+TEST_CASE("FrameBudgetController does not switch budgets between viewport and render ticks",
+          "[FrameBudgetController][Responsiveness]")
+{
+    gx::FrameBudgetController controller{gx::FrameBudgetControllerOptions{
+        .initialApplyBudget = 1200us,
+        .tilePlanBudget = {128, 32},
+        .maxInFlightJobs = 256,
+        .refinementDepth = 3,
+        .maxRefinementDepth = 8
+    }};
+
+    auto budget = controller.beginFrame(viewportEvent(), viewportDiff(), 0, 0);
+    CHECK(budget.completedTileApplyBudget == 1200us);
+    CHECK(budget.tilePlan.maxIntervalJobsPerFrame == 128);
+    CHECK(budget.tilePlan.maxRasterJobsPerFrame == 32);
+
+    controller.endFrame(gx::FrameBudgetFeedback{
+        .pipelineLatency = 2000us,
+        .pendingCompletions = 0,
+        .submittedJobs = 0
+    });
+
+    budget = controller.beginFrame(gx::RenderTickEvent{}, gx::StateDiff{}, 0, 0);
+    CHECK(budget.completedTileApplyBudget == 1200us);
+    CHECK(budget.tilePlan.maxIntervalJobsPerFrame == 128);
+    CHECK(budget.tilePlan.maxRasterJobsPerFrame == 32);
 }
 
 TEST_CASE("FrameBudgetController exposes render upload as a responsiveness knob",
           "[FrameBudgetController][Responsiveness]")
 {
     gx::FrameBudgetController controller{gx::FrameBudgetControllerOptions{
-        .interactionHold = 0us,
-        .steadyRenderUploadBudget = {
+        .renderUploadBudget = {
             .maxTextureBytesPerFrame = 8 * 1024 * 1024,
             .maxTextureSlicesPerFrame = 64
-        },
-        .interactiveRenderUploadBudget = {
-            .maxTextureBytesPerFrame = 128 * 1024,
-            .maxTextureSlicesPerFrame = 2
         }
     }};
 
-    auto budget = controller.beginFrame(viewportEvent(), viewportDiff(), 0, 0);
-    CHECK(budget.interactive);
-    CHECK(budget.renderUpload.maxTextureBytesPerFrame == 128 * 1024);
-    CHECK(budget.renderUpload.maxTextureSlicesPerFrame == 2);
+    const auto budget = controller.beginFrame(viewportEvent(), viewportDiff(), 0, 0);
 
-    controller.endFrame(gx::FrameBudgetFeedback{
-        .pipelineLatency = 2000us,
-        .missingTiles = 0
-    });
-
-    budget = controller.beginFrame(gx::RenderTickEvent{}, gx::StateDiff{}, 0, 0);
-    CHECK_FALSE(budget.interactive);
     CHECK(budget.renderUpload.maxTextureBytesPerFrame == 8 * 1024 * 1024);
     CHECK(budget.renderUpload.maxTextureSlicesPerFrame == 64);
 }
@@ -91,7 +111,7 @@ TEST_CASE("FrameBudgetController slow frames reduce apply budget only",
 {
     gx::FrameBudgetController controller{gx::FrameBudgetControllerOptions{
         .targetPipelineLatency = 8000us,
-        .steadyApplyBudget = 2000us,
+        .initialApplyBudget = 2000us,
         .minApplyBudget = 250us,
         .maxApplyBudget = 4000us,
         .refinementDepth = 3,
@@ -117,10 +137,8 @@ TEST_CASE("FrameBudgetController applies backpressure when compute is already sa
           "[FrameBudgetController][Responsiveness]")
 {
     gx::FrameBudgetController controller{gx::FrameBudgetControllerOptions{
-        .steadyTilePlanBudget = {256, 64},
-        .interactiveTilePlanBudget = {32, 8},
-        .steadyMaxInFlightJobs = 128,
-        .interactiveMaxInFlightJobs = 16,
+        .tilePlanBudget = {256, 64},
+        .maxInFlightJobs = 16,
         .maxPendingCompletionsBeforeBackpressure = 8
     }};
 
@@ -139,10 +157,8 @@ TEST_CASE("FrameBudgetController limits per-frame admissions to remaining in-fli
           "[FrameBudgetController][Responsiveness]")
 {
     gx::FrameBudgetController controller{gx::FrameBudgetControllerOptions{
-        .steadyTilePlanBudget = {256, 64},
-        .interactiveTilePlanBudget = {32, 8},
-        .steadyMaxInFlightJobs = 128,
-        .interactiveMaxInFlightJobs = 36
+        .tilePlanBudget = {32, 8},
+        .maxInFlightJobs = 36
     }};
 
     const auto budget = controller.beginFrame(viewportEvent(), viewportDiff(), 0, 20);
@@ -156,20 +172,17 @@ TEST_CASE("FrameBudgetController keeps refinement depth across pan and zoom",
           "[FrameBudgetController][Responsiveness]")
 {
     gx::FrameBudgetController controller{gx::FrameBudgetControllerOptions{
-        .interactionHold = 0us,
         .refinementDepth = 3,
         .maxRefinementDepth = 8
     }};
 
     auto budget = controller.beginFrame(viewportEvent(), viewportDiff(), 0, 0);
-    REQUIRE(budget.interactive);
     CHECK(budget.refinementDepth == 3);
 
     controller.endFrame(gx::FrameBudgetFeedback{
         .pipelineLatency = 2000us,
         .pendingCompletions = 0,
-        .submittedJobs = 0,
-        .missingTiles = 0
+        .submittedJobs = 0
     });
 
     budget = controller.beginFrame(
@@ -177,14 +190,12 @@ TEST_CASE("FrameBudgetController keeps refinement depth across pan and zoom",
         viewportDiff(),
         0,
         0);
-    CHECK(budget.interactive);
     CHECK(budget.refinementDepth == 3);
 
     controller.endFrame(gx::FrameBudgetFeedback{
         .pipelineLatency = 2000us,
         .pendingCompletions = 0,
-        .submittedJobs = 0,
-        .missingTiles = 0
+        .submittedJobs = 0
     });
 
     budget = controller.beginFrame(
@@ -192,40 +203,19 @@ TEST_CASE("FrameBudgetController keeps refinement depth across pan and zoom",
         viewportDiff(),
         0,
         0);
-    CHECK(budget.interactive);
     CHECK(budget.refinementDepth == 3);
 }
 
-TEST_CASE("FrameBudgetController keeps interactive budgets until a moving cover is presentable",
+TEST_CASE("FrameBudgetController keeps GPU raster admission as a direct budget constraint",
           "[FrameBudgetController][Responsiveness]")
 {
     gx::FrameBudgetController controller{gx::FrameBudgetControllerOptions{
-        .interactionHold = 0us,
-        .refinementDepth = 3,
-        .maxRefinementDepth = 8
+        .gpuRasterAllowed = false
     }};
 
-    auto budget = controller.beginFrame(viewportEvent(), viewportDiff(), 0, 0);
-    REQUIRE(budget.interactive);
-    CHECK(budget.refinementDepth == 3);
+    const auto budget = controller.beginFrame(viewportEvent(), viewportDiff(), 0, 0);
 
-    controller.endFrame(gx::FrameBudgetFeedback{
-        .pipelineLatency = 2000us,
-        .missingTiles = 4
-    });
-
-    budget = controller.beginFrame(gx::RenderTickEvent{}, gx::StateDiff{}, 0, 0);
-    CHECK(budget.interactive);
-    CHECK(budget.refinementDepth == 3);
-
-    controller.endFrame(gx::FrameBudgetFeedback{
-        .pipelineLatency = 2000us,
-        .missingTiles = 0
-    });
-
-    budget = controller.beginFrame(gx::RenderTickEvent{}, gx::StateDiff{}, 0, 0);
-    CHECK_FALSE(budget.interactive);
-    CHECK(budget.refinementDepth == 3);
+    CHECK_FALSE(budget.allowGpuRaster);
 }
 
 TEST_CASE("FrameBudgetController clamps configured refinement depth",

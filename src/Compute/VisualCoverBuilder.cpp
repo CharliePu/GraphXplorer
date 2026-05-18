@@ -4,6 +4,7 @@
 #include <array>
 #include <optional>
 #include <tuple>
+#include <utility>
 
 #include "../Tile/TileMath.h"
 
@@ -72,7 +73,8 @@ VisualFrame VisualCoverBuilder::build(const ViewportRequest &request,
                                       const TileCache &tileCache,
                                       const CommittedVisualFrame *previous,
                                       const int maxSeedCells,
-                                      const int refinementDepth) const
+                                      const int refinementDepth,
+                                      RegionPresentablePredicate regionPresentable) const
 {
     VisualFrame empty;
     if (!request.valid() || maxSeedCells <= 0)
@@ -96,6 +98,8 @@ VisualFrame VisualCoverBuilder::build(const ViewportRequest &request,
     }
 
     BuildState state;
+    state.regionPresentable = std::move(regionPresentable);
+    state.previous = previous;
     state.frame.tiles.reserve(static_cast<size_t>(width * height));
     const auto leafLevel = leafTileLevelForSeed(seedLevel, refinementDepth);
     for (auto y = minY; y <= maxY; ++y)
@@ -156,11 +160,12 @@ void VisualCoverBuilder::visit(const ViewportRequest &request,
     {
         if (record)
         {
-            if (auto tile = currentReadyTileFor(request, key, *record, false))
+            if (auto tile = currentReadyTileFor(request, key, *record, false, state))
             {
                 state.frame.tiles.push_back(*tile);
                 return;
             }
+            queuePreloadTile(request, key, *record, state);
         }
 
         if (hasPartialCover && key.level > LowestFiniteTileLevel)
@@ -172,13 +177,20 @@ void VisualCoverBuilder::visit(const ViewportRequest &request,
             return;
         }
 
-        emitFallbackCell(request, tileCache, previous, key, state);
+        emitFallbackCell(request, tileCache, key, state);
         return;
     }
 
     if (record && record->valueState == TileValueState::Mixed)
     {
-        if (hasPartialCover || !record->regionPixels)
+        const auto regionReady = record->regionPixels.has_value();
+        const auto presentable = mixedRegionPresentable(*record, state);
+        if (regionReady && !presentable)
+        {
+            queuePreloadTile(request, key, *record, state);
+        }
+
+        if (hasPartialCover || !regionReady)
         {
             for (const auto &child : tileChildren(key))
             {
@@ -187,9 +199,15 @@ void VisualCoverBuilder::visit(const ViewportRequest &request,
             return;
         }
 
-        if (record->regionPixels && !hasPartialCover)
+        if (!presentable)
         {
-            if (auto tile = currentReadyTileFor(request, key, *record, false))
+            emitFallbackCell(request, tileCache, key, state);
+            return;
+        }
+
+        if (regionReady && !hasPartialCover)
+        {
+            if (auto tile = currentReadyTileFor(request, key, *record, false, state))
             {
                 state.frame.tiles.push_back(*tile);
                 return;
@@ -199,7 +217,7 @@ void VisualCoverBuilder::visit(const ViewportRequest &request,
     else if (record && (record->valueState == TileValueState::UniformTrue
                         || record->valueState == TileValueState::UniformFalse))
     {
-        if (auto tile = currentReadyTileFor(request, key, *record, false))
+        if (auto tile = currentReadyTileFor(request, key, *record, false, state))
         {
             state.frame.tiles.push_back(*tile);
             return;
@@ -215,16 +233,15 @@ void VisualCoverBuilder::visit(const ViewportRequest &request,
         return;
     }
 
-    emitFallbackCell(request, tileCache, previous, key, state);
+    emitFallbackCell(request, tileCache, key, state);
 }
 
 void VisualCoverBuilder::emitFallbackCell(const ViewportRequest &request,
                                           const TileCache &tileCache,
-                                          const CommittedVisualFrame *previous,
                                           const TileKey &key,
                                           BuildState &state)
 {
-    if (auto previousTile = previousVisualTileFor(request, key, previous))
+    if (auto previousTile = previousVisualTileFor(request, key, state.previous))
     {
         state.frame.tiles.push_back(*previousTile);
         return;
@@ -232,7 +249,7 @@ void VisualCoverBuilder::emitFallbackCell(const ViewportRequest &request,
 
     if (const auto *ancestor = tileCache.findNearestRenderableMixedAncestor(key, request.formula.semanticsHash))
     {
-        if (auto tile = mixedAncestorFallbackTile(request, key, *ancestor))
+        if (auto tile = mixedAncestorFallbackTile(request, key, *ancestor, state))
         {
             state.frame.tiles.push_back(*tile);
             return;
@@ -251,10 +268,50 @@ void VisualCoverBuilder::emitUniformAuthority(const ViewportRequest &request,
         return;
     }
 
-    if (auto tile = currentReadyTileFor(request, record.key, record, false))
+    if (auto tile = currentReadyTileFor(request, record.key, record, false, state))
     {
         state.frame.tiles.push_back(*tile);
     }
+}
+
+void VisualCoverBuilder::queuePreloadTile(const ViewportRequest &request,
+                                          const TileKey &displayKey,
+                                          const TileRecord &record,
+                                          BuildState &state)
+{
+    if (record.valueState != TileValueState::Mixed || !record.regionPixels)
+    {
+        return;
+    }
+    if (!state.preloadedRegions.insert(record.regionPixels->id).second)
+    {
+        return;
+    }
+
+    const auto bounds = intersectRect(tileBounds(displayKey), request.xRange, request.yRange);
+    if (!validRect(bounds))
+    {
+        return;
+    }
+
+    state.frame.preloadTiles.push_back(DisplayTile{
+        .desiredKey = displayKey,
+        .sourceKey = record.key,
+        .worldBounds = bounds,
+        .visualState = TileVisualState::MixedRegion,
+        .cpuRegion = record.regionPixels,
+        .uvRect = uvRectForTileSource(bounds, tileBounds(record.key))
+    });
+}
+
+bool VisualCoverBuilder::mixedRegionPresentable(const TileRecord &record,
+                                                const BuildState &state)
+{
+    if (record.valueState != TileValueState::Mixed || !record.regionPixels)
+    {
+        return false;
+    }
+    return !state.regionPresentable || state.regionPresentable(*record.regionPixels);
 }
 
 bool VisualCoverBuilder::shouldSplitForPartialCover(const TileCache &tileCache,
@@ -286,7 +343,8 @@ std::optional<DisplayTile> VisualCoverBuilder::currentReadyTileFor(
     const ViewportRequest &request,
     const TileKey &displayKey,
     const TileRecord &record,
-    const bool fallback)
+    const bool fallback,
+    const BuildState &state)
 {
     TileVisualState visualState = TileVisualState::Missing;
     switch (record.valueState)
@@ -298,7 +356,7 @@ std::optional<DisplayTile> VisualCoverBuilder::currentReadyTileFor(
         visualState = TileVisualState::UniformFalse;
         break;
     case TileValueState::Mixed:
-        if (!record.regionPixels)
+        if (!mixedRegionPresentable(record, state))
         {
             return std::nullopt;
         }
@@ -391,10 +449,16 @@ std::optional<DisplayTile> VisualCoverBuilder::previousVisualTileFor(
 std::optional<DisplayTile> VisualCoverBuilder::mixedAncestorFallbackTile(
     const ViewportRequest &request,
     const TileKey &displayKey,
-    const TileRecord &record)
+    const TileRecord &record,
+    BuildState &state)
 {
     if (record.valueState != TileValueState::Mixed || !record.regionPixels)
     {
+        return std::nullopt;
+    }
+    if (!mixedRegionPresentable(record, state))
+    {
+        queuePreloadTile(request, displayKey, record, state);
         return std::nullopt;
     }
 

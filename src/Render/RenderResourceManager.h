@@ -65,7 +65,7 @@ public:
     void setOverlayRects(std::vector<OverlayRect> rects);
     void setOverlayTextRuns(std::vector<OverlayTextRun> runs);
 
-    void draw(const DrawCommand &command, const UploadBudget &uploadBudget = UploadBudget{});
+    [[nodiscard]] RenderProgress draw(const DrawCommand &command, const UploadBudget &uploadBudget = UploadBudget{});
     [[nodiscard]] size_t plotInstanceCount() const;
     [[nodiscard]] size_t debugPlotInstanceCount() const;
     [[nodiscard]] size_t overlayRectCount() const;
@@ -191,7 +191,7 @@ private:
     void uploadOverlayRectsIfDirty();
     void rebuildTextVerticesIfDirty();
     void uploadTextVerticesIfDirty();
-    void uploadPendingRegionImages(const UploadBudget &budget);
+    [[nodiscard]] RenderProgress uploadPendingRegionImages(const UploadBudget &budget);
     void destroyPlotResources();
     void destroyGridResources();
     void destroyOverlayResources();

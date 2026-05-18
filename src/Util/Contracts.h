@@ -151,11 +151,66 @@ enum class TileClassification
     Mixed
 };
 
+enum class TextureCertainty
+{
+    Precise,
+    Imprecise,
+    BestEstimate
+};
+
+enum class TexturePreparationMode
+{
+    GpuPreview,
+    Refined
+};
+
+enum class TileExistenceState
+{
+    Unknown,
+    Empty,
+    Exists
+};
+
+struct TileProofNode
+{
+    TileKey key{};
+    TileClassification classification{TileClassification::Unknown};
+    TileExistenceState existence{TileExistenceState::Unknown};
+    std::optional<Interval> interval{};
+    bool operator==(const TileProofNode &) const = default;
+};
+
+struct TileProofTree
+{
+    TileKey rootKey{};
+    TileExistenceState existence{TileExistenceState::Unknown};
+    TextureCertainty certainty{TextureCertainty::Precise};
+    std::vector<TileProofNode> nodes{};
+    bool operator==(const TileProofTree &) const = default;
+};
+
+struct TileProofTreePatch
+{
+    ContractHeader header{};
+    FormulaSemanticsHash semanticsHash{};
+    TileProofTree tree{};
+
+    [[nodiscard]] bool valid() const
+    {
+        return header.valid()
+            && semanticsHash.value != 0
+            && !tree.nodes.empty();
+    }
+
+    bool operator==(const TileProofTreePatch &) const = default;
+};
+
 struct RegionImageRef
 {
     uint64_t id{0};
     int width{0};
     int height{0};
+    TextureCertainty certainty{TextureCertainty::Imprecise};
     bool operator==(const RegionImageRef &) const = default;
 };
 
@@ -192,6 +247,7 @@ struct TileDelta
     std::optional<Interval> interval{};
     std::optional<RegionImageRef> region{};
     std::optional<ContourSegmentRange> contours{};
+    std::optional<TileExistenceState> existence{};
 
     [[nodiscard]] bool valid() const
     {
@@ -267,6 +323,7 @@ struct RenderTileInstance
     TileVisualState visualState{TileVisualState::Missing};
     TextureSlice regionSlice{};
     BufferRange contourRange{};
+    TextureCertainty certainty{TextureCertainty::Precise};
     std::array<float, 4> uvRect{0.0f, 0.0f, 1.0f, 1.0f};
     bool operator==(const RenderTileInstance &) const = default;
 };

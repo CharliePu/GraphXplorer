@@ -103,7 +103,7 @@ std::vector<std::string> debugOverlayLines(const gx::FramePipelineDebugStats &st
         "fallback tiles:" + std::to_string(stats.fallbackTiles)
             + " clipped:" + std::to_string(stats.clippedFallbackTiles),
         std::string{"budget depth:"} + std::to_string(stats.refinementDepth)
-            + " gpu:" + (stats.allowGpuRaster ? "on" : "off"),
+            + " gpu:" + (stats.allowGpuPreview ? "on" : "off"),
         "runtime run:" + std::to_string(stats.inFlightJobs)
             + " done:" + std::to_string(stats.completedJobs)
             + " queue:" + std::to_string(processingTiles),
@@ -239,6 +239,7 @@ std::optional<gx::RenderTileInstance> normalPlotInstanceForDisplayTile(const gx:
         .worldBounds = tile.worldBounds,
         .visualState = visualState,
         .regionSlice = regionSlice,
+        .certainty = tile.cpuRegion ? tile.cpuRegion->certainty : gx::TextureCertainty::Precise,
         .uvRect = tile.uvRect
     };
 }
@@ -369,7 +370,7 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
         .inFlightJobs = inFlightBeforeDrain
     });
     latestFrameBudget = frameBudget;
-    tileRuntime.setGpuRasterAllowed(frameBudget.allowGpuRaster);
+    tileRuntime.setGpuPreviewAllowed(frameBudget.allowGpuPreview);
     TileRuntimeDrainResult drainResult;
     {
         GRAPHX_PROFILE_SCOPE("pipeline.drainCompleted");
@@ -390,8 +391,7 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
             tileCache,
             frameBudget.tilePlan,
             frameBudget.maxSeedCells,
-            frameBudget.refinementDepth,
-            &tileRuntime.workerPool());
+            frameBudget.refinementDepth);
     }
     size_t submittedJobCount = 0;
     if (frameBudget.submitTileJobs)
@@ -431,8 +431,7 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
                     tileCache,
                     frameBudget.tilePlan,
                     frameBudget.maxSeedCells,
-                    frameBudget.refinementDepth,
-                    &tileRuntime.workerPool());
+                    frameBudget.refinementDepth);
                 if (frameBudget.submitTileJobs && !tilePlan.jobs.empty())
                 {
                     tileRuntime.submitJobs(tilePlan.jobs);
@@ -489,7 +488,7 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
         .submittedJobs = frameBudget.submitTileJobs ? tilePlan.jobs.size() : 0,
         .tilePlan = tilePlan.stats,
         .refinementDepth = frameBudget.refinementDepth,
-        .allowGpuRaster = frameBudget.allowGpuRaster
+        .allowGpuPreview = frameBudget.allowGpuPreview
     };
     for (auto &tile : snapshot.displayTiles)
     {
@@ -559,7 +558,7 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
             seedTileLevelForViewport(request, frameBudget.maxSeedCells),
             leafTileLevel(request, frameBudget.maxSeedCells, frameBudget.refinementDepth),
             frameBudget.refinementDepth,
-            frameBudget.allowGpuRaster ? 1 : 0,
+            frameBudget.allowGpuPreview ? 1 : 0,
             debugStats.displayTiles,
             debugStats.plotTiles,
             debugStats.uniformTiles,
@@ -742,6 +741,9 @@ FrameCommandBuffer FramePipeline::buildCommands(std::vector<DisplayTile> &displa
                     : (tile.visualState == TileVisualState::MixedRegion
                         ? TileVisualState::DebugMixed
                         : TileVisualState::DebugUniform),
+                .certainty = tile.visualState == TileVisualState::MixedRegion && tile.cpuRegion
+                    ? tile.cpuRegion->certainty
+                    : TextureCertainty::Precise,
                 .uvRect = tile.uvRect
             });
         }

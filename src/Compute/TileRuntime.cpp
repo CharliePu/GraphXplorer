@@ -21,6 +21,8 @@ size_t TileRuntime::WorkKeyHash::operator()(const WorkKey &key) const noexcept
     auto hash = TileKeyHash{}(key.tile);
     hash ^= std::hash<uint64_t>{}(key.semanticsHash.value) + 0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
     hash ^= std::hash<int>{}(static_cast<int>(key.kind)) + 0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
+    hash ^= std::hash<int>{}(static_cast<int>(key.textureMode)) + 0x9e3779b97f4a7c15ull + (hash << 6)
+        + (hash >> 2);
     return hash;
 }
 
@@ -69,9 +71,9 @@ void TileRuntime::setLatestRequest(const ViewportRequest &request,
     }
 }
 
-void TileRuntime::setGpuRasterAllowed(const bool allowed)
+void TileRuntime::setGpuPreviewAllowed(const bool allowed)
 {
-    gpuRasterAllowed.store(allowed, std::memory_order_release);
+    gpuPreviewAllowed.store(allowed, std::memory_order_release);
 }
 
 void TileRuntime::setCompletionCallback(CompletionCallback callback)
@@ -97,7 +99,7 @@ void TileRuntime::submitJobs(const std::span<const TileJob> jobs)
     }
 
     std::vector<TileJob> intervalJobs;
-    std::map<uint32_t, std::vector<TileJob>> rasterJobsByPixels;
+    std::map<std::pair<uint32_t, TexturePreparationMode>, std::vector<TileJob>> rasterJobsByBatch;
     intervalJobs.reserve(jobs.size());
     for (const auto &job : jobs)
     {
@@ -120,7 +122,7 @@ void TileRuntime::submitJobs(const std::span<const TileJob> jobs)
         }
         else
         {
-            rasterJobsByPixels[rasterPixelsPerAxisFor(*request, job.key)].push_back(job);
+            rasterJobsByBatch[{rasterPixelsPerAxisFor(*request, job.key), job.textureMode}].push_back(job);
         }
     }
 
@@ -128,11 +130,17 @@ void TileRuntime::submitJobs(const std::span<const TileJob> jobs)
     {
         enqueueBatches(*request, *formula, JobKind::ClassifyInterval, std::move(intervalJobs));
     }
-    for (auto &[pixelsPerAxis, rasterJobs] : rasterJobsByPixels)
+    for (auto &[batchKey, rasterJobs] : rasterJobsByBatch)
     {
         if (!rasterJobs.empty())
         {
-            enqueueBatches(*request, *formula, JobKind::RasterizeRegion, std::move(rasterJobs), pixelsPerAxis);
+            enqueueBatches(
+                *request,
+                *formula,
+                JobKind::RasterizeRegion,
+                std::move(rasterJobs),
+                batchKey.first,
+                batchKey.second);
         }
     }
 }
@@ -145,7 +153,9 @@ TileRuntimeDrainResult TileRuntime::drainCompleted(TileCache &tileCache,
     TileRuntimeDrainResult result;
     const auto deadline = std::chrono::steady_clock::now() + applyBudget;
     auto drained = completed.drainForFrame();
-    const auto deferRemaining = [&](const size_t workIndex, const size_t transactionIndex)
+    const auto deferRemaining = [&](const size_t workIndex,
+                                    const size_t transactionIndex,
+                                    const bool includeProofTrees)
     {
         for (auto index = drained.size(); index-- > workIndex + 1;)
         {
@@ -163,6 +173,15 @@ TileRuntimeDrainResult TileRuntime::drainCompleted(TileCache &tileCache,
         }
         if (!deferred.transactions.empty())
         {
+            if (includeProofTrees)
+            {
+                deferred.proofTrees = std::move(current.proofTrees);
+            }
+            completed.pushFront(std::move(deferred));
+        }
+        else if (includeProofTrees && !current.proofTrees.empty())
+        {
+            deferred.proofTrees = std::move(current.proofTrees);
             completed.pushFront(std::move(deferred));
         }
     };
@@ -179,7 +198,7 @@ TileRuntimeDrainResult TileRuntime::drainCompleted(TileCache &tileCache,
         {
             if (std::chrono::steady_clock::now() >= deadline)
             {
-                deferRemaining(workIndex, transactionIndex);
+                deferRemaining(workIndex, transactionIndex, true);
                 return result;
             }
 
@@ -202,6 +221,31 @@ TileRuntimeDrainResult TileRuntime::drainCompleted(TileCache &tileCache,
             result.applied += applyResult.applied;
             result.rejected += applyResult.rejected;
             result.transactions.push_back(std::move(transaction));
+        }
+
+        for (size_t proofIndex = 0; proofIndex < work.proofTrees.size(); ++proofIndex)
+        {
+            if (std::chrono::steady_clock::now() >= deadline)
+            {
+                TileWorkResult deferred;
+                std::move(
+                    work.proofTrees.begin() + static_cast<std::ptrdiff_t>(proofIndex),
+                    work.proofTrees.end(),
+                    std::back_inserter(deferred.proofTrees));
+                completed.pushFront(std::move(deferred));
+                deferRemaining(workIndex, work.transactions.size(), false);
+                return result;
+            }
+
+            if (!isCurrent(work.proofTrees[proofIndex].header, work.proofTrees[proofIndex].semanticsHash))
+            {
+                ++result.proofTreesRejected;
+                continue;
+            }
+
+            auto proofResult = tileCache.applyProofTree(std::move(work.proofTrees[proofIndex]));
+            result.proofTreesApplied += proofResult.applied;
+            result.proofTreesRejected += proofResult.rejected;
         }
     }
 
@@ -228,9 +272,10 @@ void TileRuntime::enqueueBatch(const ViewportRequest &request,
                                const CompiledFormula &formula,
                                const JobKind kind,
                                std::vector<TileJob> jobs,
-                               const uint32_t rasterPixelsPerAxis)
+                               const uint32_t rasterPixelsPerAxis,
+                               const TexturePreparationMode textureMode)
 {
-    workers.addTask([this, request, formula, kind, rasterPixelsPerAxis, jobs = std::move(jobs)]()
+    workers.addTask([this, request, formula, kind, rasterPixelsPerAxis, textureMode, jobs = std::move(jobs)]()
     {
         GRAPHX_PROFILE_SCOPE("runtime.workerBatch");
         const auto started = std::chrono::steady_clock::now();
@@ -260,7 +305,7 @@ void TileRuntime::enqueueBatch(const ViewportRequest &request,
             }
             else if (kind == JobKind::RasterizeRegion)
             {
-                work = rasterizeTiles(request, formula, jobs, rasterPixelsPerAxis);
+                work = rasterizeTiles(request, formula, jobs, rasterPixelsPerAxis, textureMode);
             }
         }
         catch (const std::exception &exception)
@@ -300,7 +345,8 @@ void TileRuntime::enqueueBatches(const ViewportRequest &request,
                                  const CompiledFormula &formula,
                                  const JobKind kind,
                                  std::vector<TileJob> jobs,
-                                 const uint32_t rasterPixelsPerAxis)
+                                 const uint32_t rasterPixelsPerAxis,
+                                 const TexturePreparationMode textureMode)
 {
     auto offset = size_t{0};
     while (offset < jobs.size())
@@ -314,7 +360,7 @@ void TileRuntime::enqueueBatches(const ViewportRequest &request,
             jobs.begin() + static_cast<std::ptrdiff_t>(offset),
             jobs.begin() + static_cast<std::ptrdiff_t>(end),
             std::back_inserter(batch));
-        enqueueBatch(request, formula, kind, std::move(batch), rasterPixelsPerAxis);
+        enqueueBatch(request, formula, kind, std::move(batch), rasterPixelsPerAxis, textureMode);
         offset = end;
     }
 }
@@ -445,7 +491,8 @@ TileRuntime::TileWorkResult TileRuntime::classifyTiles(const ViewportRequest &re
 TileRuntime::TileWorkResult TileRuntime::rasterizeTiles(const ViewportRequest &request,
                                                         const CompiledFormula &formula,
                                                         const std::span<const TileJob> jobs,
-                                                        const uint32_t pixelsPerAxis)
+                                                        const uint32_t pixelsPerAxis,
+                                                        const TexturePreparationMode textureMode)
 {
     GRAPHX_PROFILE_SCOPE("runtime.rasterizeTiles");
     TileWorkResult work;
@@ -480,6 +527,12 @@ TileRuntime::TileWorkResult TileRuntime::rasterizeTiles(const ViewportRequest &r
     std::vector<RegionOutput> outputs(jobs.size());
 
     BatchResult batchResult;
+    auto requestedMode = textureMode;
+    if (requestedMode == TexturePreparationMode::GpuPreview
+        && !gpuPreviewAllowed.load(std::memory_order_acquire))
+    {
+        requestedMode = TexturePreparationMode::Refined;
+    }
     {
         std::lock_guard lock(backendMutex);
         GRAPHX_PROFILE_SCOPE("runtime.backend.raster");
@@ -493,10 +546,34 @@ TileRuntime::TileWorkResult TileRuntime::rasterizeTiles(const ViewportRequest &r
                 yMax,
                 offsets,
                 pixelsPerAxis,
-                gpuRasterAllowed.load(std::memory_order_acquire),
+                requestedMode,
                 [this, request]() { return !isCurrent(request); }
             },
             outputs);
+        if (!batchResult.ok
+            && requestedMode == TexturePreparationMode::GpuPreview
+            && batchResult.message.rfind("GPU preview unavailable:", 0) == 0)
+        {
+            PipelineLog::log(
+                "runtime.raster gpu-preview-unavailable batch=%zu pixels=%u reason=%s; running cpu refinement",
+                jobs.size(),
+                pixelsPerAxis,
+                batchResult.message.c_str());
+            batchResult = backend->rasterizeRegions(
+                RasterBatchView{
+                    &formula,
+                    keys,
+                    xMin,
+                    xMax,
+                    yMin,
+                    yMax,
+                    offsets,
+                    pixelsPerAxis,
+                    TexturePreparationMode::Refined,
+                    [this, request]() { return !isCurrent(request); }
+                },
+                outputs);
+        }
     }
 
     if (!batchResult.ok)
@@ -517,12 +594,24 @@ TileRuntime::TileWorkResult TileRuntime::rasterizeTiles(const ViewportRequest &r
     const auto completedCount = std::min(batchResult.completed, outputs.size());
     work.transactions.reserve(jobs.size());
     work.regions.reserve(completedCount);
+    work.proofTrees.reserve(completedCount);
     for (size_t index = 0; index < completedCount; ++index)
     {
         const auto payloadId = nextRegionPayloadId.fetch_add(1, std::memory_order_relaxed);
         auto output = std::move(outputs[index]);
         const auto width = static_cast<int>(output.width);
         const auto height = static_cast<int>(output.height);
+        if (!output.proofTree.nodes.empty())
+        {
+            output.proofTree.rootKey = output.key;
+            output.proofTree.existence = output.existence;
+            output.proofTree.certainty = output.certainty;
+            work.proofTrees.push_back(TileProofTreePatch{
+                .header = request.header,
+                .semanticsHash = request.formula.semanticsHash,
+                .tree = std::move(output.proofTree)
+            });
+        }
 
         TileTransaction transaction{
             .header = request.header,
@@ -542,7 +631,8 @@ TileRuntime::TileWorkResult TileRuntime::rasterizeTiles(const ViewportRequest &r
             .key = output.key,
             .stage = TileStage::RegionReady,
             .classification = TileClassification::Mixed,
-            .region = RegionImageRef{payloadId, width, height}
+            .region = RegionImageRef{payloadId, width, height, output.certainty},
+            .existence = output.existence
         });
         work.transactions.push_back(std::move(transaction));
         work.regions.emplace_back(payloadId, std::move(output));
@@ -675,7 +765,8 @@ TileRuntime::WorkKey TileRuntime::workKeyFor(const ViewportRequest &request, con
     return {
         .tile = job.key,
         .semanticsHash = request.formula.semanticsHash,
-        .kind = job.kind
+        .kind = job.kind,
+        .textureMode = job.textureMode
     };
 }
 

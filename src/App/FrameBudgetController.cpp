@@ -143,7 +143,7 @@ FrameWorkBudget FrameBudgetController::budgetForFrame(const size_t pendingComple
         .maxSeedCells = options.maxSeedCells,
         .refinementDepth = refinementDepth,
         .submitTileJobs = true,
-        .allowGpuRaster = options.gpuRasterAllowed
+        .allowGpuPreview = options.gpuPreviewAllowed
     };
 
     budget.completedTileApplyBudget = clampDuration(

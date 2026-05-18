@@ -59,7 +59,7 @@ TEST_CASE("FrameBudgetController uses one configured budget path",
     CHECK(budget.renderUpload.maxTextureBytesPerFrame == 4 * 1024 * 1024);
     CHECK(budget.maxSeedCells == 6);
     CHECK(budget.refinementDepth == 3);
-    CHECK(budget.allowGpuRaster);
+    CHECK(budget.allowGpuPreview);
 }
 
 TEST_CASE("FrameBudgetController does not switch budgets between viewport and render ticks",
@@ -206,16 +206,16 @@ TEST_CASE("FrameBudgetController keeps refinement depth across pan and zoom",
     CHECK(budget.refinementDepth == 3);
 }
 
-TEST_CASE("FrameBudgetController keeps GPU raster admission as a direct budget constraint",
+TEST_CASE("FrameBudgetController keeps GPU preview admission as a direct budget constraint",
           "[FrameBudgetController][Responsiveness]")
 {
     gx::FrameBudgetController controller{gx::FrameBudgetControllerOptions{
-        .gpuRasterAllowed = false
+        .gpuPreviewAllowed = false
     }};
 
     const auto budget = controller.beginFrame(viewportEvent(), viewportDiff(), 0, 0);
 
-    CHECK_FALSE(budget.allowGpuRaster);
+    CHECK_FALSE(budget.allowGpuPreview);
 }
 
 TEST_CASE("FrameBudgetController clamps configured refinement depth",

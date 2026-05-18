@@ -135,6 +135,7 @@ TEST_CASE("TileCache accepts only valid state transitions", "[TileCache]")
     CHECK(gx::TileCache::validTransition(gx::TileStage::IntervalQueued, gx::TileStage::Unknown));
     CHECK(gx::TileCache::validTransition(gx::TileStage::IntervalReady, gx::TileStage::MixedNeedsRegion));
     CHECK(gx::TileCache::validTransition(gx::TileStage::RegionQueued, gx::TileStage::MixedNeedsRegion));
+    CHECK(gx::TileCache::validTransition(gx::TileStage::RegionReady, gx::TileStage::RegionQueued));
     CHECK_FALSE(gx::TileCache::validTransition(gx::TileStage::Unknown, gx::TileStage::GpuResident));
 }
 
@@ -343,6 +344,90 @@ TEST_CASE("TileCache rejects descendants under an existing uniform authority", "
     CHECK(cache.find(parent, semantics) != nullptr);
     CHECK(cache.find(child, semantics) == nullptr);
     CHECK(cache.size() == 1);
+}
+
+TEST_CASE("TileCache stores refinement proof trees outside render records", "[TileCache]")
+{
+    gx::TileCache cache;
+    const gx::FormulaSemanticsHash semantics{801};
+    const gx::TileKey root{1, 2, 6};
+    const gx::TileKey child{2, 4, 5};
+
+    auto result = cache.apply(mixedRegionTransaction(semantics, root, 1));
+    REQUIRE(result.rejected == 0);
+
+    result = cache.applyProofTree(gx::TileProofTreePatch{
+        .header = {.requestId = 1, .generation = 1},
+        .semanticsHash = semantics,
+        .tree = gx::TileProofTree{
+            .rootKey = root,
+            .existence = gx::TileExistenceState::Exists,
+            .certainty = gx::TextureCertainty::Precise,
+            .nodes = {
+                gx::TileProofNode{
+                    .key = root,
+                    .classification = gx::TileClassification::Mixed,
+                    .existence = gx::TileExistenceState::Exists,
+                    .interval = Interval{-1.0, 1.0}
+                },
+                gx::TileProofNode{
+                    .key = child,
+                    .classification = gx::TileClassification::UniformTrue,
+                    .existence = gx::TileExistenceState::Exists,
+                    .interval = Interval{1.0, 1.0}
+                }
+            }
+        }
+    });
+
+    CHECK(result.applied == 1);
+    CHECK(result.rejected == 0);
+
+    const auto *tree = cache.findProofTree(root, semantics);
+    REQUIRE(tree != nullptr);
+    CHECK(tree->rootKey == root);
+    CHECK(tree->nodes.size() == 2);
+    CHECK(cache.proofNodeCountForFormula(semantics) == 2);
+    CHECK(cache.find(child, semantics) == nullptr);
+    CHECK(cache.size() == 1);
+}
+
+TEST_CASE("TileCache prunes refinement proof trees under a new uniform authority", "[TileCache]")
+{
+    gx::TileCache cache;
+    const gx::FormulaSemanticsHash semantics{802};
+    const gx::TileKey parent{0, 0, 7};
+    const gx::TileKey child{0, 0, 6};
+
+    auto result = cache.apply(mixedRegionTransaction(semantics, child, 1));
+    REQUIRE(result.rejected == 0);
+    result = cache.applyProofTree(gx::TileProofTreePatch{
+        .header = {.requestId = 1, .generation = 1},
+        .semanticsHash = semantics,
+        .tree = gx::TileProofTree{
+            .rootKey = child,
+            .existence = gx::TileExistenceState::Exists,
+            .certainty = gx::TextureCertainty::Precise,
+            .nodes = {
+                gx::TileProofNode{
+                    .key = child,
+                    .classification = gx::TileClassification::Mixed,
+                    .existence = gx::TileExistenceState::Exists,
+                    .interval = Interval{-1.0, 1.0}
+                }
+            }
+        }
+    });
+    REQUIRE(result.rejected == 0);
+    REQUIRE(cache.findProofTree(child, semantics) != nullptr);
+
+    result = cache.apply(uniformFalseTransaction(semantics, parent, 2));
+    REQUIRE(result.rejected == 0);
+
+    CHECK(cache.findProofTree(child, semantics) == nullptr);
+    CHECK(cache.proofNodeCountForFormula(semantics) == 0);
+    CHECK(cache.find(child, semantics) == nullptr);
+    CHECK(cache.find(parent, semantics) != nullptr);
 }
 
 TEST_CASE("TileCache transition rejects descendants under an existing uniform authority", "[TileCache]")

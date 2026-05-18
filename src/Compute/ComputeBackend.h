@@ -50,7 +50,7 @@ struct RasterBatchView
     std::span<const double> yMax{};
     std::span<const uint32_t> outputOffsets{};
     uint32_t pixelsPerAxis{RasterTexturePixels};
-    bool allowGpu{true};
+    TexturePreparationMode mode{TexturePreparationMode::GpuPreview};
     std::function<bool()> cancelled{};
 };
 
@@ -66,7 +66,10 @@ struct RegionOutput
     TileKey key{};
     uint32_t width{0};
     uint32_t height{0};
+    TextureCertainty certainty{TextureCertainty::Imprecise};
+    TileExistenceState existence{TileExistenceState::Unknown};
     std::vector<uint8_t> pixels{};
+    TileProofTree proofTree{};
 };
 
 struct ContourOutput

@@ -54,7 +54,7 @@ struct FramePipelineDebugStats
     size_t submittedJobs{0};
     TilePlanStats tilePlan{};
     int refinementDepth{DefaultRefinementDepth};
-    bool allowGpuRaster{true};
+    bool allowGpuPreview{true};
 };
 
 struct FramePipelineOptions

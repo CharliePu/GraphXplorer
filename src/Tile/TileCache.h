@@ -54,6 +54,7 @@ struct TileRecord
     FormulaSemanticsHash semanticsHash{};
     TileValueState valueState{TileValueState::Unknown};
     TileWorkState workState{TileWorkState::Idle};
+    TileExistenceState existence{TileExistenceState::Unknown};
     std::optional<Interval> interval{};
     std::optional<RegionImageRef> regionPixels{};
     std::optional<ContourSegmentRange> contourSegments{};
@@ -110,6 +111,11 @@ public:
     [[nodiscard]] bool hasDescendantRecord(
         const TileKey &key,
         FormulaSemanticsHash semanticsHash) const;
+    TileApplyResult applyProofTree(TileProofTreePatch patch);
+    [[nodiscard]] const TileProofTree *findProofTree(
+        const TileKey &rootKey,
+        FormulaSemanticsHash semanticsHash) const;
+    [[nodiscard]] size_t proofNodeCountForFormula(FormulaSemanticsHash semanticsHash) const;
     [[nodiscard]] std::vector<int> occupiedLevelsForFormula(FormulaSemanticsHash semanticsHash) const;
     [[nodiscard]] std::vector<TileRecord> recordsForFormula(FormulaSemanticsHash semanticsHash) const;
     [[nodiscard]] TileDebugCounts debugCountsForFormula(FormulaSemanticsHash semanticsHash) const;
@@ -143,8 +149,10 @@ private:
     struct FormulaTileIndex
     {
         std::unordered_map<int, LevelBucket> levels;
+        std::unordered_map<TileKey, TileProofTree, TileKeyHash> proofTrees;
         std::set<int> occupiedLevels;
         size_t recordCount{0};
+        size_t proofNodeCount{0};
     };
 
     [[nodiscard]] static XYKey xyKeyFor(const TileKey &key);
@@ -167,6 +175,8 @@ private:
     [[nodiscard]] static bool hasDescendantRecordInIndex(
         const FormulaTileIndex &index,
         const TileKey &key);
+    static bool eraseProofTree(FormulaTileIndex &index, const TileKey &rootKey);
+    static void pruneProofTrees(FormulaTileIndex &index, const TileKey &parent);
     static TileRecord &putRecord(FormulaTileIndex &index, TileRecord record);
     static bool eraseRecord(FormulaTileIndex &index, const TileKey &key);
     static void normalizeUniformAuthority(FormulaTileIndex &index,

@@ -217,7 +217,7 @@ TEST_CASE("FramePipeline delegates tunable budgets to an injected policy",
         .maxSeedCells = 1,
         .refinementDepth = 1,
         .submitTileJobs = false,
-        .allowGpuRaster = false
+        .allowGpuPreview = false
     });
     auto *policyView = policy.get();
     gx::FramePipeline pipeline{std::move(backend), gx::FramePipelineOptions{}, std::move(policy)};

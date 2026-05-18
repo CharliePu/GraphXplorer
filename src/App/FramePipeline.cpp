@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include "../Tile/TileMath.h"
 #include "../Util/PerformanceProfiler.h"
@@ -77,35 +78,81 @@ struct DebugOverlayLayout
     float panelBottom{-0.98f};
     float panelTop{-0.72f};
     float textX{-0.95f};
-    std::array<float, 7> textY{-0.74f, -0.78f, -0.82f, -0.86f, -0.90f, -0.94f, -0.98f};
-    std::array<float, 7> pixelHeights{12.0f, 12.0f, 12.0f, 12.0f, 12.0f, 12.0f, 12.0f};
+    std::vector<float> textY{};
+    std::vector<float> pixelHeights{};
 };
 
-std::array<std::string, 7> debugOverlayLines(const gx::FramePipelineDebugStats &stats,
-                                             const gx::FramePipelineCounters &counters)
+std::string formatPlannerMilliseconds(const std::chrono::microseconds value)
+{
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(2) << static_cast<double>(value.count()) / 1000.0;
+    return out.str();
+}
+
+std::vector<std::string> debugOverlayLines(const gx::FramePipelineDebugStats &stats,
+                                           const gx::FramePipelineCounters &counters)
 {
     const auto processingTiles = stats.queuedIntervalTiles + stats.queuedRegionTiles;
     const auto stuckTiles = stats.stuckIntervalTiles + stats.stuckRegionTiles;
     return {
-        "tiles:" + std::to_string(stats.displayTiles)
+        "tiles display:" + std::to_string(stats.displayTiles)
             + " plot:" + std::to_string(stats.plotTiles),
-        "uniform:" + std::to_string(stats.uniformTiles)
+        "cover uniform:" + std::to_string(stats.uniformTiles)
             + " mixed:" + std::to_string(stats.mixedTiles)
             + " missing:" + std::to_string(stats.missingTiles),
-        "fallback:" + std::to_string(stats.fallbackTiles)
+        "fallback tiles:" + std::to_string(stats.fallbackTiles)
             + " clipped:" + std::to_string(stats.clippedFallbackTiles),
-        std::string{"budget:adaptive depth:"} + std::to_string(stats.refinementDepth)
+        std::string{"budget depth:"} + std::to_string(stats.refinementDepth)
             + " gpu:" + (stats.allowGpuRaster ? "on" : "off"),
-        "processing:" + std::to_string(processingTiles)
-            + " running:" + std::to_string(stats.inFlightJobs)
-            + " done:" + std::to_string(stats.completedJobs),
-        "queued i:" + std::to_string(stats.queuedIntervalTiles)
-            + " r:" + std::to_string(stats.queuedRegionTiles)
-            + " jobs:" + std::to_string(stats.submittedJobs),
-        "stuck:" + std::to_string(stuckTiles)
+        "runtime run:" + std::to_string(stats.inFlightJobs)
+            + " done:" + std::to_string(stats.completedJobs)
+            + " queue:" + std::to_string(processingTiles),
+        "jobs sub:" + std::to_string(stats.submittedJobs)
+            + " stuck:" + std::to_string(stuckTiles)
             + " applied:" + std::to_string(counters.tileDeltasApplied)
-            + "/" + std::to_string(counters.tileDeltasRejected)
+            + "/" + std::to_string(counters.tileDeltasRejected),
+        "plan time:" + formatPlannerMilliseconds(stats.tilePlan.totalTime)
+            + "ms visits:" + std::to_string(stats.tilePlan.visitedTiles)
+            + " cand:" + std::to_string(stats.tilePlan.candidatesDiscovered),
+        "plan cpu w:" + std::to_string(stats.tilePlan.workerCount)
+            + " idle:" + std::to_string(stats.tilePlan.idleWorkersAtStart)
+            + " off:" + std::to_string(stats.tilePlan.offloadedTasks)
+            + " inline:" + std::to_string(stats.tilePlan.inlineTasks),
+        "plan chunks:" + std::to_string(stats.tilePlan.resultChunks)
+            + " snap:" + std::to_string(stats.tilePlan.snapshotRecords)
+            + " seeds:" + std::to_string(stats.tilePlan.seedTiles)
     };
+}
+
+std::string plannerSummaryLine(const gx::TilePlanStats &stats,
+                               const size_t jobs,
+                               const size_t erased)
+{
+    return "planner total=" + formatPlannerMilliseconds(stats.totalTime)
+        + "ms discovery=" + formatPlannerMilliseconds(stats.discoveryTime)
+        + "ms commit=" + formatPlannerMilliseconds(stats.commitTime)
+        + "ms workers=" + std::to_string(stats.workerCount)
+        + " idle=" + std::to_string(stats.idleWorkersAtStart)
+        + " seeds=" + std::to_string(stats.seedTiles)
+        + " visits=" + std::to_string(stats.visitedTiles)
+        + " candidates=" + std::to_string(stats.candidatesDiscovered)
+        + " jobs=" + std::to_string(jobs)
+        + " erased=" + std::to_string(erased)
+        + " offload=" + std::to_string(stats.offloadedTasks)
+        + " inline=" + std::to_string(stats.inlineTasks)
+        + " chunks=" + std::to_string(stats.resultChunks);
+}
+
+std::string runtimeSummaryLine(const gx::FramePipelineDebugStats &stats)
+{
+    const auto processingTiles = stats.queuedIntervalTiles + stats.queuedRegionTiles;
+    const auto stuckTiles = stats.stuckIntervalTiles + stats.stuckRegionTiles;
+    return "runtime running=" + std::to_string(stats.inFlightJobs)
+        + " done=" + std::to_string(stats.completedJobs)
+        + " queued=" + std::to_string(processingTiles)
+        + " queuedI=" + std::to_string(stats.queuedIntervalTiles)
+        + " queuedR=" + std::to_string(stats.queuedRegionTiles)
+        + " stuck=" + std::to_string(stuckTiles);
 }
 
 DebugOverlayLayout debugOverlayLayoutFor(const gx::FramePipelineDebugStats &stats,
@@ -117,8 +164,7 @@ DebugOverlayLayout debugOverlayLayoutFor(const gx::FramePipelineDebugStats &stat
     const auto width = std::max(1, framebufferWidth);
     const auto height = std::max(1, framebufferHeight);
     const auto lines = debugOverlayLines(stats, counters);
-    std::array<float, 7> pixelHeights{};
-    pixelHeights.fill(12.0f * scale);
+    std::vector<float> pixelHeights(lines.size(), 12.0f * scale);
     auto textWidthPx = 0.0f;
     for (size_t index = 0; index < lines.size(); ++index)
     {
@@ -140,10 +186,17 @@ DebugOverlayLayout debugOverlayLayoutFor(const gx::FramePipelineDebugStats &stat
     const auto panelBottomPx = static_cast<float>(height) - marginPx;
     const auto panelTopPx = std::max(marginPx, panelBottomPx - panelHeightPx);
     const auto textXPx = panelLeftPx + paddingX;
-    std::array<float, 7> textYPx{};
+    std::vector<float> textYPx(lines.size(), 0.0f);
     for (size_t index = 0; index < textYPx.size(); ++index)
     {
         textYPx[index] = panelTopPx + paddingY + static_cast<float>(index) * lineGapPx;
+    }
+
+    std::vector<float> textY;
+    textY.reserve(textYPx.size());
+    for (const auto y : textYPx)
+    {
+        textY.push_back(gx::normalizedPixelYFromTop(y, height));
     }
 
     return {
@@ -152,15 +205,8 @@ DebugOverlayLayout debugOverlayLayoutFor(const gx::FramePipelineDebugStats &stat
         .panelBottom = gx::normalizedPixelYFromTop(panelBottomPx, height),
         .panelTop = gx::normalizedPixelYFromTop(panelTopPx, height),
         .textX = gx::normalizedPixelX(textXPx, width),
-        .textY = {
-            gx::normalizedPixelYFromTop(textYPx[0], height),
-            gx::normalizedPixelYFromTop(textYPx[1], height),
-            gx::normalizedPixelYFromTop(textYPx[2], height),
-            gx::normalizedPixelYFromTop(textYPx[3], height),
-            gx::normalizedPixelYFromTop(textYPx[4], height),
-            gx::normalizedPixelYFromTop(textYPx[5], height)
-        },
-        .pixelHeights = pixelHeights
+        .textY = std::move(textY),
+        .pixelHeights = std::move(pixelHeights)
     };
 }
 
@@ -197,33 +243,6 @@ std::optional<gx::RenderTileInstance> normalPlotInstanceForDisplayTile(const gx:
     };
 }
 
-bool isPresentableDisplayTile(const gx::DisplayTile &tile)
-{
-    switch (tile.visualState)
-    {
-    case gx::TileVisualState::UniformTrue:
-    case gx::TileVisualState::UniformFalse:
-        return true;
-    case gx::TileVisualState::MixedRegion:
-        return tile.cpuRegion.has_value() && tile.gpuSlice.textureId != 0;
-    default:
-        return false;
-    }
-}
-
-std::vector<gx::DisplayTile> presentableDisplayTiles(std::span<const gx::DisplayTile> tiles)
-{
-    std::vector<gx::DisplayTile> result;
-    result.reserve(tiles.size());
-    for (const auto &tile : tiles)
-    {
-        if (isPresentableDisplayTile(tile))
-        {
-            result.push_back(tile);
-        }
-    }
-    return result;
-}
 }
 
 namespace gx
@@ -371,7 +390,8 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
             tileCache,
             frameBudget.tilePlan,
             frameBudget.maxSeedCells,
-            frameBudget.refinementDepth);
+            frameBudget.refinementDepth,
+            &tileRuntime.workerPool());
     }
     size_t submittedJobCount = 0;
     if (frameBudget.submitTileJobs)
@@ -411,7 +431,8 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
                     tileCache,
                     frameBudget.tilePlan,
                     frameBudget.maxSeedCells,
-                    frameBudget.refinementDepth);
+                    frameBudget.refinementDepth,
+                    &tileRuntime.workerPool());
                 if (frameBudget.submitTileJobs && !tilePlan.jobs.empty())
                 {
                     tileRuntime.submitJobs(tilePlan.jobs);
@@ -437,25 +458,26 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
         && committedVisualFrame->semantics == request.formula.semanticsHash
         ? &*committedVisualFrame
         : nullptr;
-    VisualFrame visualFrame;
+    PresentationPlan presentationPlan;
     {
-        GRAPHX_PROFILE_SCOPE("pipeline.visualCover");
-        visualFrame = visualCoverBuilder.build(
-            request,
-            tileCache,
-            previousFrame,
-            frameBudget.maxSeedCells,
-            frameBudget.refinementDepth,
+        GRAPHX_PROFILE_SCOPE("pipeline.presentationPlan");
+        presentationPlan = presentationPlanner.plan(
+            PresentationPlanRequest{
+                .viewport = request,
+                .tileCache = tileCache,
+                .previous = previousFrame,
+                .maxSeedCells = frameBudget.maxSeedCells,
+                .refinementDepth = frameBudget.refinementDepth,
+                .uploadBudget = frameBudget.upload
+            },
             [this](const RegionImageRef &ref)
             {
-                return resources.findRegionImage(ref).textureId != 0;
+                return resources.findRegionImage(ref);
             });
     }
-    snapshot.displayTiles = std::move(visualFrame.tiles);
-    auto preloadTiles = std::move(visualFrame.preloadTiles);
+    snapshot.displayTiles = std::move(presentationPlan.displayTiles);
+    auto preloadTiles = std::move(presentationPlan.preloadTiles);
     snapshot.visibleCover.reserve(snapshot.displayTiles.size());
-    std::vector<RegionImageRef> visibleRegions;
-    visibleRegions.reserve(snapshot.displayTiles.size());
     debugStats = FramePipelineDebugStats{
         .displayTiles = snapshot.displayTiles.size(),
         .inFlightJobs = inFlightCount,
@@ -465,6 +487,7 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
         .stuckIntervalTiles = tileDebugCounts.stuckIntervalQueued,
         .stuckRegionTiles = tileDebugCounts.stuckRegionQueued,
         .submittedJobs = frameBudget.submitTileJobs ? tilePlan.jobs.size() : 0,
+        .tilePlan = tilePlan.stats,
         .refinementDepth = frameBudget.refinementDepth,
         .allowGpuRaster = frameBudget.allowGpuRaster
     };
@@ -498,11 +521,23 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
         {
             ++debugStats.clippedFallbackTiles;
         }
-        if (tile.cpuRegion)
-        {
-            tile.gpuSlice = resources.findRegionImage(*tile.cpuRegion);
-            visibleRegions.push_back(*tile.cpuRegion);
-        }
+    }
+    const auto plannerDidWork = tilePlan.stats.candidatesDiscovered > 0
+        || tilePlan.stats.offloadedTasks > 0
+        || !tilePlan.jobs.empty()
+        || !tilePlan.erasedShadowedTiles.empty();
+    if (plannerDidWork)
+    {
+        const auto plannerLine = plannerSummaryLine(
+            tilePlan.stats,
+            tilePlan.jobs.size(),
+            tilePlan.erasedShadowedTiles.size());
+        const auto runtimeLine = runtimeSummaryLine(debugStats);
+        PipelineLog::logConsole(
+            "frame=%llu %s %s",
+            static_cast<unsigned long long>(frameId),
+            plannerLine.c_str(),
+            runtimeLine.c_str());
     }
     if (appState.debug
         && (frameId % 30 == 0
@@ -513,7 +548,8 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
         PipelineLog::log(
             "frame=%llu view=[%.3f,%.3f]x[%.3f,%.3f] root=%d seed=%d leaf=%d depth=%d gpu=%d "
             "tiles=%zu plot=%zu uniform=%zu mixed=%zu missing=%zu fallback=%zu clipped=%zu "
-            "inFlight=%zu completed=%zu queuedI=%zu queuedR=%zu stuckI=%zu stuckR=%zu jobs=%zu applied=%zu rejected=%zu",
+            "inFlight=%zu completed=%zu queuedI=%zu queuedR=%zu stuckI=%zu stuckR=%zu jobs=%zu applied=%zu rejected=%zu "
+            "plannerUs=%lld visits=%zu candidates=%zu offload=%zu inline=%zu chunks=%zu",
             static_cast<unsigned long long>(frameId),
             request.xRange.lower,
             request.xRange.upper,
@@ -539,17 +575,21 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
             debugStats.stuckRegionTiles,
             debugStats.submittedJobs,
             drainResult.applied,
-            drainResult.rejected);
+            drainResult.rejected,
+            static_cast<long long>(tilePlan.stats.totalTime.count()),
+            tilePlan.stats.visitedTiles,
+            tilePlan.stats.candidatesDiscovered,
+            tilePlan.stats.offloadedTasks,
+            tilePlan.stats.inlineTasks,
+            tilePlan.stats.resultChunks);
     }
     {
         GRAPHX_PROFILE_SCOPE("pipeline.beginRegionFrame");
-        resources.beginRegionFrame(visibleRegions);
+        resources.beginRegionFrame(presentationPlan.visibleRegions);
     }
     {
         GRAPHX_PROFILE_SCOPE("pipeline.uploadPlan");
-        auto uploadCandidates = snapshot.displayTiles;
-        uploadCandidates.insert(uploadCandidates.end(), preloadTiles.begin(), preloadTiles.end());
-        snapshot.uploadPlan = uploadPlanner.planVisible(uploadCandidates, frameBudget.upload);
+        snapshot.uploadPlan = presentationPlan.uploadPlan;
     }
 
     FrameCommandBuffer commands;
@@ -561,26 +601,21 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
     pipelineCounters.drawCommandsBuilt += snapshot.drawCommands.size();
     snapshot.counters = pipelineCounters.toDebugString();
 
-    auto presentableTiles = std::vector<DisplayTile>{};
-    {
-        GRAPHX_PROFILE_SCOPE("pipeline.presentableTiles");
-        presentableTiles = presentableDisplayTiles(snapshot.displayTiles);
-    }
     if (!committedVisualFrame
         || committedVisualFrame->semantics != request.formula.semanticsHash)
     {
         committedVisualFrame = CommittedVisualFrame{
             .semantics = request.formula.semanticsHash,
             .viewport = request,
-            .tiles = std::move(presentableTiles)
+            .tiles = std::move(presentationPlan.committedTiles)
         };
     }
-    else if (!presentableTiles.empty())
+    else if (!presentationPlan.committedTiles.empty())
     {
         committedVisualFrame = CommittedVisualFrame{
             .semantics = request.formula.semanticsHash,
             .viewport = request,
-            .tiles = std::move(presentableTiles)
+            .tiles = std::move(presentationPlan.committedTiles)
         };
     }
 
@@ -893,6 +928,16 @@ std::vector<OverlayTextRun> FramePipeline::buildOverlayTextRuns() const
     const auto scale = uiScaleFor(appState);
     const auto logicalWidth = static_cast<float>(std::max(1, appState.framebufferWidth)) / scale;
     const auto logicalHeight = static_cast<float>(std::max(1, appState.framebufferHeight)) / scale;
+    std::optional<DebugOverlayLayout> debugTextLayout;
+    if (appState.debug)
+    {
+        debugTextLayout = debugOverlayLayoutFor(
+            debugStats,
+            pipelineCounters,
+            appState.framebufferWidth,
+            appState.framebufferHeight,
+            scale);
+    }
 
     const auto pushPixelText = [&](std::string text,
                                    const float x,
@@ -920,6 +965,19 @@ std::vector<OverlayTextRun> FramePipeline::buildOverlayTextRuns() const
         const auto y = button.bounds.top + std::max(2.0f * scale, (button.bounds.height() - lineBox) * 0.5f);
         pushPixelText(button.text, x, y, pixelHeight, white);
     };
+    const auto underDebugPanel = [&](const float x, const float y, const float pixelHeight)
+    {
+        if (!debugTextLayout)
+        {
+            return false;
+        }
+
+        const auto textHeight = textHeightNdc(pixelHeight, appState.framebufferHeight);
+        return x >= debugTextLayout->panelLeft - 0.02f
+            && x <= debugTextLayout->panelRight + 0.02f
+            && y >= debugTextLayout->panelBottom - textHeight
+            && y <= debugTextLayout->panelTop + textHeight;
+    };
 
     const auto xAxisY = std::clamp(toNdc(0.0, appState.yRange), -0.93f, 0.93f);
     const auto yAxisX = std::clamp(toNdc(0.0, appState.xRange), -0.93f, 0.93f);
@@ -941,13 +999,18 @@ std::vector<OverlayTextRun> FramePipeline::buildOverlayTextRuns() const
             continue;
         }
         auto text = formatTick(x);
-        runs.push_back({
-            .text = text,
-            .x = clampTextX(toNdc(x, appState.xRange) - 0.035f, text, axisLabelPx, appState.framebufferWidth),
-            .y = clampTextY(xAxisY - 0.035f, axisLabelPx, appState.framebufferHeight),
-            .pixelHeight = axisLabelPx,
-            .color = label
-        });
+        const auto labelX = clampTextX(toNdc(x, appState.xRange) - 0.035f, text, axisLabelPx, appState.framebufferWidth);
+        const auto labelY = clampTextY(xAxisY - 0.035f, axisLabelPx, appState.framebufferHeight);
+        if (!underDebugPanel(labelX, labelY, axisLabelPx))
+        {
+            runs.push_back({
+                .text = text,
+                .x = labelX,
+                .y = labelY,
+                .pixelHeight = axisLabelPx,
+                .color = label
+            });
+        }
     }
     tickCount = 0;
     for (auto y = firstTickAtOrAbove(appState.yRange.lower, yStep);
@@ -959,13 +1022,18 @@ std::vector<OverlayTextRun> FramePipeline::buildOverlayTextRuns() const
             continue;
         }
         auto text = formatTick(y);
-        runs.push_back({
-            .text = text,
-            .x = clampTextX(yAxisX + 0.012f, text, axisLabelPx, appState.framebufferWidth),
-            .y = clampTextY(toNdc(y, appState.yRange) + 0.020f, axisLabelPx, appState.framebufferHeight),
-            .pixelHeight = axisLabelPx,
-            .color = label
-        });
+        const auto labelX = clampTextX(yAxisX + 0.012f, text, axisLabelPx, appState.framebufferWidth);
+        const auto labelY = clampTextY(toNdc(y, appState.yRange) + 0.020f, axisLabelPx, appState.framebufferHeight);
+        if (!underDebugPanel(labelX, labelY, axisLabelPx))
+        {
+            runs.push_back({
+                .text = text,
+                .x = labelX,
+                .y = labelY,
+                .pixelHeight = axisLabelPx,
+                .color = label
+            });
+        }
     }
 
     if (appState.formulaInput.active)
@@ -1030,12 +1098,7 @@ std::vector<OverlayTextRun> FramePipeline::buildOverlayTextRuns() const
     if (appState.debug)
     {
         const auto lines = debugOverlayLines(debugStats, pipelineCounters);
-        const auto layout = debugOverlayLayoutFor(
-            debugStats,
-            pipelineCounters,
-            appState.framebufferWidth,
-            appState.framebufferHeight,
-            scale);
+        const auto &layout = *debugTextLayout;
         for (size_t index = 0; index < lines.size(); ++index)
         {
             runs.push_back({

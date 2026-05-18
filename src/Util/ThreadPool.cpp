@@ -33,7 +33,9 @@ void ThreadPool::threadLoop()
         TaskWrapper task;
         {
             std::unique_lock lock(queueMutex);
+            idleThreads.fetch_add(1, std::memory_order_relaxed);
             cv.wait(lock, [this] { return threadsShouldStop || !tasks.empty(); });
+            idleThreads.fetch_sub(1, std::memory_order_relaxed);
             if (threadsShouldStop)
             {
                 return;
@@ -43,6 +45,16 @@ void ThreadPool::threadLoop()
         }
         task.func();
     }
+}
+
+size_t ThreadPool::workerCount() const
+{
+    return threads.size();
+}
+
+size_t ThreadPool::idleWorkerCount() const
+{
+    return idleThreads.load(std::memory_order_relaxed);
 }
 
 void ThreadPool::markAllTasksLowPriority()

@@ -5,6 +5,7 @@
 #ifndef THREADPOOL_H
 #define THREADPOOL_H
 #include <condition_variable>
+#include <cstddef>
 #include <functional>
 #include <future>
 #include <queue>
@@ -32,6 +33,12 @@ public:
     template<class F, class... Args>
     auto addTask(F &&f, Args &&... args) -> std::future<std::invoke_result_t<F, Args...> >;
 
+    template<class F>
+    bool tryAddTask(F &&f, int priority = 0);
+
+    [[nodiscard]] size_t workerCount() const;
+    [[nodiscard]] size_t idleWorkerCount() const;
+
     void markAllTasksLowPriority();
     void clearAllTasks();
 
@@ -42,6 +49,7 @@ private:
     std::mutex queueMutex;
     std::condition_variable cv;
     std::atomic<bool> threadsShouldStop;
+    std::atomic<size_t> idleThreads{0};
 
     void threadLoop();
 };
@@ -63,6 +71,26 @@ auto ThreadPool::addTask(F &&f, Args &&... args) -> std::future<std::invoke_resu
 
     cv.notify_one();
     return res;
+}
+
+template<class F>
+bool ThreadPool::tryAddTask(F &&f, const int priority)
+{
+    {
+        std::scoped_lock lock(queueMutex);
+        const auto idle = idleThreads.load(std::memory_order_relaxed);
+        if (threadsShouldStop.load(std::memory_order_relaxed)
+            || idle == 0
+            || tasks.size() >= idle)
+        {
+            return false;
+        }
+
+        tasks.emplace(TaskWrapper{std::forward<F>(f), priority});
+    }
+
+    cv.notify_one();
+    return true;
 }
 
 #endif //THREADPOOL_H

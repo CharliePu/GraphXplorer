@@ -111,8 +111,7 @@ void main()
             discard;
         }
         vec3 trueColor = vec3(0.0, 0.47, 0.95);
-        float alpha = 1.0 - exp(-6.0 * sampleValue);
-        FragColor = vec4(trueColor, alpha);
+        FragColor = vec4(trueColor, 1.0);
         return;
     }
 
@@ -1052,8 +1051,8 @@ void RenderResourceManager::ensureRegionTextureArray(const int width, const int 
     const auto genStart = Clock::now();
     glGenTextures(1, &regionTextures.texture);
     glBindTexture(GL_TEXTURE_2D_ARRAY, regionTextures.texture);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     PipelineLog::log(

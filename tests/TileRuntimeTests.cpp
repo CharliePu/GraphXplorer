@@ -451,6 +451,36 @@ TEST_CASE("TileRuntime passes configured raster sampling resolution to backend",
     CHECK(std::ranges::all_of(pixels, [](const uint32_t value) { return value == 128; }));
 }
 
+TEST_CASE("TileRuntime defaults raster sampling resolution to one screen tile",
+          "[TileRuntime][Responsiveness]")
+{
+    auto backend = std::make_unique<RecordingBackend>();
+    auto *backendView = backend.get();
+    gx::TileRuntime runtime{
+        std::move(backend),
+        1,
+        gx::TileRuntimeOptions{
+            .batchOptimizer = {
+                .initialRasterBatchSize = 8
+            }
+        }
+    };
+    const auto formula = gx::FormulaCompiler{}.compile("x < y");
+    REQUIRE(formula.diagnostics.ok);
+    runtime.setLatestRequest(requestFor(formula), formula);
+
+    runtime.submitJobs(std::array{tileJob(gx::JobKind::RasterizeRegion, 0)});
+
+    for (auto spin = 0; spin < 200 && runtime.inFlightCount() > 0; ++spin)
+    {
+        std::this_thread::sleep_for(1ms);
+    }
+
+    const auto pixels = backendView->rasterPixels();
+    REQUIRE_FALSE(pixels.empty());
+    CHECK(pixels.front() == gx::RasterTileScreenPixels);
+}
+
 TEST_CASE("TileRuntime propagates GPU raster admission to backend batches",
           "[TileRuntime][Responsiveness]")
 {

@@ -100,7 +100,7 @@ struct FormulaInputState
 
 struct AppState
 {
-    std::string formulaExpression{"x<=y"};
+    std::string formulaExpression{"y>sin(2^x)"};
     FormulaInputState formulaInput{};
     Interval xRange{-20.0, 20.0};
     Interval yRange{-20.0, 20.0};

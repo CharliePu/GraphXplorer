@@ -402,7 +402,7 @@ TEST_CASE("FramePipeline keeps invalid formula submissions in the editor", "[Fra
 
     CHECK(pipeline.state().formulaInput.active);
     CHECK_FALSE(pipeline.state().formulaInput.error.empty());
-    CHECK(pipeline.state().formulaExpression == "x<=y");
+    CHECK(pipeline.state().formulaExpression == "y>sin(2^x)");
     CHECK(pipeline.renderResources().overlayTextRunCount() >= 3);
     requireValidOverlayGeometry(pipeline);
 
@@ -496,10 +496,13 @@ TEST_CASE("FramePipeline debug mode adds chunk-frame instances through command r
         return run.text == "debug frames";
     }));
     CHECK(std::ranges::any_of(overlayText, [](const gx::OverlayTextRun &run) {
-        return run.text.find("tiles:") == 0;
+        return run.text.find("tiles display:") == 0;
     }));
     CHECK(std::ranges::any_of(overlayText, [](const gx::OverlayTextRun &run) {
-        return run.text.find("processing:") == 0;
+        return run.text.find("runtime run:") == 0;
+    }));
+    CHECK(std::ranges::any_of(overlayText, [](const gx::OverlayTextRun &run) {
+        return run.text.find("plan cpu") == 0;
     }));
 }
 

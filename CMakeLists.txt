@@ -95,6 +95,8 @@ add_library(GraphXplorerApp
         src/App/FramePipeline.h
         src/App/InteractionController.cpp
         src/App/InteractionController.h
+        src/App/PresentationPlanner.cpp
+        src/App/PresentationPlanner.h
         src/App/UiLayout.cpp
         src/App/UiLayout.h
         src/Core/Application.cpp

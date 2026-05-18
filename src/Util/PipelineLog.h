@@ -33,7 +33,7 @@ namespace PipelineLog
         }
     }
 
-    inline void log(const char *fmt, ...)
+    inline void vlog(const bool mirrorToConsole, const char *fmt, va_list args)
     {
         std::lock_guard lock{logMutex};
         if (!logFile) return;
@@ -45,19 +45,54 @@ namespace PipelineLog
             now - previousLogTime).count();
         previousLogTime = now;
 
-        fprintf(
-            logFile,
-            "[%lld us +%lld us] ",
-            static_cast<long long>(sinceStartUs),
-            static_cast<long long>(sincePreviousUs));
+        const auto writePrefix = [&](FILE *target)
+        {
+            fprintf(
+                target,
+                "[%lld us +%lld us] ",
+                static_cast<long long>(sinceStartUs),
+                static_cast<long long>(sincePreviousUs));
+        };
 
+        if (logFile)
+        {
+            va_list fileArgs;
+            va_copy(fileArgs, args);
+            writePrefix(logFile);
+            vfprintf(logFile, fmt, fileArgs);
+            va_end(fileArgs);
+
+            fprintf(logFile, "\n");
+            fflush(logFile);
+        }
+
+        if (mirrorToConsole)
+        {
+            va_list consoleArgs;
+            va_copy(consoleArgs, args);
+            writePrefix(stdout);
+            vfprintf(stdout, fmt, consoleArgs);
+            va_end(consoleArgs);
+
+            fprintf(stdout, "\n");
+            fflush(stdout);
+        }
+    }
+
+    inline void log(const char *fmt, ...)
+    {
         va_list args;
         va_start(args, fmt);
-        vfprintf(logFile, fmt, args);
+        vlog(false, fmt, args);
         va_end(args);
+    }
 
-        fprintf(logFile, "\n");
-        fflush(logFile);
+    inline void logConsole(const char *fmt, ...)
+    {
+        va_list args;
+        va_start(args, fmt);
+        vlog(true, fmt, args);
+        va_end(args);
     }
 }
 

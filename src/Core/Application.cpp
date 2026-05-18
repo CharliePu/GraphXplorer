@@ -131,6 +131,12 @@ Application::Application(const int width, const int height, const std::string &n
     const auto framebufferWidth = window->getWidth();
     const auto framebufferHeight = window->getHeight();
     const auto devicePixelRatio = window->getContentScaleFactor();
+    PipelineLog::logConsole(
+        "main.start name=\"%s\" framebuffer=%dx%d dpr=%.2f",
+        name.c_str(),
+        framebufferWidth,
+        framebufferHeight,
+        devicePixelRatio);
     logPostedWake("initialResize", requestMailbox.submitResize(framebufferWidth, framebufferHeight, "initialResize"));
     {
         GRAPHX_PROFILE_SCOPE("app.initialFrame");

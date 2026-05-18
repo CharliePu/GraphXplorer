@@ -14,15 +14,14 @@
 #include "../Compute/ComputeBackend.h"
 #include "../Compute/TilePlanner.h"
 #include "../Compute/TileRuntime.h"
-#include "../Compute/VisualCoverBuilder.h"
 #include "../Formula/FormulaCompiler.h"
 #include "../Render/FrameCommandBuffer.h"
 #include "../Render/RenderResourceManager.h"
-#include "../Render/UploadPlanner.h"
 #include "../Tile/TileCache.h"
 #include "../Util/Contracts.h"
 #include "AppState.h"
 #include "FrameBudgetController.h"
+#include "PresentationPlanner.h"
 
 namespace gx
 {
@@ -53,6 +52,7 @@ struct FramePipelineDebugStats
     size_t stuckIntervalTiles{0};
     size_t stuckRegionTiles{0};
     size_t submittedJobs{0};
+    TilePlanStats tilePlan{};
     int refinementDepth{DefaultRefinementDepth};
     bool allowGpuRaster{true};
 };
@@ -96,10 +96,9 @@ private:
     FormulaCompiler formulaCompiler{};
     std::optional<CompiledFormula> compiledFormula{};
     TilePlanner tilePlanner{};
-    VisualCoverBuilder visualCoverBuilder{};
     TileRuntime tileRuntime;
     TileCache tileCache{};
-    UploadPlanner uploadPlanner{};
+    PresentationPlanner presentationPlanner{};
     RenderResourceManager resources{};
     std::unique_ptr<FrameBudgetPolicy> frameBudgetPolicy;
     FrameWorkBudget latestFrameBudget{};

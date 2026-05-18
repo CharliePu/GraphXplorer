@@ -6,6 +6,7 @@
 #include "../src/Compute/ComputeBackend.h"
 #include "../src/Compute/TilePlanner.h"
 #include "../src/Tile/TileCache.h"
+#include "../src/Util/ThreadPool.h"
 
 namespace
 {
@@ -281,6 +282,86 @@ TEST_CASE("TilePlanner produces work from the sparse traversal", "[TilePlanner]"
     }
 }
 
+TEST_CASE("TilePlanner parallel discovery commits the same work as sequential discovery", "[TilePlanner]")
+{
+    const auto formula = gx::FormulaCompiler{}.compile("x>y");
+    REQUIRE(formula.diagnostics.ok);
+
+    const gx::ViewportRequest request{
+        .header = {.requestId = 20, .generation = 2},
+        .formula = formula.handle,
+        .xRange = Interval{-10.0, 10.0},
+        .yRange = Interval{-10.0, 10.0},
+        .framebufferWidth = 800,
+        .framebufferHeight = 800,
+        .devicePixelRatio = 1.0
+    };
+    constexpr auto refinementDepth = 2;
+    const auto seedLevel = gx::seedTileLevelForViewport(request);
+    const gx::TileKey mixedSeed{-1, -1, seedLevel};
+
+    auto makeCache = [&]()
+    {
+        gx::TileCache cache;
+        const auto result = cache.apply(mixedRegionTransaction(
+            formula.handle.semanticsHash,
+            mixedSeed,
+            1));
+        REQUIRE(result.rejected == 0);
+        return cache;
+    };
+
+    auto sequentialCache = makeCache();
+    auto parallelCache = makeCache();
+    ThreadPool workers{2};
+
+    const auto budget = gx::TilePlanBudget{
+        .maxIntervalJobsPerFrame = 64,
+        .maxRasterJobsPerFrame = 64
+    };
+    const auto sequentialPlan = gx::TilePlanner{}.plan(
+        request,
+        sequentialCache,
+        budget,
+        4,
+        refinementDepth);
+    const auto parallelPlan = gx::TilePlanner{}.plan(
+        request,
+        parallelCache,
+        budget,
+        4,
+        refinementDepth,
+        &workers);
+
+    REQUIRE(parallelPlan.jobs.size() == sequentialPlan.jobs.size());
+    for (size_t index = 0; index < parallelPlan.jobs.size(); ++index)
+    {
+        const auto &parallelJob = parallelPlan.jobs[index];
+        const auto &sequentialJob = sequentialPlan.jobs[index];
+        CHECK(parallelJob.kind == sequentialJob.kind);
+        CHECK(parallelJob.workClass == sequentialJob.workClass);
+        CHECK(parallelJob.key == sequentialJob.key);
+        CHECK(parallelJob.priority == sequentialJob.priority);
+        CHECK(parallelJob.dependencies == sequentialJob.dependencies);
+        CHECK(parallelJob.interval.has_value() == sequentialJob.interval.has_value());
+        if (parallelJob.interval && sequentialJob.interval)
+        {
+            CHECK(parallelJob.interval->lower == sequentialJob.interval->lower);
+            CHECK(parallelJob.interval->upper == sequentialJob.interval->upper);
+        }
+    }
+    CHECK(parallelPlan.erasedShadowedTiles == sequentialPlan.erasedShadowedTiles);
+    for (const auto &job : parallelPlan.jobs)
+    {
+        const auto *sequentialRecord = sequentialCache.find(job.key, formula.handle.semanticsHash);
+        const auto *parallelRecord = parallelCache.find(job.key, formula.handle.semanticsHash);
+        REQUIRE(sequentialRecord != nullptr);
+        REQUIRE(parallelRecord != nullptr);
+        CHECK(parallelRecord->valueState == sequentialRecord->valueState);
+        CHECK(parallelRecord->workState == sequentialRecord->workState);
+    }
+}
+
 TEST_CASE("TilePlanner never schedules cached descendants below the viewport leaf level", "[TilePlanner]")
 {
     const auto formula = gx::FormulaCompiler{}.compile("x>y");
@@ -410,7 +491,7 @@ TEST_CASE("CpuComputeBackend classifies interval batches without renderer depend
     CHECK(out.front().classification == gx::TileClassification::Mixed);
 }
 
-TEST_CASE("CpuComputeBackend rasterizer stores subpixel coverage instead of binary samples", "[ComputeBackend]")
+TEST_CASE("CpuComputeBackend rasterizer stores binary any-hit subpixel results", "[ComputeBackend]")
 {
     const auto formula = gx::FormulaCompiler{}.compile("x<=y");
     REQUIRE(formula.diagnostics.ok);
@@ -430,7 +511,7 @@ TEST_CASE("CpuComputeBackend rasterizer stores subpixel coverage instead of bina
 
     REQUIRE(result.ok);
     REQUIRE(out.front().pixels.size() == 1);
-    CHECK(static_cast<int>(out.front().pixels.front()) == 128);
+    CHECK(static_cast<int>(out.front().pixels.front()) == 255);
 }
 
 TEST_CASE("CpuComputeBackend rasterizer marks tan pole pixels unresolved", "[ComputeBackend]")

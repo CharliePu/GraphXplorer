@@ -12,6 +12,7 @@ add_executable(GraphXplorerTests
         InteractionControllerTests.cpp
         MainThreadRequestMailboxTests.cpp
         ParserTests.cpp
+        PresentationPlannerTests.cpp
         RenderCommandTests.cpp
         TilePlannerBackendTests.cpp
         TileMathTests.cpp

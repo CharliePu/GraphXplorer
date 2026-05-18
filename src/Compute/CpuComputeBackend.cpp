@@ -1,7 +1,6 @@
 #include "ComputeBackend.h"
 
 #include <algorithm>
-#include <array>
 #include <cstdint>
 
 namespace gx
@@ -11,47 +10,27 @@ namespace
 constexpr auto PixelFalse = uint8_t{0};
 constexpr auto PixelUnknown = uint8_t{127};
 constexpr auto PixelTrue = uint8_t{255};
-constexpr auto RasterSupersampleAxis = 4;
+constexpr auto RasterSupersampleAxis = 8;
 constexpr auto RasterSupersampleCount = RasterSupersampleAxis * RasterSupersampleAxis;
-constexpr std::array<double, RasterSupersampleCount> RasterSampleJitterX{
-    0.23, 0.72, 0.41, 0.91,
-    0.64, 0.86, 0.18, 0.53,
-    0.39, 0.93, 0.22, 0.12,
-    0.81, 0.28, 0.58, 0.88
-};
-constexpr std::array<double, RasterSupersampleCount> RasterSampleJitterY{
-    0.67, 0.31, 0.84, 0.16,
-    0.24, 0.14, 0.59, 0.78,
-    0.93, 0.47, 0.76, 0.64,
-    0.09, 0.86, 0.35, 0.43
-};
 
-[[nodiscard]] uint8_t coverageByteFromHits(const int hits)
+[[nodiscard]] uint8_t supersampledAnyHit(const CompiledFormula &formula,
+                                         std::vector<double> &variables,
+                                         const std::optional<size_t> xSlot,
+                                         const std::optional<size_t> ySlot,
+                                         const double x0,
+                                         const double y0,
+                                         const double dx,
+                                         const double dy)
 {
-    return static_cast<uint8_t>((hits * 255 + RasterSupersampleCount / 2) / RasterSupersampleCount);
-}
-
-[[nodiscard]] uint8_t supersampledCoverage(const CompiledFormula &formula,
-                                           std::vector<double> &variables,
-                                           const std::optional<size_t> xSlot,
-                                           const std::optional<size_t> ySlot,
-                                           const double x0,
-                                           const double y0,
-                                           const double dx,
-                                           const double dy)
-{
-    auto hits = 0;
     for (auto sample = 0; sample < RasterSupersampleCount; ++sample)
     {
         const auto sx = sample % RasterSupersampleAxis;
         const auto sy = sample / RasterSupersampleAxis;
         const auto sampleX = x0
-            + ((static_cast<double>(sx) + RasterSampleJitterX[static_cast<size_t>(sample)])
-               / RasterSupersampleAxis)
+            + ((static_cast<double>(sx) + 0.5) / RasterSupersampleAxis)
             * dx;
         const auto sampleY = y0
-            + ((static_cast<double>(sy) + RasterSampleJitterY[static_cast<size_t>(sample)])
-               / RasterSupersampleAxis)
+            + ((static_cast<double>(sy) + 0.5) / RasterSupersampleAxis)
             * dy;
         if (xSlot)
         {
@@ -64,13 +43,16 @@ constexpr std::array<double, RasterSupersampleCount> RasterSampleJitterY{
 
         try
         {
-            hits += formula.evaluateDouble(variables) > 0.0 ? 1 : 0;
+            if (formula.evaluateDouble(variables) > 0.0)
+            {
+                return PixelTrue;
+            }
         }
         catch (...)
         {
         }
     }
-    return coverageByteFromHits(hits);
+    return PixelFalse;
 }
 
 [[nodiscard]] uint8_t rasterizedPixelValue(const CompiledFormula &formula,
@@ -115,7 +97,7 @@ constexpr std::array<double, RasterSupersampleCount> RasterSampleJitterY{
         return PixelUnknown;
     }
 
-    return supersampledCoverage(formula, sampleVariables, xSlot, ySlot, x0, y0, dx, dy);
+    return supersampledAnyHit(formula, sampleVariables, xSlot, ySlot, x0, y0, dx, dy);
 }
 }
 

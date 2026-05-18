@@ -475,52 +475,6 @@ double evaluateFormula(
     return stack[0];
 }
 
-double rasterSampleJitterX(int sample)
-{
-    switch (sample)
-    {
-    case 0: return 0.23;
-    case 1: return 0.72;
-    case 2: return 0.41;
-    case 3: return 0.91;
-    case 4: return 0.64;
-    case 5: return 0.86;
-    case 6: return 0.18;
-    case 7: return 0.53;
-    case 8: return 0.39;
-    case 9: return 0.93;
-    case 10: return 0.22;
-    case 11: return 0.12;
-    case 12: return 0.81;
-    case 13: return 0.28;
-    case 14: return 0.58;
-    default: return 0.88;
-    }
-}
-
-double rasterSampleJitterY(int sample)
-{
-    switch (sample)
-    {
-    case 0: return 0.67;
-    case 1: return 0.31;
-    case 2: return 0.84;
-    case 3: return 0.16;
-    case 4: return 0.24;
-    case 5: return 0.14;
-    case 6: return 0.59;
-    case 7: return 0.78;
-    case 8: return 0.93;
-    case 9: return 0.47;
-    case 10: return 0.76;
-    case 11: return 0.64;
-    case 12: return 0.09;
-    case 13: return 0.86;
-    case 14: return 0.35;
-    default: return 0.43;
-    }
-}
-
 __kernel void rasterizeFormula(
     __global const GpuFormulaInstruction *instructions,
     uint instructionCount,
@@ -552,13 +506,13 @@ __kernel void rasterizeFormula(
     const double x0 = xMin[tileIndex] + (double)px * dx;
     const double y0 = yMin[tileIndex] + (double)py * dy;
 
-    int hits = 0;
-    for (int sample = 0; sample < 16; ++sample)
+    int hit = 0;
+    for (int sample = 0; sample < 64 && !hit; ++sample)
     {
-        const int sx = sample & 3;
-        const int sy = sample >> 2;
-        const double sampleX = x0 + (((double)sx + rasterSampleJitterX(sample)) / 4.0) * dx;
-        const double sampleY = y0 + (((double)sy + rasterSampleJitterY(sample)) / 4.0) * dy;
+        const int sx = sample & 7;
+        const int sy = sample >> 3;
+        const double sampleX = x0 + (((double)sx + 0.5) / 8.0) * dx;
+        const double sampleY = y0 + (((double)sy + 0.5) / 8.0) * dy;
         int valid = 1;
         const double result = evaluateFormula(
             instructions,
@@ -568,9 +522,9 @@ __kernel void rasterizeFormula(
             sampleX,
             sampleY,
             &valid);
-        hits += (valid && result > 0.0) ? 1 : 0;
+        hit = (valid && result > 0.0) ? 1 : 0;
     }
-    pixels[outputOffsets[tileIndex] + pixelIndex] = (uchar)((hits * 255 + 8) / 16);
+    pixels[outputOffsets[tileIndex] + pixelIndex] = hit ? (uchar)255 : (uchar)0;
 }
 )CLC";
 }

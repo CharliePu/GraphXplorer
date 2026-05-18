@@ -219,6 +219,11 @@ size_t TileRuntime::inFlightCount() const
     return inFlight.size();
 }
 
+ThreadPool &TileRuntime::workerPool()
+{
+    return workers;
+}
+
 void TileRuntime::enqueueBatch(const ViewportRequest &request,
                                const CompiledFormula &formula,
                                const JobKind kind,

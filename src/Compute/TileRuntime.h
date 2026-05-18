@@ -63,6 +63,7 @@ public:
 
     [[nodiscard]] size_t pendingCompletionCount() const;
     [[nodiscard]] size_t inFlightCount() const;
+    [[nodiscard]] ThreadPool &workerPool();
     [[nodiscard]] static size_t recommendedWorkerCount(size_t hardwareThreads,
                                                        size_t headroom,
                                                        size_t maxWorkers = 0);

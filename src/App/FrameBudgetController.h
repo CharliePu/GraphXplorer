@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <optional>
 
 #include "../Compute/TileJob.h"
 #include "../Tile/TileMath.h"
@@ -14,24 +15,18 @@ namespace gx
 struct FrameBudgetControllerOptions
 {
     std::chrono::microseconds targetPipelineLatency{8000};
-    std::chrono::microseconds interactionHold{150000};
-    std::chrono::microseconds steadyApplyBudget{2000};
-    std::chrono::microseconds interactiveApplyBudget{500};
+    std::chrono::microseconds initialApplyBudget{2000};
     std::chrono::microseconds minApplyBudget{250};
     std::chrono::microseconds maxApplyBudget{4000};
-    TilePlanBudget steadyTilePlanBudget{};
-    TilePlanBudget interactiveTilePlanBudget{48, 8};
-    UploadBudget steadyUploadBudget{};
-    UploadBudget interactiveUploadBudget{1024 * 1024, 256 * 1024, 8, 512};
-    UploadBudget steadyRenderUploadBudget{};
-    UploadBudget interactiveRenderUploadBudget{1024 * 1024, 256 * 1024, 8, 512};
-    int steadyMaxSeedCells{4};
-    int interactiveMaxSeedCells{4};
-    size_t steadyMaxInFlightJobs{192};
-    size_t interactiveMaxInFlightJobs{48};
+    TilePlanBudget tilePlanBudget{};
+    UploadBudget uploadBudget{};
+    UploadBudget renderUploadBudget{};
+    int maxSeedCells{4};
+    size_t maxInFlightJobs{192};
     size_t maxPendingCompletionsBeforeBackpressure{64};
     int refinementDepth{DefaultRefinementDepth};
     int maxRefinementDepth{8};
+    bool gpuRasterAllowed{true};
 };
 
 struct FrameWorkBudget
@@ -42,8 +37,8 @@ struct FrameWorkBudget
     UploadBudget renderUpload{};
     int maxSeedCells{4};
     int refinementDepth{DefaultRefinementDepth};
-    bool interactive{false};
     bool submitTileJobs{true};
+    bool allowGpuRaster{true};
 };
 
 struct FrameBudgetFeedback
@@ -51,8 +46,6 @@ struct FrameBudgetFeedback
     std::chrono::microseconds pipelineLatency{0};
     size_t pendingCompletions{0};
     size_t submittedJobs{0};
-    size_t displayTiles{0};
-    size_t missingTiles{0};
 };
 
 struct FramebufferBudgetSignature
@@ -62,33 +55,46 @@ struct FramebufferBudgetSignature
     double devicePixelRatio{1.0};
 };
 
-class FrameBudgetController
+struct FrameBudgetContext
+{
+    bool formulaChanged{false};
+    std::optional<FramebufferBudgetSignature> framebuffer{};
+    size_t pendingCompletions{0};
+    size_t inFlightJobs{0};
+};
+
+class FrameBudgetPolicy
+{
+public:
+    virtual ~FrameBudgetPolicy() = default;
+
+    [[nodiscard]] virtual FrameWorkBudget beginFrame(const FrameBudgetContext &context) = 0;
+    virtual void endFrame(const FrameBudgetFeedback &feedback) = 0;
+};
+
+class FrameBudgetController final : public FrameBudgetPolicy
 {
 public:
     explicit FrameBudgetController(FrameBudgetControllerOptions options = {});
 
+    [[nodiscard]] FrameWorkBudget beginFrame(const FrameBudgetContext &context) override;
     [[nodiscard]] FrameWorkBudget beginFrame(const InputEvent &event,
                                              const StateDiff &diff,
                                              size_t pendingCompletions,
                                              size_t inFlightJobs);
-    void endFrame(const FrameBudgetFeedback &feedback);
+    void endFrame(const FrameBudgetFeedback &feedback) override;
 
     [[nodiscard]] int dynamicRefinementDepth() const;
     [[nodiscard]] std::chrono::microseconds dynamicApplyBudget() const;
 
 private:
-    [[nodiscard]] bool recentlyInteractive(std::chrono::steady_clock::time_point now) const;
-    [[nodiscard]] FrameWorkBudget budgetForMode(bool interactive,
-                                                size_t pendingCompletions,
-                                                size_t inFlightJobs) const;
+    [[nodiscard]] FrameWorkBudget budgetForFrame(size_t pendingCompletions,
+                                                 size_t inFlightJobs) const;
     void resetTopologyPolicy();
 
     FrameBudgetControllerOptions options{};
-    std::chrono::steady_clock::time_point lastInteraction{};
     std::chrono::microseconds applyBudget{2000};
     int refinementDepth{DefaultRefinementDepth};
-    bool lastFrameInteractive{false};
-    bool holdInteractiveBudgetsUntilPresentable{false};
     FramebufferBudgetSignature framebufferSignature{};
     bool hasFramebufferSignature{false};
 };

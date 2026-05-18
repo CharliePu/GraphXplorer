@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -53,7 +54,7 @@ struct FramePipelineDebugStats
     size_t stuckRegionTiles{0};
     size_t submittedJobs{0};
     int refinementDepth{DefaultRefinementDepth};
-    bool interactiveBudget{false};
+    bool allowGpuRaster{true};
 };
 
 struct FramePipelineOptions
@@ -66,7 +67,9 @@ class FramePipeline
 {
 public:
     explicit FramePipeline(std::unique_ptr<ComputeBackend> backend = nullptr,
-                           FramePipelineOptions options = {});
+                           FramePipelineOptions options = {},
+                           std::unique_ptr<FrameBudgetPolicy> frameBudgetPolicy = nullptr,
+                           std::unique_ptr<BackendBatchPolicy> batchPolicy = nullptr);
 
     [[nodiscard]] FrameSnapshot process(const InputEvent &event);
     [[nodiscard]] const AppState &state() const;
@@ -81,6 +84,7 @@ public:
 private:
     [[nodiscard]] ViewportRequest makeViewportRequest(const StateDiff &diff) const;
     [[nodiscard]] FrameCommandBuffer buildCommands(std::vector<DisplayTile> &displayTiles,
+                                                   std::span<const DisplayTile> preloadTiles,
                                                    const ViewportRequest &request,
                                                    const UploadPlan &uploadPlan);
     [[nodiscard]] std::vector<OverlayRect> buildOverlayRects() const;
@@ -97,7 +101,7 @@ private:
     TileCache tileCache{};
     UploadPlanner uploadPlanner{};
     RenderResourceManager resources{};
-    FrameBudgetController frameBudgetController;
+    std::unique_ptr<FrameBudgetPolicy> frameBudgetPolicy;
     FrameWorkBudget latestFrameBudget{};
     std::unordered_map<uint64_t, RegionOutput> regionPayloads;
     std::optional<CommittedVisualFrame> committedVisualFrame{};

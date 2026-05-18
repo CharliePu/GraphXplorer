@@ -47,7 +47,8 @@ public:
 
     explicit TileRuntime(std::unique_ptr<ComputeBackend> backend = nullptr,
                          size_t workerCount = 0,
-                         TileRuntimeOptions options = {});
+                         TileRuntimeOptions options = {},
+                         std::unique_ptr<BackendBatchPolicy> batchPolicy = nullptr);
     ~TileRuntime();
 
     void setLatestRequest(const ViewportRequest &request,
@@ -124,7 +125,7 @@ private:
 
     std::unique_ptr<ComputeBackend> backend;
     TileRuntimeOptions options{};
-    BatchOptimizer batchOptimizer;
+    std::unique_ptr<BackendBatchPolicy> batchPolicy;
     mutable std::mutex backendMutex;
     mutable std::mutex stateMutex;
     std::optional<ViewportRequest> latestRequest{};

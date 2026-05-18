@@ -1,6 +1,7 @@
 #ifndef VISUALCOVERBUILDER_H
 #define VISUALCOVERBUILDER_H
 
+#include <functional>
 #include <optional>
 #include <span>
 #include <unordered_set>
@@ -22,22 +23,29 @@ struct CommittedVisualFrame
 struct VisualFrame
 {
     std::vector<DisplayTile> tiles{};
+    std::vector<DisplayTile> preloadTiles{};
 };
 
 class VisualCoverBuilder
 {
 public:
+    using RegionPresentablePredicate = std::function<bool(const RegionImageRef &)>;
+
     [[nodiscard]] VisualFrame build(const ViewportRequest &request,
                                     const TileCache &tileCache,
                                     const CommittedVisualFrame *previous = nullptr,
                                     int maxSeedCells = 4,
-                                    int refinementDepth = DefaultRefinementDepth) const;
+                                    int refinementDepth = DefaultRefinementDepth,
+                                    RegionPresentablePredicate regionPresentable = {}) const;
 
 private:
     struct BuildState
     {
         VisualFrame frame{};
         std::unordered_set<TileKey, TileKeyHash> emittedUniformAuthorities{};
+        std::unordered_set<uint64_t> preloadedRegions{};
+        RegionPresentablePredicate regionPresentable{};
+        const CommittedVisualFrame *previous{nullptr};
     };
 
     static void visit(const ViewportRequest &request,
@@ -48,12 +56,18 @@ private:
                       BuildState &state);
     static void emitFallbackCell(const ViewportRequest &request,
                                  const TileCache &tileCache,
-                                 const CommittedVisualFrame *previous,
                                  const TileKey &key,
+                                 BuildState &state);
+    static void queuePreloadTile(const ViewportRequest &request,
+                                 const TileKey &displayKey,
+                                 const TileRecord &record,
                                  BuildState &state);
     static void emitUniformAuthority(const ViewportRequest &request,
                                      const TileRecord &record,
                                      BuildState &state);
+    [[nodiscard]] static bool mixedRegionPresentable(
+        const TileRecord &record,
+        const BuildState &state);
     [[nodiscard]] static bool shouldSplitForPartialCover(
         const TileCache &tileCache,
         const CommittedVisualFrame *previous,
@@ -66,7 +80,8 @@ private:
         const ViewportRequest &request,
         const TileKey &displayKey,
         const TileRecord &record,
-        bool fallback);
+        bool fallback,
+        const BuildState &state);
     [[nodiscard]] static std::optional<DisplayTile> previousVisualTileFor(
         const ViewportRequest &request,
         const TileKey &displayKey,
@@ -74,7 +89,8 @@ private:
     [[nodiscard]] static std::optional<DisplayTile> mixedAncestorFallbackTile(
         const ViewportRequest &request,
         const TileKey &displayKey,
-        const TileRecord &record);
+        const TileRecord &record,
+        BuildState &state);
     [[nodiscard]] static DisplayTile missingTileFor(
         const ViewportRequest &request,
         const TileKey &key);

@@ -26,12 +26,17 @@ size_t TileRuntime::WorkKeyHash::operator()(const WorkKey &key) const noexcept
 
 TileRuntime::TileRuntime(std::unique_ptr<ComputeBackend> nextBackend,
                          const size_t workerCount,
-                         TileRuntimeOptions nextOptions)
+                         TileRuntimeOptions nextOptions,
+                         std::unique_ptr<BackendBatchPolicy> nextBatchPolicy)
     : backend{nextBackend ? std::move(nextBackend) : makeDefaultComputeBackend()},
       options{std::move(nextOptions)},
-      batchOptimizer{options.batchOptimizer},
+      batchPolicy{std::move(nextBatchPolicy)},
       workers{workerCount == 0 ? defaultWorkerCount() : workerCount}
 {
+    if (!batchPolicy)
+    {
+        batchPolicy = std::make_unique<BatchOptimizer>(options.batchOptimizer);
+    }
     options.rasterPixelsPerAxis = std::max<uint32_t>(1, options.rasterPixelsPerAxis);
 }
 
@@ -277,7 +282,7 @@ void TileRuntime::enqueueBatch(const ViewportRequest &request,
             notifyCompletedWork();
         }
 
-        batchOptimizer.observe(
+        batchPolicy->observe(
             kind,
             jobs.size(),
             std::chrono::duration_cast<std::chrono::microseconds>(
@@ -296,7 +301,7 @@ void TileRuntime::enqueueBatches(const ViewportRequest &request,
     while (offset < jobs.size())
     {
         const auto remaining = jobs.size() - offset;
-        const auto batchSize = std::max<size_t>(1, batchOptimizer.choose(kind, remaining, rasterPixelsPerAxis));
+        const auto batchSize = std::max<size_t>(1, batchPolicy->choose(kind, remaining, rasterPixelsPerAxis));
         const auto end = std::min(jobs.size(), offset + batchSize);
         std::vector<TileJob> batch;
         batch.reserve(end - offset);

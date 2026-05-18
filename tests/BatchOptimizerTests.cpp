@@ -2,11 +2,9 @@
 
 #include "../src/Compute/BatchOptimizer.h"
 
-TEST_CASE("BatchOptimizer chooses the highest-throughput feasible frontier point", "[BatchOptimizer]")
+TEST_CASE("BatchOptimizer chooses the highest-throughput observed batch", "[BatchOptimizer]")
 {
     gx::BatchOptimizer optimizer{gx::BatchOptimizerOptions{
-        .targetBatchLatency = std::chrono::microseconds{100000},
-        .initialIntervalBatchSize = 4,
         .initialRasterBatchSize = 2,
         .maxRasterBatchSize = 32
     }};
@@ -17,15 +15,13 @@ TEST_CASE("BatchOptimizer chooses the highest-throughput feasible frontier point
     optimizer.observe(gx::JobKind::RasterizeRegion, 8, std::chrono::microseconds{90000});
     optimizer.observe(gx::JobKind::RasterizeRegion, 16, std::chrono::microseconds{160000});
 
-    CHECK(optimizer.choose(gx::JobKind::RasterizeRegion, 100) == 8);
-    CHECK(optimizer.choose(gx::JobKind::RasterizeRegion, 6) == 4);
+    CHECK(optimizer.choose(gx::JobKind::RasterizeRegion, 100) == 32);
+    CHECK(optimizer.choose(gx::JobKind::RasterizeRegion, 6) == 6);
 }
 
-TEST_CASE("BatchOptimizer prunes dominated candidates", "[BatchOptimizer]")
+TEST_CASE("BatchOptimizer prunes throughput-dominated candidates", "[BatchOptimizer]")
 {
-    gx::BatchOptimizer optimizer{gx::BatchOptimizerOptions{
-        .targetBatchLatency = std::chrono::microseconds{100000}
-    }};
+    gx::BatchOptimizer optimizer;
 
     optimizer.observe(gx::JobKind::ClassifyInterval, 4, std::chrono::microseconds{80000});
     optimizer.observe(gx::JobKind::ClassifyInterval, 4, std::chrono::microseconds{40000});
@@ -37,10 +33,9 @@ TEST_CASE("BatchOptimizer prunes dominated candidates", "[BatchOptimizer]")
     CHECK(frontier.front().latency == std::chrono::microseconds{40000});
 }
 
-TEST_CASE("BatchOptimizer explores larger batches while latency has headroom", "[BatchOptimizer]")
+TEST_CASE("BatchOptimizer explores larger batches only from the best frontier edge", "[BatchOptimizer]")
 {
     gx::BatchOptimizer optimizer{gx::BatchOptimizerOptions{
-        .targetBatchLatency = std::chrono::microseconds{100000},
         .initialIntervalBatchSize = 4,
         .maxIntervalBatchSize = 64
     }};
@@ -50,9 +45,9 @@ TEST_CASE("BatchOptimizer explores larger batches while latency has headroom", "
     optimizer.observe(gx::JobKind::ClassifyInterval, 4, std::chrono::microseconds{20000});
     CHECK(optimizer.choose(gx::JobKind::ClassifyInterval, 128) == 8);
 
-    optimizer.observe(gx::JobKind::ClassifyInterval, 8, std::chrono::microseconds{45000});
+    optimizer.observe(gx::JobKind::ClassifyInterval, 8, std::chrono::microseconds{30000});
     CHECK(optimizer.choose(gx::JobKind::ClassifyInterval, 128) == 16);
 
-    optimizer.observe(gx::JobKind::ClassifyInterval, 16, std::chrono::microseconds{140000});
-    CHECK(optimizer.choose(gx::JobKind::ClassifyInterval, 128) == 12);
+    optimizer.observe(gx::JobKind::ClassifyInterval, 16, std::chrono::microseconds{90000});
+    CHECK(optimizer.choose(gx::JobKind::ClassifyInterval, 128) == 8);
 }

@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <array>
+#include <cstddef>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -337,6 +338,32 @@ struct UploadBudget
     int maxTextureSlicesPerFrame{64};
     int maxTileInstanceUpdatesPerFrame{4096};
     bool operator==(const UploadBudget &) const = default;
+};
+
+struct RenderProgress
+{
+    size_t regionUploadsThisFrame{0};
+    size_t regionUploadBytesThisFrame{0};
+    size_t pendingRegionUploadsAfterFrame{0};
+    bool regionUploadStateObserved{false};
+
+    [[nodiscard]] bool needsFollowupFrame() const
+    {
+        return regionUploadsThisFrame > 0 || pendingRegionUploadsAfterFrame > 0;
+    }
+
+    void merge(const RenderProgress &next)
+    {
+        regionUploadsThisFrame += next.regionUploadsThisFrame;
+        regionUploadBytesThisFrame += next.regionUploadBytesThisFrame;
+        if (next.regionUploadStateObserved)
+        {
+            pendingRegionUploadsAfterFrame = next.pendingRegionUploadsAfterFrame;
+            regionUploadStateObserved = true;
+        }
+    }
+
+    bool operator==(const RenderProgress &) const = default;
 };
 
 struct UploadPlan

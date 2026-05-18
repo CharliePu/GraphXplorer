@@ -533,7 +533,7 @@ void RenderResourceManager::setOverlayTextRuns(std::vector<OverlayTextRun> runs)
     textVerticesDirty = true;
 }
 
-void RenderResourceManager::draw(const DrawCommand &command, const UploadBudget &uploadBudget)
+RenderProgress RenderResourceManager::draw(const DrawCommand &command, const UploadBudget &uploadBudget)
 {
     if (command.pipeline == GridPipeline && command.geometry == StaticQuadGeometry)
     {
@@ -570,7 +570,7 @@ void RenderResourceManager::draw(const DrawCommand &command, const UploadBudget 
         glBindVertexArray(gridGpu.vao);
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
         glBindVertexArray(0);
-        return;
+        return {};
     }
 
     if (command.pipeline == OverlayPipeline && command.geometry == StaticQuadGeometry)
@@ -580,19 +580,19 @@ void RenderResourceManager::draw(const DrawCommand &command, const UploadBudget 
         uploadOverlayRectsIfDirty();
         if (overlayRects.empty())
         {
-            return;
+            return {};
         }
         const auto count = rangedInstanceCount(command.instanceRange, overlayRects.size());
         if (count == 0)
         {
-            return;
+            return {};
         }
         glUseProgram(overlayGpu.program);
         glBindVertexArray(overlayGpu.vao);
         bindOverlayInstanceAttributes(command.instanceRange.offset);
         glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr, static_cast<GLsizei>(count));
         glBindVertexArray(0);
-        return;
+        return {};
     }
 
     if (command.pipeline == TextPipeline)
@@ -602,7 +602,7 @@ void RenderResourceManager::draw(const DrawCommand &command, const UploadBudget 
         uploadTextVerticesIfDirty();
         if (!textGpu.initialized || textGpu.texture == 0 || textVertexFloats.empty())
         {
-            return;
+            return {};
         }
 
         glUseProgram(textGpu.program);
@@ -613,7 +613,7 @@ void RenderResourceManager::draw(const DrawCommand &command, const UploadBudget 
         glBindVertexArray(textGpu.vao);
         glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(textVertexFloats.size() / 8));
         glBindVertexArray(0);
-        return;
+        return {};
     }
 
     if (command.pipeline == DebugPlotPipeline && command.geometry == StaticQuadGeometry)
@@ -622,12 +622,12 @@ void RenderResourceManager::draw(const DrawCommand &command, const UploadBudget 
         ensurePlotResources();
         if (debugPlotInstances.empty())
         {
-            return;
+            return {};
         }
         const auto count = rangedInstanceCount(command.instanceRange, debugPlotInstances.size());
         if (count == 0)
         {
-            return;
+            return {};
         }
 
         uploadPlotInstanceFloats(debugPlotInstanceFloats);
@@ -645,12 +645,12 @@ void RenderResourceManager::draw(const DrawCommand &command, const UploadBudget 
         glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr, static_cast<GLsizei>(count));
         glBindVertexArray(0);
         plotInstancesDirty = true;
-        return;
+        return {};
     }
 
     if (command.pipeline != PlotPipeline || command.geometry != StaticQuadGeometry)
     {
-        return;
+        return {};
     }
 
     GRAPHX_PROFILE_SCOPE("render.draw.plot");
@@ -659,18 +659,19 @@ void RenderResourceManager::draw(const DrawCommand &command, const UploadBudget 
         GRAPHX_PROFILE_SCOPE("render.uploadPlotInstancesIfDirty");
         uploadPlotInstancesIfDirty();
     }
+    auto progress = RenderProgress{};
     {
         GRAPHX_PROFILE_SCOPE("render.uploadPendingRegionImages");
-        uploadPendingRegionImages(uploadBudget);
+        progress = uploadPendingRegionImages(uploadBudget);
     }
     if (plotInstances.empty())
     {
-        return;
+        return progress;
     }
     const auto count = rangedInstanceCount(command.instanceRange, plotInstances.size());
     if (count == 0)
     {
-        return;
+        return progress;
     }
 
     glUseProgram(plotGpu.program);
@@ -697,6 +698,7 @@ void RenderResourceManager::draw(const DrawCommand &command, const UploadBudget 
             drawMs);
     }
     glBindVertexArray(0);
+    return progress;
 }
 
 size_t RenderResourceManager::plotInstanceCount() const
@@ -1253,16 +1255,20 @@ void RenderResourceManager::uploadTextVerticesIfDirty()
     }
 }
 
-void RenderResourceManager::uploadPendingRegionImages(const UploadBudget &budget)
+RenderProgress RenderResourceManager::uploadPendingRegionImages(const UploadBudget &budget)
 {
     GRAPHX_PROFILE_SCOPE("render.uploadPendingRegionImages.impl");
+    auto progress = RenderProgress{
+        .pendingRegionUploadsAfterFrame = pendingRegionUploads.size(),
+        .regionUploadStateObserved = true
+    };
     if (pendingRegionUploads.empty())
     {
-        return;
+        return progress;
     }
     if (budget.maxTextureSlicesPerFrame <= 0 || budget.maxTextureBytesPerFrame == 0)
     {
-        return;
+        return progress;
     }
 
     const auto uploadStart = Clock::now();
@@ -1308,8 +1314,12 @@ void RenderResourceManager::uploadPendingRegionImages(const UploadBudget &budget
             continue;
         }
         const auto uploadBytes = static_cast<size_t>(upload.ref.width) * static_cast<size_t>(upload.ref.height);
-        const auto sliceBudgetExhausted = uploadedSlices >= budget.maxTextureSlicesPerFrame;
-        const auto byteBudgetExhausted = uploadedSlices > 0
+        const auto visibleCritical = regionTextures.visibleRefs.contains(upload.ref.id)
+            && !regionTextures.uploadedRefs.contains(upload.ref.id);
+        const auto sliceBudgetExhausted = !visibleCritical
+            && uploadedSlices >= budget.maxTextureSlicesPerFrame;
+        const auto byteBudgetExhausted = !visibleCritical
+            && uploadedSlices > 0
             && uploadedBytes + uploadBytes > budget.maxTextureBytesPerFrame;
         if (sliceBudgetExhausted || byteBudgetExhausted)
         {
@@ -1346,6 +1356,9 @@ void RenderResourceManager::uploadPendingRegionImages(const UploadBudget &budget
         ++uploadedSlices;
         uploadedBytes += uploadBytes;
     }
+    progress.regionUploadsThisFrame = static_cast<size_t>(uploadedSlices);
+    progress.regionUploadBytesThisFrame = uploadedBytes;
+    progress.pendingRegionUploadsAfterFrame = remaining.size();
     PipelineLog::log(
         "render.regionTexture.upload.end pendingStart=%zu slices=%d bytes=%zu remaining=%zu skippedCapacity=%zu skippedSize=%zu skippedPixels=%zu allocated=%u durationMs=%.3f",
         pendingAtStart,
@@ -1358,6 +1371,7 @@ void RenderResourceManager::uploadPendingRegionImages(const UploadBudget &budget
         regionTextures.capacity,
         elapsedMsSince(uploadStart));
     pendingRegionUploads = std::move(remaining);
+    return progress;
 }
 
 void RenderResourceManager::destroyPlotResources()

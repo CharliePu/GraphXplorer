@@ -160,22 +160,24 @@ void Renderer::clear()
     glClear(GL_COLOR_BUFFER_BIT);
 }
 
-void Renderer::draw(const gx::FrameCommandBuffer &commands, const gx::UploadBudget &uploadBudget)
+gx::RenderProgress Renderer::draw(const gx::FrameCommandBuffer &commands, const gx::UploadBudget &uploadBudget)
 {
-    draw(commands.commands(), uploadBudget);
+    return draw(commands.commands(), uploadBudget);
 }
 
-void Renderer::draw(std::span<const gx::DrawCommand> commands, const gx::UploadBudget &uploadBudget)
+gx::RenderProgress Renderer::draw(std::span<const gx::DrawCommand> commands, const gx::UploadBudget &uploadBudget)
 {
+    auto progress = gx::RenderProgress{};
     if (!resources)
     {
-        return;
+        return progress;
     }
 
     for (const auto &command : commands)
     {
-        resources->draw(command, uploadBudget);
+        progress.merge(resources->draw(command, uploadBudget));
     }
+    return progress;
 }
 
 void Renderer::setResourceManager(gx::RenderResourceManager *nextResources)

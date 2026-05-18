@@ -14,7 +14,6 @@ double BatchCandidate::throughput() const
 
 BatchOptimizer::BatchOptimizer(BatchOptimizerOptions nextOptions): options{nextOptions}
 {
-    options.targetBatchLatency = std::max(options.targetBatchLatency, std::chrono::microseconds{1});
     options.maxIntervalBatchSize = std::max<size_t>(1, options.maxIntervalBatchSize);
     options.maxRasterBatchSize = std::max<size_t>(1, options.maxRasterBatchSize);
     options.initialIntervalBatchSize = std::max<size_t>(1, options.initialIntervalBatchSize);
@@ -22,12 +21,12 @@ BatchOptimizer::BatchOptimizer(BatchOptimizerOptions nextOptions): options{nextO
     options.initialIntervalBatchSize = std::min(options.initialIntervalBatchSize, options.maxIntervalBatchSize);
     options.initialRasterBatchSize = std::min(options.initialRasterBatchSize, options.maxRasterBatchSize);
     options.maxCandidatesPerKind = std::max<size_t>(1, options.maxCandidatesPerKind);
-    options.explorationHeadroom = std::clamp(options.explorationHeadroom, 0.1, 1.0);
+    options.explorationGrowthFactor = std::clamp(options.explorationGrowthFactor, 1.1, 8.0);
 }
 
 size_t BatchOptimizer::choose(const JobKind kind,
                               const size_t remainingJobs,
-                              const uint32_t pixelsPerAxis) const
+                              const uint32_t pixelsPerAxis)
 {
     if (remainingJobs == 0)
     {
@@ -38,21 +37,17 @@ size_t BatchOptimizer::choose(const JobKind kind,
     const auto key = keyFor(kind, pixelsPerAxis);
     const auto limit = std::max<size_t>(1, std::min(remainingJobs, maxBatchSize(kind)));
     const auto frontierIt = frontierByKey.find(key);
-    const auto observationsIt = observationsByKey.find(key);
     const auto empty = std::vector<BatchCandidate>{};
     const auto &frontier = frontierIt == frontierByKey.end() ? empty : frontierIt->second;
-    const auto &observations = observationsIt == observationsByKey.end() ? empty : observationsIt->second;
     const BatchCandidate *best = nullptr;
+    auto largestObserved = size_t{0};
     for (const auto &candidate : frontier)
     {
-        if (candidate.latency > options.targetBatchLatency)
-        {
-            continue;
-        }
         if (candidate.batchSize > limit)
         {
             continue;
         }
+        largestObserved = std::max(largestObserved, candidate.batchSize);
         if (!best
             || candidate.throughput() > best->throughput()
             || (std::abs(candidate.throughput() - best->throughput()) < 1e-12
@@ -62,7 +57,7 @@ size_t BatchOptimizer::choose(const JobKind kind,
         }
     }
 
-    if (const auto nextProbe = explorationCandidate(observations, best, limit))
+    if (const auto nextProbe = explorationCandidate(best, largestObserved, limit))
     {
         return *nextProbe;
     }
@@ -70,6 +65,11 @@ size_t BatchOptimizer::choose(const JobKind kind,
     if (best)
     {
         return std::max<size_t>(1, best->batchSize);
+    }
+
+    if (!frontier.empty())
+    {
+        return limit;
     }
 
     return std::min(limit, fallbackBatchSize(kind));
@@ -137,105 +137,18 @@ uint64_t BatchOptimizer::keyFor(const JobKind kind, const uint32_t pixelsPerAxis
     return (kindPart << 32u) | static_cast<uint64_t>(pixelsPerAxis);
 }
 
-std::optional<size_t> BatchOptimizer::explorationCandidate(
-    const std::vector<BatchCandidate> &observations,
-    const BatchCandidate *best,
-    const size_t limit) const
+std::optional<size_t> BatchOptimizer::explorationCandidate(const BatchCandidate *best,
+                                                           const size_t largestObserved,
+                                                           const size_t limit) const
 {
-    if (observations.empty())
+    if (!best || best->batchSize != largestObserved || largestObserved >= limit)
     {
         return std::nullopt;
     }
 
-    if (!best)
-    {
-        auto smallestTooSlow = size_t{0};
-        for (const auto &observation : observations)
-        {
-            if (observation.latency <= options.targetBatchLatency || observation.batchSize <= 1)
-            {
-                continue;
-            }
-            if (smallestTooSlow == 0 || observation.batchSize < smallestTooSlow)
-            {
-                smallestTooSlow = observation.batchSize;
-            }
-        }
-        if (smallestTooSlow > 1)
-        {
-            const auto probe = std::max<size_t>(1, std::min(limit, smallestTooSlow / 2));
-            if (!hasObservation(observations, probe))
-            {
-                return probe;
-            }
-        }
-        return std::nullopt;
-    }
-
-    const auto headroom = static_cast<int64_t>(
-        std::ceil(static_cast<double>(options.targetBatchLatency.count()) * options.explorationHeadroom));
-    const BatchCandidate *largestHeadroomFeasible = nullptr;
-    for (const auto &observation : observations)
-    {
-        if (observation.batchSize > limit || observation.latency > options.targetBatchLatency)
-        {
-            continue;
-        }
-        if (observation.latency.count() <= headroom
-            && (!largestHeadroomFeasible || observation.batchSize > largestHeadroomFeasible->batchSize))
-        {
-            largestHeadroomFeasible = &observation;
-        }
-    }
-
-    if (largestHeadroomFeasible && largestHeadroomFeasible->batchSize < limit)
-    {
-        auto probe = largestHeadroomFeasible->batchSize > limit / 2
-            ? limit
-            : std::min(
-                limit,
-                std::max(largestHeadroomFeasible->batchSize + 1, largestHeadroomFeasible->batchSize * 2));
-        if (probe > largestHeadroomFeasible->batchSize && !hasObservation(observations, probe))
-        {
-            return probe;
-        }
-    }
-
-    auto nearestTooSlowAbove = size_t{0};
-    if (largestHeadroomFeasible)
-    {
-        for (const auto &observation : observations)
-        {
-            if (observation.batchSize <= largestHeadroomFeasible->batchSize
-                || observation.latency <= options.targetBatchLatency
-                || observation.batchSize > limit)
-            {
-                continue;
-            }
-            if (nearestTooSlowAbove == 0 || observation.batchSize < nearestTooSlowAbove)
-            {
-                nearestTooSlowAbove = observation.batchSize;
-            }
-        }
-    }
-    if (largestHeadroomFeasible && nearestTooSlowAbove > largestHeadroomFeasible->batchSize + 1)
-    {
-        const auto probe = (largestHeadroomFeasible->batchSize + nearestTooSlowAbove) / 2;
-        if (probe > largestHeadroomFeasible->batchSize && !hasObservation(observations, probe))
-        {
-            return probe;
-        }
-    }
-
-    return std::nullopt;
-}
-
-bool BatchOptimizer::hasObservation(const std::vector<BatchCandidate> &observations, const size_t batchSize)
-{
-    return std::ranges::any_of(observations, [batchSize](const BatchCandidate &candidate)
-    {
-        return candidate.batchSize == batchSize;
-    });
+    const auto grown = static_cast<size_t>(
+        std::ceil(static_cast<double>(largestObserved) * options.explorationGrowthFactor));
+    return std::min(limit, std::max(largestObserved + 1, grown));
 }
 
 void BatchOptimizer::pruneFrontier(std::vector<BatchCandidate> &candidates, const size_t maxCandidates)
@@ -268,11 +181,11 @@ void BatchOptimizer::pruneFrontier(std::vector<BatchCandidate> &candidates, cons
             {
                 continue;
             }
-            const auto latencyNoWorse = other.latency <= candidate.latency;
             const auto throughputNoWorse = other.throughput() >= candidate.throughput();
-            const auto strictlyBetter = other.latency < candidate.latency
-                || other.throughput() > candidate.throughput();
-            if (latencyNoWorse && throughputNoWorse && strictlyBetter)
+            const auto batchSizeNoWorse = other.batchSize >= candidate.batchSize;
+            const auto strictlyBetter = other.throughput() > candidate.throughput()
+                || other.batchSize > candidate.batchSize;
+            if (throughputNoWorse && batchSizeNoWorse && strictlyBetter)
             {
                 dominated = true;
                 break;
@@ -286,11 +199,15 @@ void BatchOptimizer::pruneFrontier(std::vector<BatchCandidate> &candidates, cons
 
     std::ranges::sort(frontier, [](const BatchCandidate &lhs, const BatchCandidate &rhs)
     {
-        if (lhs.latency != rhs.latency)
+        if (std::abs(lhs.throughput() - rhs.throughput()) >= 1e-12)
         {
-            return lhs.latency < rhs.latency;
+            return lhs.throughput() > rhs.throughput();
         }
-        return lhs.batchSize > rhs.batchSize;
+        if (lhs.batchSize != rhs.batchSize)
+        {
+            return lhs.batchSize > rhs.batchSize;
+        }
+        return lhs.latency < rhs.latency;
     });
 
     if (frontier.size() > maxCandidates)

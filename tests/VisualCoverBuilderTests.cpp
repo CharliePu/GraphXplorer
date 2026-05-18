@@ -294,6 +294,66 @@ TEST_CASE("VisualCoverBuilder keeps previous children until the current leaf til
     }
 }
 
+TEST_CASE("VisualCoverBuilder keeps previous children until the current mixed region is resident",
+          "[VisualCoverBuilder]")
+{
+    const auto formula = gx::FormulaCompiler{}.compile("x>y");
+    REQUIRE(formula.diagnostics.ok);
+
+    const auto request = requestFor(
+        formula.handle,
+        Interval{0.0, 4.0},
+        Interval{0.0, 4.0});
+    REQUIRE(gx::leafTileLevel(request) == 0);
+
+    const gx::TileKey mixedLeaf{0, 0, 0};
+    std::vector<gx::DisplayTile> previousTiles;
+    for (const auto &child : gx::tileChildren(mixedLeaf))
+    {
+        previousTiles.push_back(committedUniformTile(child));
+    }
+    const gx::CommittedVisualFrame previous{
+        .semantics = formula.handle.semanticsHash,
+        .viewport = request,
+        .tiles = previousTiles
+    };
+
+    gx::TileCache cache;
+    REQUIRE(cache.apply(mixedRegionTransaction(formula.handle.semanticsHash, mixedLeaf)).rejected == 0);
+
+    const auto seedLevel = gx::seedTileLevelForViewport(request);
+    const auto frame = gx::VisualCoverBuilder{}.build(
+        request,
+        cache,
+        &previous,
+        4,
+        seedLevel - mixedLeaf.level,
+        [](const gx::RegionImageRef &)
+        {
+            return false;
+        });
+
+    CHECK(std::ranges::none_of(frame.tiles, [mixedLeaf](const gx::DisplayTile &tile)
+    {
+        return tile.desiredKey == mixedLeaf && tile.visualState == gx::TileVisualState::MixedRegion;
+    }));
+    for (const auto &previousTile : previousTiles)
+    {
+        CHECK(std::ranges::any_of(frame.tiles, [previousTile](const gx::DisplayTile &tile)
+        {
+            return tile.desiredKey == previousTile.desiredKey
+                && tile.visualState == gx::TileVisualState::UniformTrue
+                && tile.isFallback;
+        }));
+    }
+
+    REQUIRE(frame.preloadTiles.size() == 1);
+    CHECK(frame.preloadTiles.front().desiredKey == mixedLeaf);
+    CHECK(frame.preloadTiles.front().sourceKey == mixedLeaf);
+    REQUIRE(frame.preloadTiles.front().cpuRegion.has_value());
+    CHECK(frame.preloadTiles.front().cpuRegion->id == 10);
+}
+
 TEST_CASE("VisualCoverBuilder preserves mixed-region UVs when viewport clips the source tile", "[VisualCoverBuilder]")
 {
     const auto formula = gx::FormulaCompiler{}.compile("x<=y");

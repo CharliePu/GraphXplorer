@@ -75,6 +75,12 @@ public:
         region.proofTree.existence = region.existence;
         region.proofTree.certainty = region.certainty;
 
+        if (nodeBudgetExhausted())
+        {
+            region.certainty = TextureCertainty::Imprecise;
+            region.proofTree.certainty = TextureCertainty::Imprecise;
+        }
+
         if (cancelled())
         {
             return {.ok = false, .message = "Cancelled"};
@@ -98,6 +104,11 @@ private:
     [[nodiscard]] bool cancelled() const
     {
         return options.cancelled && options.cancelled();
+    }
+
+    [[nodiscard]] bool nodeBudgetExhausted() const
+    {
+        return options.maxVisitedNodes > 0 && visitedNodes >= options.maxVisitedNodes;
     }
 
     [[nodiscard]] static std::array<Rect, 4> childBounds(const Rect &bounds)
@@ -245,9 +256,11 @@ private:
         region.pixels[pixelIndex(x, y)] = value;
     }
 
-    [[nodiscard]] TileExistenceState refineSubpixel(const TileKey &key, const Rect &bounds)
+    [[nodiscard]] TileExistenceState refineSubpixel(const TileKey &key,
+                                                     const Rect &bounds,
+                                                     const double parentIntervalSize = -1.0)
     {
-        if (cancelled())
+        if (cancelled() || nodeBudgetExhausted())
         {
             return TileExistenceState::Unknown;
         }
@@ -264,7 +277,11 @@ private:
             recordProofNode(key, evaluated, TileExistenceState::Empty);
             return TileExistenceState::Empty;
         }
-        if (key.level <= subpixelLevel)
+
+        const auto thisSize = evaluated.interval.size();
+        const auto stalled = parentIntervalSize >= 0.0
+            && thisSize >= parentIntervalSize * 0.99;
+        if (key.level <= subpixelLevel || stalled)
         {
             recordProofNode(key, evaluated, TileExistenceState::Unknown);
             return TileExistenceState::Unknown;
@@ -275,7 +292,7 @@ private:
         const auto boundsChildren = childBounds(bounds);
         for (auto index = size_t{0}; index < children.size(); ++index)
         {
-            const auto childExistence = refineSubpixel(children[index], boundsChildren[index]);
+            const auto childExistence = refineSubpixel(children[index], boundsChildren[index], thisSize);
             if (childExistence == TileExistenceState::Exists)
             {
                 return TileExistenceState::Exists;
@@ -295,7 +312,9 @@ private:
                                                  const Rect &bounds,
                                                  const EvaluatedBox &evaluated)
     {
-        if (key.level <= subpixelLevel)
+        if (key.level <= subpixelLevel
+            || (evaluated.classification == TileClassification::Mixed
+                && evaluated.interval.hasDiscontinuity()))
         {
             setPixelFor(key, TileExistenceState::Unknown);
             recordProofNode(key, evaluated, TileExistenceState::Unknown);
@@ -305,9 +324,10 @@ private:
         auto allEmpty = true;
         const auto children = tileChildren(key);
         const auto boundsChildren = childBounds(bounds);
+        const auto parentSize = evaluated.interval.size();
         for (auto index = size_t{0}; index < children.size(); ++index)
         {
-            const auto childExistence = refineSubpixel(children[index], boundsChildren[index]);
+            const auto childExistence = refineSubpixel(children[index], boundsChildren[index], parentSize);
             if (childExistence == TileExistenceState::Exists)
             {
                 setPixelFor(key, TileExistenceState::Exists);
@@ -328,7 +348,7 @@ private:
 
     [[nodiscard]] TileExistenceState refineAbovePixel(const TileKey &key, const Rect &bounds)
     {
-        if (cancelled())
+        if (cancelled() || nodeBudgetExhausted())
         {
             return TileExistenceState::Unknown;
         }
@@ -346,6 +366,14 @@ private:
             fillPixelsFor(key, PixelFalse);
             recordProofNode(key, evaluated, TileExistenceState::Empty);
             return TileExistenceState::Empty;
+        }
+        if (key.level < previewKey.level
+            && evaluated.classification == TileClassification::Mixed
+            && evaluated.interval.hasDiscontinuity())
+        {
+            fillPixelsFor(key, PixelUnknown);
+            recordProofNode(key, evaluated, TileExistenceState::Unknown);
+            return TileExistenceState::Unknown;
         }
         if (key.level == pixelLevel)
         {

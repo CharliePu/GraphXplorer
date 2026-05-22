@@ -446,6 +446,7 @@ struct FrameSnapshot
     UploadPlan uploadPlan{};
     std::vector<DrawCommand> drawCommands{};
     std::string counters{};
+    bool needsFollowupWake{false};
 };
 
 [[nodiscard]] inline std::string toDebugString(const TileKey &key)

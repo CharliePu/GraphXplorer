@@ -18,6 +18,7 @@
 #include "Window.h"
 #include "../App/FramePipeline.h"
 #include "../App/InteractionController.h"
+#include "../Compute/ComputeBackend.h"
 #include "../Render/Renderer.h"
 
 #include <glad/glad.h>
@@ -109,7 +110,7 @@ Application::Application(const int width, const int height, const std::string &n
     window{std::make_shared<Window>(width, height, name)},
     renderer{std::make_shared<Renderer>(reinterpret_cast<GLADloadproc>(glfw::getProcAddress))},
     input{std::make_shared<Input>(window)},
-    framePipeline{std::make_shared<gx::FramePipeline>()},
+    framePipeline{std::make_shared<gx::FramePipeline>(std::make_unique<gx::CpuComputeBackend>())},
     interactionController{std::make_shared<gx::InteractionController>()}
 {
     PipelineLog::init();
@@ -424,6 +425,10 @@ void Application::run()
         const auto swapEnd = Clock::now();
         const auto swapMs = millisecondsBetween(swapStart, swapEnd);
         recordResizeGuardedSwap(swapEnd, swapMs);
+        if (latestFrameSnapshot && latestFrameSnapshot->needsFollowupWake)
+        {
+            logPostedWake("followup", requestMailbox.submitFrameWake("followup"));
+        }
         if (swapMs >= 50.0)
         {
             enableDetailedLoopLogging(Clock::now());

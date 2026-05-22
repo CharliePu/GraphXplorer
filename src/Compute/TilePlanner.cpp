@@ -370,6 +370,14 @@ private:
         {
             if (key.level > leafLevel)
             {
+                if (record->workState == TileWorkState::Idle)
+                {
+                    out.push_back({
+                        .kind = PlannerCandidateKind::RasterizeRegion,
+                        .key = key,
+                        .priority = priorityFor(request, key)
+                    });
+                }
                 const auto children = tileChildren(key);
                 for (auto index = children.size(); index-- > 0;)
                 {

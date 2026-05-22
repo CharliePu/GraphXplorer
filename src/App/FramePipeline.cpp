@@ -377,7 +377,7 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
         drainResult = tileRuntime.drainCompleted(
             tileCache,
             regionPayloads,
-            frameBudget.completedTileApplyBudget);
+            std::chrono::microseconds{0});
     }
     pipelineCounters.tileDeltasApplied += drainResult.applied;
     pipelineCounters.tileDeltasRejected += drainResult.rejected;
@@ -624,6 +624,8 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
         .pendingCompletions = tileRuntime.pendingCompletionCount(),
         .submittedJobs = tilePlan.jobs.size()
     });
+
+    snapshot.needsFollowupWake = submittedJobCount > 0 && pendingCompletionCount == 0;
 
     return snapshot;
 }

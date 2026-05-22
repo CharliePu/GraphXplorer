@@ -139,6 +139,7 @@ private:
     std::optional<ViewportRequest> latestRequest{};
     std::optional<CompiledFormula> latestFormula{};
     std::atomic<uint64_t> latestSemanticsHash{0};
+    std::atomic<uint64_t> latestRequestId{0};
     std::atomic<uint64_t> nextRegionPayloadId{1};
     std::atomic<bool> gpuPreviewAllowed{true};
     AsyncFrameInbox<TileWorkResult> completed{

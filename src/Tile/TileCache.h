@@ -111,6 +111,9 @@ public:
     [[nodiscard]] bool hasDescendantRecord(
         const TileKey &key,
         FormulaSemanticsHash semanticsHash) const;
+    [[nodiscard]] bool hasRenderableDescendant(
+        const TileKey &key,
+        FormulaSemanticsHash semanticsHash) const;
     TileApplyResult applyProofTree(TileProofTreePatch patch);
     [[nodiscard]] const TileProofTree *findProofTree(
         const TileKey &rootKey,

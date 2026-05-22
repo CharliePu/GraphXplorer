@@ -57,10 +57,23 @@ void TileRuntime::setLatestRequest(const ViewportRequest &request,
     }
 
     const auto previousSemantics = latestSemanticsHash.load(std::memory_order_acquire);
-    if (previousSemantics != 0 && previousSemantics != request.formula.semanticsHash.value)
+    const auto previousRequestId = latestRequestId.load(std::memory_order_acquire);
+    const auto formulaChanged = previousSemantics != 0
+        && previousSemantics != request.formula.semanticsHash.value;
+    const auto viewportChanged = previousRequestId != 0
+        && previousRequestId != request.header.requestId;
+
+    if (formulaChanged || viewportChanged)
     {
         workers.clearAllTasks();
-        discardInFlightExcept(request.formula.semanticsHash);
+        {
+            std::lock_guard lock(inFlightMutex);
+            inFlight.clear();
+        }
+        if (formulaChanged)
+        {
+            discardInFlightExcept(request.formula.semanticsHash);
+        }
     }
 
     {
@@ -68,6 +81,7 @@ void TileRuntime::setLatestRequest(const ViewportRequest &request,
         latestRequest = request;
         latestFormula = formula;
         latestSemanticsHash.store(request.formula.semanticsHash.value, std::memory_order_release);
+        latestRequestId.store(request.header.requestId, std::memory_order_release);
     }
 }
 
@@ -150,42 +164,9 @@ TileRuntimeDrainResult TileRuntime::drainCompleted(TileCache &tileCache,
                                                    const std::chrono::microseconds applyBudget)
 {
     GRAPHX_PROFILE_SCOPE("runtime.drainCompleted");
+    (void)applyBudget;
     TileRuntimeDrainResult result;
-    const auto deadline = std::chrono::steady_clock::now() + applyBudget;
     auto drained = completed.drainForFrame();
-    const auto deferRemaining = [&](const size_t workIndex,
-                                    const size_t transactionIndex,
-                                    const bool includeProofTrees)
-    {
-        for (auto index = drained.size(); index-- > workIndex + 1;)
-        {
-            completed.pushFront(std::move(drained[index]));
-        }
-
-        TileWorkResult deferred;
-        auto &current = drained[workIndex];
-        if (transactionIndex < current.transactions.size())
-        {
-            std::move(
-                current.transactions.begin() + static_cast<std::ptrdiff_t>(transactionIndex),
-                current.transactions.end(),
-                std::back_inserter(deferred.transactions));
-        }
-        if (!deferred.transactions.empty())
-        {
-            if (includeProofTrees)
-            {
-                deferred.proofTrees = std::move(current.proofTrees);
-            }
-            completed.pushFront(std::move(deferred));
-        }
-        else if (includeProofTrees && !current.proofTrees.empty())
-        {
-            deferred.proofTrees = std::move(current.proofTrees);
-            completed.pushFront(std::move(deferred));
-        }
-    };
-
     for (size_t workIndex = 0; workIndex < drained.size(); ++workIndex)
     {
         auto &work = drained[workIndex];
@@ -196,12 +177,6 @@ TileRuntimeDrainResult TileRuntime::drainCompleted(TileCache &tileCache,
 
         for (size_t transactionIndex = 0; transactionIndex < work.transactions.size(); ++transactionIndex)
         {
-            if (std::chrono::steady_clock::now() >= deadline)
-            {
-                deferRemaining(workIndex, transactionIndex, true);
-                return result;
-            }
-
             auto &transaction = work.transactions[transactionIndex];
             if (transaction.deltas.empty())
             {
@@ -225,18 +200,6 @@ TileRuntimeDrainResult TileRuntime::drainCompleted(TileCache &tileCache,
 
         for (size_t proofIndex = 0; proofIndex < work.proofTrees.size(); ++proofIndex)
         {
-            if (std::chrono::steady_clock::now() >= deadline)
-            {
-                TileWorkResult deferred;
-                std::move(
-                    work.proofTrees.begin() + static_cast<std::ptrdiff_t>(proofIndex),
-                    work.proofTrees.end(),
-                    std::back_inserter(deferred.proofTrees));
-                completed.pushFront(std::move(deferred));
-                deferRemaining(workIndex, work.transactions.size(), false);
-                return result;
-            }
-
             if (!isCurrent(work.proofTrees[proofIndex].header, work.proofTrees[proofIndex].semanticsHash))
             {
                 ++result.proofTreesRejected;
@@ -399,7 +362,6 @@ TileRuntime::TileWorkResult TileRuntime::classifyTiles(const ViewportRequest &re
 
     BatchResult batchResult;
     {
-        std::lock_guard lock(backendMutex);
         GRAPHX_PROFILE_SCOPE("runtime.backend.classify");
         batchResult = backend->classifyIntervals(
             IntervalBatchView{
@@ -534,7 +496,6 @@ TileRuntime::TileWorkResult TileRuntime::rasterizeTiles(const ViewportRequest &r
         requestedMode = TexturePreparationMode::Refined;
     }
     {
-        std::lock_guard lock(backendMutex);
         GRAPHX_PROFILE_SCOPE("runtime.backend.raster");
         batchResult = backend->rasterizeRegions(
             RasterBatchView{
@@ -699,7 +660,7 @@ void TileRuntime::appendRecoveryTransactions(TileWorkResult &work,
 
 bool TileRuntime::isCurrent(const ViewportRequest &request) const
 {
-    return isCurrent(request.header, request.formula.semanticsHash);
+    return latestSemanticsHash.load(std::memory_order_acquire) == request.formula.semanticsHash.value;
 }
 
 bool TileRuntime::isCurrent(const ContractHeader &header, const FormulaSemanticsHash semanticsHash) const

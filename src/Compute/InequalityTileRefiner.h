@@ -16,6 +16,7 @@ struct InequalityTileRefinementOptions
 {
     uint32_t pixelsPerAxis{RasterTexturePixels};
     int subpixelExtraDepth{DefaultRasterProofExtraDepth};
+    size_t maxVisitedNodes{500000};
     std::optional<Rect> rootBounds{};
     std::function<bool()> cancelled{};
 };

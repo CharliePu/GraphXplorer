@@ -31,7 +31,7 @@ struct FrameBudgetControllerOptions
 
 struct FrameWorkBudget
 {
-    std::chrono::microseconds completedTileApplyBudget{2000};
+    std::chrono::microseconds completedTileApplyBudget{0};
     TilePlanBudget tilePlan{};
     UploadBudget upload{};
     UploadBudget renderUpload{};
@@ -89,11 +89,10 @@ public:
 
 private:
     [[nodiscard]] FrameWorkBudget budgetForFrame(size_t pendingCompletions,
-                                                 size_t inFlightJobs) const;
+                                                  size_t inFlightJobs) const;
     void resetTopologyPolicy();
 
     FrameBudgetControllerOptions options{};
-    std::chrono::microseconds applyBudget{2000};
     int refinementDepth{DefaultRefinementDepth};
     FramebufferBudgetSignature framebufferSignature{};
     bool hasFramebufferSignature{false};

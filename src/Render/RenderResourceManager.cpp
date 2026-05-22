@@ -1057,6 +1057,10 @@ void RenderResourceManager::ensureRegionTextureArray(const int width, const int 
     if (regionTextures.initialized)
     {
         const auto deleteStart = Clock::now();
+        PipelineLog::log(
+            "diag.textureRecreate width=%d height=%d oldCap=%u newReq=%u uploaded=%zu slices=%zu",
+            width, height, regionTextures.capacity, requiredCapacity,
+            regionTextures.uploadedRefs.size(), regionTextures.slices.size());
         glDeleteTextures(1, &regionTextures.texture);
         PipelineLog::log(
             "render.regionTexture.delete texture=%u durationMs=%.3f",

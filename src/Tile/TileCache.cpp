@@ -902,6 +902,33 @@ bool TileCache::hasDescendantRecord(const TileKey &key, const FormulaSemanticsHa
     return hasDescendantRecordInIndex(formulaIt->second, key);
 }
 
+bool TileCache::hasRenderableDescendant(const TileKey &key, const FormulaSemanticsHash semanticsHash) const
+{
+    const auto formulaIt = formulas.find(semanticsHash.value);
+    if (formulaIt == formulas.end())
+    {
+        return false;
+    }
+    for (auto levelIt = formulaIt->second.occupiedLevels.begin();
+         levelIt != formulaIt->second.occupiedLevels.end() && *levelIt < key.level;
+         ++levelIt)
+    {
+        const auto bucketIt = formulaIt->second.levels.find(*levelIt);
+        if (bucketIt == formulaIt->second.levels.end()) continue;
+        for (const auto &[xy, record] : bucketIt->second.records)
+        {
+            (void)xy;
+            if (parentCoversChild(key, record.key)
+                && record.valueState == TileValueState::Mixed
+                && record.regionPixels)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 TileApplyResult TileCache::applyProofTree(TileProofTreePatch patch)
 {
     if (!patch.valid())

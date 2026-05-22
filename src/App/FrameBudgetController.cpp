@@ -44,21 +44,14 @@ namespace
 
 FrameBudgetController::FrameBudgetController(FrameBudgetControllerOptions nextOptions)
     : options{nextOptions},
-      applyBudget{nextOptions.initialApplyBudget}
+      refinementDepth{options.refinementDepth}
 {
-    options.targetPipelineLatency = std::max(options.targetPipelineLatency, std::chrono::microseconds{1});
-    options.minApplyBudget = std::max(options.minApplyBudget, std::chrono::microseconds{1});
-    options.maxApplyBudget = std::max(options.maxApplyBudget, options.minApplyBudget);
-    options.initialApplyBudget =
-        clampDuration(options.initialApplyBudget, options.minApplyBudget, options.maxApplyBudget);
     options.maxSeedCells = std::max(1, options.maxSeedCells);
     options.maxInFlightJobs = std::max<size_t>(1, options.maxInFlightJobs);
     options.maxPendingCompletionsBeforeBackpressure =
         std::max<size_t>(1, options.maxPendingCompletionsBeforeBackpressure);
     options.maxRefinementDepth = std::max(0, options.maxRefinementDepth);
     options.refinementDepth = std::clamp(options.refinementDepth, 0, options.maxRefinementDepth);
-    applyBudget = options.initialApplyBudget;
-    refinementDepth = options.refinementDepth;
 }
 
 FrameWorkBudget FrameBudgetController::beginFrame(const InputEvent &event,
@@ -100,27 +93,9 @@ FrameWorkBudget FrameBudgetController::beginFrame(const FrameBudgetContext &cont
 
 void FrameBudgetController::endFrame(const FrameBudgetFeedback &feedback)
 {
-    const auto highLatency = feedback.pipelineLatency > options.targetPipelineLatency;
-    const auto lowLatency = feedback.pipelineLatency < options.targetPipelineLatency * 3 / 5;
-    const auto hasBacklog = feedback.pendingCompletions > 0 || feedback.submittedJobs > 0;
-
-    if (highLatency)
-    {
-        applyBudget = clampDuration(applyBudget / 2, options.minApplyBudget, options.maxApplyBudget);
-        return;
-    }
-
-    if (lowLatency && hasBacklog)
-    {
-        applyBudget = clampDuration(applyBudget + std::chrono::microseconds{250},
-                                    options.minApplyBudget,
-                                    options.maxApplyBudget);
-    }
-    else if (!hasBacklog)
-    {
-        applyBudget = clampDuration(options.initialApplyBudget, options.minApplyBudget, options.maxApplyBudget);
-    }
+    (void)feedback;
 }
+
 
 int FrameBudgetController::dynamicRefinementDepth() const
 {
@@ -129,14 +104,13 @@ int FrameBudgetController::dynamicRefinementDepth() const
 
 std::chrono::microseconds FrameBudgetController::dynamicApplyBudget() const
 {
-    return applyBudget;
+    return std::chrono::microseconds{0};
 }
 
 FrameWorkBudget FrameBudgetController::budgetForFrame(const size_t pendingCompletions,
-                                                      const size_t inFlightJobs) const
+                                                       const size_t inFlightJobs) const
 {
     auto budget = FrameWorkBudget{
-        .completedTileApplyBudget = applyBudget,
         .tilePlan = options.tilePlanBudget,
         .upload = options.uploadBudget,
         .renderUpload = options.renderUploadBudget,
@@ -146,10 +120,6 @@ FrameWorkBudget FrameBudgetController::budgetForFrame(const size_t pendingComple
         .allowGpuPreview = options.gpuPreviewAllowed
     };
 
-    budget.completedTileApplyBudget = clampDuration(
-        budget.completedTileApplyBudget,
-        options.minApplyBudget,
-        options.maxApplyBudget);
     budget.refinementDepth = std::clamp(budget.refinementDepth, 0, options.maxRefinementDepth);
 
     const auto completionBacklogFull = pendingCompletions >= options.maxPendingCompletionsBeforeBackpressure;

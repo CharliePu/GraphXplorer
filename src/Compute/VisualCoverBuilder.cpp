@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "../Tile/TileMath.h"
+#include "../Util/PipelineLog.h"
 
 namespace gx
 {
@@ -165,10 +166,26 @@ void VisualCoverBuilder::visit(const ViewportRequest &request,
                 state.frame.tiles.push_back(*tile);
                 return;
             }
+            if (record->valueState == TileValueState::Mixed && record->regionPixels)
+            {
+                static int logCounter = 0;
+                if (logCounter < 5)
+                {
+                    PipelineLog::log(
+                        "diag.mixedNotPresentable key=(%lld,%lld,%d) hasRegion=1 regionId=%llu",
+                        static_cast<long long>(key.x),
+                        static_cast<long long>(key.y),
+                        key.level,
+                        static_cast<unsigned long long>(
+                            record->regionPixels ? record->regionPixels->id : 0));
+                    ++logCounter;
+                }
+            }
             queuePreloadTile(request, key, *record, state);
         }
 
-        if (hasPartialCover && key.level > LowestFiniteTileLevel)
+        if (hasPartialCover && key.level > LowestFiniteTileLevel
+            && record && record->regionPixels)
         {
             for (const auto &child : tileChildren(key))
             {
@@ -225,6 +242,15 @@ void VisualCoverBuilder::visit(const ViewportRequest &request,
     }
 
     if (hasPartialCover)
+    {
+        for (const auto &child : tileChildren(key))
+        {
+            visit(request, tileCache, previous, child, leafLevel, state);
+        }
+        return;
+    }
+
+    if (key.level > leafLevel)
     {
         for (const auto &child : tileChildren(key))
         {
@@ -319,7 +345,7 @@ bool VisualCoverBuilder::shouldSplitForPartialCover(const TileCache &tileCache,
                                                     const TileKey &key,
                                                     const FormulaSemanticsHash semanticsHash)
 {
-    return tileCache.hasDescendantRecord(key, semanticsHash)
+    return tileCache.hasRenderableDescendant(key, semanticsHash)
         || hasPreviousVisualDescendant(key, previous);
 }
 

@@ -97,6 +97,58 @@ private:
     std::vector<bool> rasterAllowGpuValues;
 };
 
+class ClassifyOrderBackend final : public gx::ComputeBackend
+{
+public:
+    [[nodiscard]] gx::BackendCapabilities capabilities() const override
+    {
+        return {};
+    }
+
+    gx::BatchResult classifyIntervals(const gx::IntervalBatchView &batch,
+                                      std::span<gx::TileClassificationResult> out) override
+    {
+        {
+            std::lock_guard lock(mutex);
+            for (const auto &key : batch.keys)
+            {
+                classifyOrder.push_back(key.x);
+            }
+        }
+        for (size_t index = 0; index < out.size(); ++index)
+        {
+            out[index] = {
+                batch.keys[index],
+                gx::TileClassification::UniformFalse,
+                Interval{0.0, 0.0}
+            };
+        }
+        return {true, out.size(), {}};
+    }
+
+    gx::BatchResult rasterizeRegions(const gx::RasterBatchView &batch,
+                                     std::span<gx::RegionOutput> out) override
+    {
+        for (size_t index = 0; index < out.size(); ++index)
+        {
+            out[index].key = batch.keys[index];
+            out[index].width = batch.pixelsPerAxis;
+            out[index].height = batch.pixelsPerAxis;
+        }
+        return {true, out.size(), {}};
+    }
+
+    [[nodiscard]] std::vector<int64_t> classifications() const
+    {
+        std::lock_guard lock(mutex);
+        return classifyOrder;
+    }
+
+private:
+    mutable std::mutex mutex;
+    std::vector<int64_t> classifyOrder;
+};
+
 class FailureBackend final : public gx::ComputeBackend
 {
 public:
@@ -347,6 +399,62 @@ TEST_CASE("TileRuntime delegates batch-size decisions to an injected policy",
     CHECK(backendView->classifySizes() == std::vector<size_t>{2, 2, 1});
     CHECK(policyView->choices() == 3);
     CHECK(policyView->observations() == std::vector<size_t>{2, 2, 1});
+}
+
+TEST_CASE("TileRuntime demotes queued same-formula work after viewport changes",
+          "[TileRuntime][Responsiveness]")
+{
+    auto backend = std::make_unique<ClassifyOrderBackend>();
+    auto *backendView = backend.get();
+    auto policy = std::make_unique<FixedBatchPolicy>(1);
+    gx::TileRuntime runtime{std::move(backend), 1, gx::TileRuntimeOptions{}, std::move(policy)};
+    const auto formula = gx::FormulaCompiler{}.compile("x < y");
+    REQUIRE(formula.diagnostics.ok);
+    auto firstRequest = requestFor(formula);
+    runtime.setLatestRequest(firstRequest, formula);
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    auto blockerStarted = false;
+    auto releaseBlocker = false;
+    auto blocker = runtime.workerPool().addTask([&]
+    {
+        std::unique_lock lock(mutex);
+        blockerStarted = true;
+        cv.notify_all();
+        cv.wait(lock, [&] { return releaseBlocker; });
+    });
+
+    {
+        std::unique_lock lock(mutex);
+        REQUIRE(cv.wait_for(lock, 1s, [&] { return blockerStarted; }));
+    }
+
+    auto oldJob = tileJob(gx::JobKind::ClassifyInterval, 10);
+    oldJob.priority = -100;
+    runtime.submitJobs(std::array{oldJob});
+
+    auto secondRequest = firstRequest;
+    secondRequest.header.requestId = firstRequest.header.requestId + 1;
+    secondRequest.xRange = Interval{-1.0, 1.0};
+    runtime.setLatestRequest(secondRequest, formula);
+
+    auto currentJob = tileJob(gx::JobKind::ClassifyInterval, 20);
+    currentJob.priority = 100;
+    runtime.submitJobs(std::array{currentJob});
+
+    {
+        std::lock_guard lock(mutex);
+        releaseBlocker = true;
+    }
+    cv.notify_all();
+    blocker.get();
+    waitForRuntimeIdle(runtime);
+
+    const auto order = backendView->classifications();
+    REQUIRE(order.size() == 2);
+    CHECK(order[0] == 20);
+    CHECK(order[1] == 10);
 }
 
 TEST_CASE("TileRuntime splits backend work into bounded sub-batches", "[TileRuntime][Responsiveness]")

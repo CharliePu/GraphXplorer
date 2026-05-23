@@ -6,7 +6,8 @@ TEST_CASE("BatchOptimizer chooses the highest-throughput observed batch", "[Batc
 {
     gx::BatchOptimizer optimizer{gx::BatchOptimizerOptions{
         .initialRasterBatchSize = 2,
-        .maxRasterBatchSize = 32
+        .maxRasterBatchSize = 32,
+        .maxRasterBatchLatency = std::chrono::microseconds{0}
     }};
 
     CHECK(optimizer.choose(gx::JobKind::RasterizeRegion, 100) == 2);
@@ -17,6 +18,26 @@ TEST_CASE("BatchOptimizer chooses the highest-throughput observed batch", "[Batc
 
     CHECK(optimizer.choose(gx::JobKind::RasterizeRegion, 100) == 32);
     CHECK(optimizer.choose(gx::JobKind::RasterizeRegion, 6) == 6);
+}
+
+TEST_CASE("BatchOptimizer caps raster exploration by latency budget", "[BatchOptimizer][Responsiveness]")
+{
+    gx::BatchOptimizer optimizer{gx::BatchOptimizerOptions{
+        .initialRasterBatchSize = 1,
+        .maxRasterBatchSize = 64,
+        .maxRasterBatchLatency = std::chrono::microseconds{8000}
+    }};
+
+    CHECK(optimizer.choose(gx::JobKind::RasterizeRegion, 100) == 1);
+
+    optimizer.observe(gx::JobKind::RasterizeRegion, 1, std::chrono::microseconds{4000});
+    CHECK(optimizer.choose(gx::JobKind::RasterizeRegion, 100) == 2);
+
+    optimizer.observe(gx::JobKind::RasterizeRegion, 2, std::chrono::microseconds{6500});
+    CHECK(optimizer.choose(gx::JobKind::RasterizeRegion, 100) == 2);
+
+    optimizer.observe(gx::JobKind::RasterizeRegion, 4, std::chrono::microseconds{20000});
+    CHECK(optimizer.choose(gx::JobKind::RasterizeRegion, 100) == 2);
 }
 
 TEST_CASE("BatchOptimizer prunes throughput-dominated candidates", "[BatchOptimizer]")

@@ -14,6 +14,7 @@ add_executable(GraphXplorerTests
         ParserTests.cpp
         PresentationPlannerTests.cpp
         RenderCommandTests.cpp
+        ThreadPoolTests.cpp
         TilePlannerBackendTests.cpp
         TileMathTests.cpp
         VisualCoverBuilderTests.cpp
@@ -34,4 +35,17 @@ target_link_libraries(GraphXplorerTests PRIVATE
         GraphXplorerFormula
         GraphXplorerUtil
         Catch2::Catch2WithMain
+)
+
+add_executable(GraphXplorerCpuBench
+        CpuPathBenchmark.cpp
+)
+
+target_include_directories(GraphXplorerCpuBench PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
+target_link_libraries(GraphXplorerCpuBench PRIVATE
+        GraphXplorerCompute
+        GraphXplorerTile
+        GraphXplorerFormula
+        GraphXplorerUtil
 )

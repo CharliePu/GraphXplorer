@@ -1,5 +1,7 @@
 #include "ThreadPool.h"
 
+#include <climits>
+
 ThreadPool::ThreadPool(size_t numThreads) : threadsShouldStop(false)
 {
     for (size_t i = 0; i < numThreads; ++i)

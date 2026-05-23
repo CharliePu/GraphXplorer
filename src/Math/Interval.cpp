@@ -4,10 +4,8 @@
 
 #include "Interval.h"
 #include <numbers>
-#include <vector>
 #include <algorithm>
 #include <array>
-#include <string>
 #include <cmath>
 
 namespace
@@ -66,65 +64,69 @@ std::ostream& operator<<(std::ostream& os, const Interval& interval) {
 Interval operator>(const Interval& lhs, const Interval& rhs) {
     if (lhs.undefined() || rhs.undefined())
     {
-        return unknownTruthFrom(lhs, rhs);
+        return undefinedIntervalFrom(lhs, rhs);
     }
 
-    const bool candidates[] = {
-        lhs.lower > rhs.lower,
-        lhs.lower > rhs.upper,
-        lhs.upper > rhs.lower,
-        lhs.upper > rhs.upper
-    };
-
-    return truthIntervalFromCandidates(candidates, carriesUnresolvedDomain(lhs, rhs));
+    if (lhs.lower > rhs.upper)
+    {
+        return {1.0, 1.0, carriesUnresolvedDomain(lhs, rhs)};
+    }
+    if (lhs.upper <= rhs.lower)
+    {
+        return {0.0, 0.0, carriesUnresolvedDomain(lhs, rhs)};
+    }
+    return {0.0, 1.0, carriesUnresolvedDomain(lhs, rhs)};
 }
 
 Interval operator<(const Interval& lhs, const Interval& rhs) {
     if (lhs.undefined() || rhs.undefined())
     {
-        return unknownTruthFrom(lhs, rhs);
+        return undefinedIntervalFrom(lhs, rhs);
     }
 
-    const bool candidates[] = {
-        lhs.lower < rhs.lower,
-        lhs.lower < rhs.upper,
-        lhs.upper < rhs.lower,
-        lhs.upper < rhs.upper
-    };
-
-    return truthIntervalFromCandidates(candidates, carriesUnresolvedDomain(lhs, rhs));
+    if (lhs.upper < rhs.lower)
+    {
+        return {1.0, 1.0, carriesUnresolvedDomain(lhs, rhs)};
+    }
+    if (lhs.lower >= rhs.upper)
+    {
+        return {0.0, 0.0, carriesUnresolvedDomain(lhs, rhs)};
+    }
+    return {0.0, 1.0, carriesUnresolvedDomain(lhs, rhs)};
 }
 
 Interval operator>=(const Interval& lhs, const Interval& rhs) {
     if (lhs.undefined() || rhs.undefined())
     {
-        return unknownTruthFrom(lhs, rhs);
+        return undefinedIntervalFrom(lhs, rhs);
     }
 
-    const bool candidates[] = {
-        lhs.lower >= rhs.lower,
-        lhs.lower >= rhs.upper,
-        lhs.upper >= rhs.lower,
-        lhs.upper >= rhs.upper
-    };
-
-    return truthIntervalFromCandidates(candidates, carriesUnresolvedDomain(lhs, rhs));
+    if (lhs.lower >= rhs.upper)
+    {
+        return {1.0, 1.0, carriesUnresolvedDomain(lhs, rhs)};
+    }
+    if (lhs.upper < rhs.lower)
+    {
+        return {0.0, 0.0, carriesUnresolvedDomain(lhs, rhs)};
+    }
+    return {0.0, 1.0, carriesUnresolvedDomain(lhs, rhs)};
 }
 
 Interval operator<=(const Interval& lhs, const Interval& rhs) {
     if (lhs.undefined() || rhs.undefined())
     {
-        return unknownTruthFrom(lhs, rhs);
+        return undefinedIntervalFrom(lhs, rhs);
     }
 
-    const bool candidates[] = {
-        lhs.lower <= rhs.lower,
-        lhs.lower <= rhs.upper,
-        lhs.upper <= rhs.lower,
-        lhs.upper <= rhs.upper
-    };
-
-    return truthIntervalFromCandidates(candidates, carriesUnresolvedDomain(lhs, rhs));
+    if (lhs.upper <= rhs.lower)
+    {
+        return {1.0, 1.0, carriesUnresolvedDomain(lhs, rhs)};
+    }
+    if (lhs.lower > rhs.upper)
+    {
+        return {0.0, 0.0, carriesUnresolvedDomain(lhs, rhs)};
+    }
+    return {0.0, 1.0, carriesUnresolvedDomain(lhs, rhs)};
 }
 
 Interval operator&&(const Interval& lhs, const Interval& rhs) {
@@ -162,7 +164,7 @@ Interval operator||(const Interval& lhs, const Interval& rhs) {
 Interval operator==(const Interval& lhs, const Interval& rhs) {
     if (lhs.undefined() || rhs.undefined())
     {
-        return unknownTruthFrom(lhs, rhs);
+        return undefinedIntervalFrom(lhs, rhs);
     }
 
     if (lhs.upper < rhs.lower || rhs.upper < lhs.lower)
@@ -180,6 +182,10 @@ Interval operator==(const Interval& lhs, const Interval& rhs) {
 
 Interval operator!=(const Interval& lhs, const Interval& rhs) {
     const auto equalRange = lhs == rhs;
+    if (equalRange.undefined())
+    {
+        return equalRange;
+    }
     if (equalRange.allTrue())
     {
         return {0.0, 0.0, equalRange.hasDiscontinuity()};
@@ -206,7 +212,7 @@ Interval operator-(const Interval& lhs, const Interval& rhs) {
     {
         return undefinedIntervalFrom(lhs, rhs);
     }
-    return {lhs.lower - rhs.lower, lhs.upper - rhs.upper, carriesUnresolvedDomain(lhs, rhs)};
+    return {lhs.lower - rhs.upper, lhs.upper - rhs.lower, carriesUnresolvedDomain(lhs, rhs)};
 }
 
 Interval operator*(const Interval& lhs, const Interval& rhs) {
@@ -253,32 +259,60 @@ Interval operator/(const Interval& lhs, const Interval& rhs) {
     return Interval(min_val, max_val, carriesUnresolvedDomain(lhs, rhs));
 }
 
+namespace
+{
+double integerPower(const double base, const long long exponent)
+{
+    auto remaining = exponent;
+    auto factor = base;
+    auto result = 1.0;
+    while (remaining > 0)
+    {
+        if ((remaining & 1LL) != 0LL)
+        {
+            result *= factor;
+        }
+        remaining >>= 1;
+        if (remaining > 0)
+        {
+            factor *= factor;
+        }
+    }
+    return result;
+}
+}
+
 Interval pow(const Interval& base, const Interval& exp) {
     if (base.undefined() || exp.undefined())
     {
         return undefinedIntervalFrom(base, exp);
     }
 
-    const auto computeIntegerPower = [](const Interval &baseInterval, const long long exponent) -> Interval
+    const auto computeIntegerPower = [exponentDiscontinuity = exp.hasDiscontinuity()](
+        const Interval &baseInterval,
+        const long long exponent) -> Interval
     {
+        const auto unresolvedDomain = baseInterval.hasDiscontinuity() || exponentDiscontinuity;
         if (exponent == 0)
         {
-            return {1.0, 1.0, baseInterval.hasDiscontinuity()};
+            return {1.0, 1.0, unresolvedDomain};
         }
 
         const auto absExponent = exponent < 0 ? -exponent : exponent;
-        const auto endpointLower = std::pow(baseInterval.lower, static_cast<double>(absExponent));
-        const auto endpointUpper = std::pow(baseInterval.upper, static_cast<double>(absExponent));
+        const auto lowerMagnitude = integerPower(std::abs(baseInterval.lower), absExponent);
+        const auto upperMagnitude = integerPower(std::abs(baseInterval.upper), absExponent);
 
         Interval powered;
         if ((absExponent & 1LL) == 0LL)
         {
-            const auto upper = std::max(endpointLower, endpointUpper);
-            const auto lower = baseInterval.contains(0.0) ? 0.0 : std::min(endpointLower, endpointUpper);
+            const auto upper = std::max(lowerMagnitude, upperMagnitude);
+            const auto lower = baseInterval.contains(0.0) ? 0.0 : std::min(lowerMagnitude, upperMagnitude);
             powered = Interval{lower, upper};
         }
         else
         {
+            const auto endpointLower = std::copysign(lowerMagnitude, baseInterval.lower);
+            const auto endpointUpper = std::copysign(upperMagnitude, baseInterval.upper);
             if (endpointLower <= endpointUpper)
             {
                 powered = Interval{endpointLower, endpointUpper};
@@ -291,7 +325,7 @@ Interval pow(const Interval& base, const Interval& exp) {
 
         if (exponent > 0)
         {
-            return {powered.lower, powered.upper, baseInterval.hasDiscontinuity()};
+            return {powered.lower, powered.upper, unresolvedDomain};
         }
 
         if (powered.contains(0.0))
@@ -303,10 +337,10 @@ Interval pow(const Interval& base, const Interval& exp) {
         const auto reciprocalUpper = 1.0 / powered.lower;
         if (reciprocalLower <= reciprocalUpper)
         {
-            return {reciprocalLower, reciprocalUpper, baseInterval.hasDiscontinuity()};
+            return {reciprocalLower, reciprocalUpper, unresolvedDomain};
         }
 
-        return {reciprocalUpper, reciprocalLower, baseInterval.hasDiscontinuity()};
+        return {reciprocalUpper, reciprocalLower, unresolvedDomain};
     };
 
     // non-positive exp => if base is zero, undefined
@@ -324,7 +358,7 @@ Interval pow(const Interval& base, const Interval& exp) {
         return INTERVAL_UNDEFINED;
 
 
-    std::vector<double> results{
+    std::array results{
         std::pow(base.lower, exp.lower),
         std::pow(base.lower, exp.upper),
         std::pow(base.upper, exp.lower),
@@ -377,31 +411,14 @@ bool Interval::allIntConst() const
     return allConstant() && std::floor(lower) == lower;
 }
 
-// Computes the minimum and maximum of a function over an interval
-typedef double (*Func)(double);
-
-Interval computeInterval(double lower, double upper, Func func, const std::vector<double>& critical_points = {}) {
-    std::vector<double> points = {lower, upper};
-    for (double cp : critical_points) {
-        if (cp > lower && cp < upper) {
-            points.emplace_back(cp);
-        }
-    }
-
-    // Remove duplicates and sort
-    std::sort(points.begin(), points.end());
-    points.erase(std::unique(points.begin(), points.end()), points.end());
-
-    // Evaluate function at all points
-    double min_val = func(points[0]);
-    double max_val = func(points[0]);
-    for (double x : points) {
-        double fx = func(x);
-        if (fx < min_val) min_val = fx;
-        if (fx > max_val) max_val = fx;
-    }
-
-    return Interval(min_val, max_val);
+bool containsStrictPeriodicPoint(const double lower,
+                                 const double upper,
+                                 const double phase,
+                                 const double period)
+{
+    const auto k = std::ceil((lower - phase) / period);
+    const auto point = phase + k * period;
+    return point > lower && point < upper;
 }
 
 Interval sin(const Interval& interval) {
@@ -417,20 +434,21 @@ Interval sin(const Interval& interval) {
         return {-1.0, 1.0, interval.hasDiscontinuity()};
     }
 
-    // Critical points where derivative is zero: multiples of pi/2
-    std::vector<double> criticals;
-    // Calculate k such that (pi/2) + k*pi is within [lower, upper]
-    double k_min = std::ceil((interval.lower - pi / 2) / pi);
-    double k_max = std::floor((interval.upper - pi / 2) / pi);
-    for (double k = k_min; k <= k_max; ++k) {
-        double cp = pi / 2 + k * pi;
-        if (cp > interval.lower && cp < interval.upper) {
-            criticals.emplace_back(cp);
-        }
+    auto lower = std::sin(interval.lower);
+    auto upper = std::sin(interval.upper);
+    if (lower > upper)
+    {
+        std::swap(lower, upper);
     }
-
-    const auto range = computeInterval(interval.lower, interval.upper, static_cast<Func>(std::sin), criticals);
-    return {range.lower, range.upper, interval.hasDiscontinuity()};
+    if (containsStrictPeriodicPoint(interval.lower, interval.upper, pi / 2.0, fullPeriod))
+    {
+        upper = 1.0;
+    }
+    if (containsStrictPeriodicPoint(interval.lower, interval.upper, -pi / 2.0, fullPeriod))
+    {
+        lower = -1.0;
+    }
+    return {lower, upper, interval.hasDiscontinuity()};
 }
 
 Interval cos(const Interval& interval) {
@@ -446,20 +464,21 @@ Interval cos(const Interval& interval) {
         return {-1.0, 1.0, interval.hasDiscontinuity()};
     }
 
-    // Critical points where derivative is zero: multiples of pi
-    std::vector<double> criticals;
-    // Calculate k such that k*pi is within [lower, upper]
-    double k_min = std::ceil(interval.lower / pi);
-    double k_max = std::floor(interval.upper / pi);
-    for (double k = k_min; k <= k_max; ++k) {
-        double cp = k * pi;
-        if (cp > interval.lower && cp < interval.upper) {
-            criticals.emplace_back(cp);
-        }
+    auto lower = std::cos(interval.lower);
+    auto upper = std::cos(interval.upper);
+    if (lower > upper)
+    {
+        std::swap(lower, upper);
     }
-
-    const auto range = computeInterval(interval.lower, interval.upper, static_cast<Func>(std::cos), criticals);
-    return {range.lower, range.upper, interval.hasDiscontinuity()};
+    if (containsStrictPeriodicPoint(interval.lower, interval.upper, 0.0, fullPeriod))
+    {
+        upper = 1.0;
+    }
+    if (containsStrictPeriodicPoint(interval.lower, interval.upper, pi, fullPeriod))
+    {
+        lower = -1.0;
+    }
+    return {lower, upper, interval.hasDiscontinuity()};
 }
 
 Interval tan(const Interval& interval) {
@@ -469,17 +488,12 @@ Interval tan(const Interval& interval) {
         return undefinedIntervalFrom(interval);
     }
 
-    // Check for discontinuities at (pi/2) + k*pi
-    double k_min = std::ceil((interval.lower - pi / 2) / pi);
-    double k_max = std::floor((interval.upper - pi / 2) / pi);
-    for (double k = k_min; k <= k_max; ++k) {
-        double asymptote = pi / 2 + k * pi;
-        if (asymptote > interval.lower && asymptote < interval.upper) {
-            // Interval crosses a discontinuity; tan approaches -inf and +inf
-            return Interval(-std::numeric_limits<double>::infinity(),
-                            std::numeric_limits<double>::infinity(),
-                            true);
-        }
+    if (!std::isfinite(interval.lower) || !std::isfinite(interval.upper)
+        || containsStrictPeriodicPoint(interval.lower, interval.upper, pi / 2.0, pi))
+    {
+        return Interval(-std::numeric_limits<double>::infinity(),
+                        std::numeric_limits<double>::infinity(),
+                        true);
     }
 
     // tan is strictly increasing where defined, so min and max are at endpoints

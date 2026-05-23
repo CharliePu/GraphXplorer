@@ -10,16 +10,16 @@
 #include <future>
 #include <queue>
 #include <thread>
+#include <type_traits>
 #include <vector>
 #include <atomic>
 
-// Custom comparator for the priority queue
 struct TaskWrapper {
     std::function<void()> func;
     int priority;
 
     bool operator<(const TaskWrapper& other) const {
-        return priority < other.priority; // Lower priority number means higher priority
+        return priority > other.priority;
     }
 };
 
@@ -32,6 +32,10 @@ public:
 
     template<class F, class... Args>
     auto addTask(F &&f, Args &&... args) -> std::future<std::invoke_result_t<F, Args...> >;
+
+    template<class F, class... Args>
+    auto addTaskWithPriority(int priority, F &&f, Args &&... args)
+        -> std::future<std::invoke_result_t<F, Args...> >;
 
     template<class F>
     bool tryAddTask(F &&f, int priority = 0);
@@ -57,6 +61,13 @@ private:
 template<class F, class... Args>
 auto ThreadPool::addTask(F &&f, Args &&... args) -> std::future<std::invoke_result_t<F, Args...> >
 {
+    return addTaskWithPriority(0, std::forward<F>(f), std::forward<Args>(args)...);
+}
+
+template<class F, class... Args>
+auto ThreadPool::addTaskWithPriority(const int priority, F &&f, Args &&... args)
+    -> std::future<std::invoke_result_t<F, Args...> >
+{
     using returnType = std::invoke_result_t<F, Args...>;
 
     auto task = std::make_shared<std::packaged_task<returnType()> >(
@@ -66,7 +77,7 @@ auto ThreadPool::addTask(F &&f, Args &&... args) -> std::future<std::invoke_resu
 
     {
         std::scoped_lock lock(queueMutex);
-        tasks.emplace(TaskWrapper{[task]() { (*task)(); }, 0});
+        tasks.emplace(TaskWrapper{[task]() { (*task)(); }, priority});
     }
 
     cv.notify_one();

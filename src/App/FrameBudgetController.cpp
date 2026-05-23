@@ -44,7 +44,8 @@ namespace
 
 FrameBudgetController::FrameBudgetController(FrameBudgetControllerOptions nextOptions)
     : options{nextOptions},
-      refinementDepth{options.refinementDepth}
+      refinementDepth{options.refinementDepth},
+      applyBudget{options.initialApplyBudget}
 {
     options.maxSeedCells = std::max(1, options.maxSeedCells);
     options.maxInFlightJobs = std::max<size_t>(1, options.maxInFlightJobs);
@@ -52,6 +53,11 @@ FrameBudgetController::FrameBudgetController(FrameBudgetControllerOptions nextOp
         std::max<size_t>(1, options.maxPendingCompletionsBeforeBackpressure);
     options.maxRefinementDepth = std::max(0, options.maxRefinementDepth);
     options.refinementDepth = std::clamp(options.refinementDepth, 0, options.maxRefinementDepth);
+    if (options.maxApplyBudget < options.minApplyBudget)
+    {
+        options.maxApplyBudget = options.minApplyBudget;
+    }
+    applyBudget = clampDuration(applyBudget, options.minApplyBudget, options.maxApplyBudget);
 }
 
 FrameWorkBudget FrameBudgetController::beginFrame(const InputEvent &event,
@@ -93,7 +99,27 @@ FrameWorkBudget FrameBudgetController::beginFrame(const FrameBudgetContext &cont
 
 void FrameBudgetController::endFrame(const FrameBudgetFeedback &feedback)
 {
-    (void)feedback;
+    if (feedback.pipelineLatency <= std::chrono::microseconds{0})
+    {
+        return;
+    }
+
+    if (feedback.pipelineLatency > options.targetPipelineLatency)
+    {
+        applyBudget = clampDuration(
+            applyBudget / 2,
+            options.minApplyBudget,
+            options.maxApplyBudget);
+        return;
+    }
+
+    if (feedback.pendingCompletions > 0)
+    {
+        applyBudget = clampDuration(
+            applyBudget + options.minApplyBudget,
+            options.minApplyBudget,
+            options.maxApplyBudget);
+    }
 }
 
 
@@ -104,13 +130,14 @@ int FrameBudgetController::dynamicRefinementDepth() const
 
 std::chrono::microseconds FrameBudgetController::dynamicApplyBudget() const
 {
-    return std::chrono::microseconds{0};
+    return applyBudget;
 }
 
 FrameWorkBudget FrameBudgetController::budgetForFrame(const size_t pendingCompletions,
                                                        const size_t inFlightJobs) const
 {
     auto budget = FrameWorkBudget{
+        .completedTileApplyBudget = applyBudget,
         .tilePlan = options.tilePlanBudget,
         .upload = options.uploadBudget,
         .renderUpload = options.renderUploadBudget,

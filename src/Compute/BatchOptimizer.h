@@ -15,11 +15,12 @@ namespace gx
 struct BatchOptimizerOptions
 {
     size_t initialIntervalBatchSize{64};
-    size_t initialRasterBatchSize{8};
+    size_t initialRasterBatchSize{1};
     size_t maxIntervalBatchSize{1024};
     size_t maxRasterBatchSize{64};
     size_t maxCandidatesPerKind{64};
     double explorationGrowthFactor{2.0};
+    std::chrono::microseconds maxRasterBatchLatency{8000};
 };
 
 struct BatchCandidate
@@ -60,10 +61,14 @@ public:
 private:
     [[nodiscard]] size_t fallbackBatchSize(JobKind kind) const;
     [[nodiscard]] size_t maxBatchSize(JobKind kind) const;
+    [[nodiscard]] std::chrono::microseconds maxBatchLatency(JobKind kind) const;
     [[nodiscard]] static uint64_t keyFor(JobKind kind, uint32_t pixelsPerAxis);
     [[nodiscard]] std::optional<size_t> explorationCandidate(const BatchCandidate *best,
                                                              size_t largestObserved,
                                                              size_t limit) const;
+    [[nodiscard]] bool shouldExploreCandidate(JobKind kind,
+                                              const BatchCandidate &best,
+                                              size_t candidateBatchSize) const;
     static void pruneFrontier(std::vector<BatchCandidate> &candidates, size_t maxCandidates);
 
     BatchOptimizerOptions options{};

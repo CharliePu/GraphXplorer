@@ -558,9 +558,13 @@ TEST_CASE("FramePipeline keeps same-formula tile work across viewport requests",
     REQUIRE(second.viewportRequest->header.requestId != first.viewportRequest->header.requestId);
 
     releaseBackend.store(true, std::memory_order_release);
-    const auto result = pumpUntil(pipeline, [](const gx::FrameSnapshot &snapshot)
+    const auto result = pumpUntil(pipeline, [&](const gx::FrameSnapshot &snapshot)
     {
-        return !snapshot.appliedTransactions.empty();
+        return std::ranges::any_of(snapshot.appliedTransactions, [&](const gx::TileTransaction &tx)
+        {
+            return tx.header.requestId == first.viewportRequest->header.requestId
+                && tx.semanticsHash == first.viewportRequest->formula.semanticsHash;
+        });
     });
 
     REQUIRE_FALSE(result.snapshot.appliedTransactions.empty());

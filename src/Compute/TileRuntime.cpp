@@ -16,6 +16,19 @@
 
 namespace gx
 {
+namespace
+{
+[[nodiscard]] int priorityForBatch(const std::span<const TileJob> jobs)
+{
+    auto priority = std::numeric_limits<int>::max();
+    for (const auto &job : jobs)
+    {
+        priority = std::min(priority, job.priority);
+    }
+    return priority == std::numeric_limits<int>::max() ? 0 : priority;
+}
+}
+
 size_t TileRuntime::WorkKeyHash::operator()(const WorkKey &key) const noexcept
 {
     auto hash = TileKeyHash{}(key.tile);
@@ -60,20 +73,21 @@ void TileRuntime::setLatestRequest(const ViewportRequest &request,
     const auto previousRequestId = latestRequestId.load(std::memory_order_acquire);
     const auto formulaChanged = previousSemantics != 0
         && previousSemantics != request.formula.semanticsHash.value;
-    const auto viewportChanged = previousRequestId != 0
+    const auto viewportChanged = previousSemantics != 0
+        && !formulaChanged
         && previousRequestId != request.header.requestId;
 
-    if (formulaChanged || viewportChanged)
+    if (formulaChanged)
     {
         workers.clearAllTasks();
         {
             std::lock_guard lock(inFlightMutex);
             inFlight.clear();
         }
-        if (formulaChanged)
-        {
-            discardInFlightExcept(request.formula.semanticsHash);
-        }
+    }
+    else if (viewportChanged)
+    {
+        workers.markAllTasksLowPriority();
     }
 
     {
@@ -164,11 +178,29 @@ TileRuntimeDrainResult TileRuntime::drainCompleted(TileCache &tileCache,
                                                    const std::chrono::microseconds applyBudget)
 {
     GRAPHX_PROFILE_SCOPE("runtime.drainCompleted");
-    (void)applyBudget;
     TileRuntimeDrainResult result;
     auto drained = completed.drainForFrame();
+    if (drained.empty())
+    {
+        return result;
+    }
+    if (applyBudget <= std::chrono::microseconds{0})
+    {
+        completed.pushFrontRange(drained.begin(), drained.end());
+        return result;
+    }
+
+    const auto started = std::chrono::steady_clock::now();
     for (size_t workIndex = 0; workIndex < drained.size(); ++workIndex)
     {
+        if (std::chrono::steady_clock::now() - started >= applyBudget)
+        {
+            completed.pushFrontRange(
+                drained.begin() + static_cast<std::ptrdiff_t>(workIndex),
+                drained.end());
+            break;
+        }
+
         auto &work = drained[workIndex];
         for (auto &region : work.regions)
         {
@@ -238,7 +270,10 @@ void TileRuntime::enqueueBatch(const ViewportRequest &request,
                                const uint32_t rasterPixelsPerAxis,
                                const TexturePreparationMode textureMode)
 {
-    workers.addTask([this, request, formula, kind, rasterPixelsPerAxis, textureMode, jobs = std::move(jobs)]()
+    const auto priority = priorityForBatch(jobs);
+    workers.addTaskWithPriority(
+        priority,
+        [this, request, formula, kind, rasterPixelsPerAxis, textureMode, jobs = std::move(jobs)]()
     {
         GRAPHX_PROFILE_SCOPE("runtime.workerBatch");
         const auto started = std::chrono::steady_clock::now();
@@ -682,15 +717,6 @@ void TileRuntime::removeInFlight(const ViewportRequest &request, const std::span
     {
         inFlight.erase(workKeyFor(request, job));
     }
-}
-
-void TileRuntime::discardInFlightExcept(const FormulaSemanticsHash semanticsHash)
-{
-    std::lock_guard lock(inFlightMutex);
-    std::erase_if(inFlight, [semanticsHash](const WorkKey &key)
-    {
-        return key.semanticsHash != semanticsHash;
-    });
 }
 
 void TileRuntime::notifyCompletedWork()

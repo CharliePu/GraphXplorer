@@ -18,6 +18,7 @@ struct InequalityTileRefinementOptions
     int subpixelExtraDepth{DefaultRasterProofExtraDepth};
     size_t maxVisitedNodes{500000};
     std::optional<Rect> rootBounds{};
+    bool recordDetailedProofTree{false};
     std::function<bool()> cancelled{};
 };
 
@@ -28,6 +29,8 @@ struct InequalityTileRefinementResult
     RegionOutput region{};
     size_t visitedNodes{0};
     size_t unknownPixels{0};
+    size_t intervalEvaluations{0};
+    size_t pointEvaluations{0};
 };
 
 [[nodiscard]] InequalityTileRefinementResult refineInequalityTile(

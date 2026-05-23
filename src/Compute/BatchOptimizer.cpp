@@ -22,6 +22,7 @@ BatchOptimizer::BatchOptimizer(BatchOptimizerOptions nextOptions): options{nextO
     options.initialRasterBatchSize = std::min(options.initialRasterBatchSize, options.maxRasterBatchSize);
     options.maxCandidatesPerKind = std::max<size_t>(1, options.maxCandidatesPerKind);
     options.explorationGrowthFactor = std::clamp(options.explorationGrowthFactor, 1.1, 8.0);
+    options.maxRasterBatchLatency = std::max(std::chrono::microseconds{0}, options.maxRasterBatchLatency);
 }
 
 size_t BatchOptimizer::choose(const JobKind kind,
@@ -36,6 +37,7 @@ size_t BatchOptimizer::choose(const JobKind kind,
     std::lock_guard lock(mutex);
     const auto key = keyFor(kind, pixelsPerAxis);
     const auto limit = std::max<size_t>(1, std::min(remainingJobs, maxBatchSize(kind)));
+    const auto latencyBudget = maxBatchLatency(kind);
     const auto frontierIt = frontierByKey.find(key);
     const auto empty = std::vector<BatchCandidate>{};
     const auto &frontier = frontierIt == frontierByKey.end() ? empty : frontierIt->second;
@@ -44,6 +46,12 @@ size_t BatchOptimizer::choose(const JobKind kind,
     for (const auto &candidate : frontier)
     {
         if (candidate.batchSize > limit)
+        {
+            continue;
+        }
+        if (latencyBudget > std::chrono::microseconds{0}
+            && candidate.batchSize > 1
+            && candidate.latency > latencyBudget)
         {
             continue;
         }
@@ -59,7 +67,10 @@ size_t BatchOptimizer::choose(const JobKind kind,
 
     if (const auto nextProbe = explorationCandidate(best, largestObserved, limit))
     {
-        return *nextProbe;
+        if (shouldExploreCandidate(kind, *best, *nextProbe))
+        {
+            return *nextProbe;
+        }
     }
 
     if (best)
@@ -69,7 +80,9 @@ size_t BatchOptimizer::choose(const JobKind kind,
 
     if (!frontier.empty())
     {
-        return limit;
+        return latencyBudget > std::chrono::microseconds{0}
+            ? std::min(limit, fallbackBatchSize(kind))
+            : limit;
     }
 
     return std::min(limit, fallbackBatchSize(kind));
@@ -131,6 +144,13 @@ size_t BatchOptimizer::maxBatchSize(const JobKind kind) const
         : options.maxIntervalBatchSize;
 }
 
+std::chrono::microseconds BatchOptimizer::maxBatchLatency(const JobKind kind) const
+{
+    return kind == JobKind::RasterizeRegion
+        ? options.maxRasterBatchLatency
+        : std::chrono::microseconds{0};
+}
+
 uint64_t BatchOptimizer::keyFor(const JobKind kind, const uint32_t pixelsPerAxis)
 {
     const auto kindPart = static_cast<uint64_t>(kind == JobKind::RasterizeRegion ? 1u : 0u);
@@ -149,6 +169,26 @@ std::optional<size_t> BatchOptimizer::explorationCandidate(const BatchCandidate 
     const auto grown = static_cast<size_t>(
         std::ceil(static_cast<double>(largestObserved) * options.explorationGrowthFactor));
     return std::min(limit, std::max(largestObserved + 1, grown));
+}
+
+bool BatchOptimizer::shouldExploreCandidate(const JobKind kind,
+                                            const BatchCandidate &best,
+                                            const size_t candidateBatchSize) const
+{
+    const auto latencyBudget = maxBatchLatency(kind);
+    if (latencyBudget <= std::chrono::microseconds{0}
+        || candidateBatchSize <= best.batchSize
+        || best.batchSize == 0
+        || best.latency <= std::chrono::microseconds{0})
+    {
+        return true;
+    }
+
+    const auto estimatedLatency = std::chrono::microseconds{
+        (best.latency.count() * static_cast<int64_t>(candidateBatchSize))
+        / static_cast<int64_t>(best.batchSize)
+    };
+    return estimatedLatency <= latencyBudget;
 }
 
 void BatchOptimizer::pruneFrontier(std::vector<BatchCandidate> &candidates, const size_t maxCandidates)

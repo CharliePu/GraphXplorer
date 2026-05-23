@@ -124,7 +124,6 @@ private:
     [[nodiscard]] bool isCurrent(const ContractHeader &header, FormulaSemanticsHash semanticsHash) const;
     void removeInFlight(const WorkKey &key);
     void removeInFlight(const ViewportRequest &request, std::span<const TileJob> jobs);
-    void discardInFlightExcept(FormulaSemanticsHash semanticsHash);
     void notifyCompletedWork();
     [[nodiscard]] size_t defaultWorkerCount() const;
     [[nodiscard]] static WorkKey workKeyFor(const ViewportRequest &request, const TileJob &job);

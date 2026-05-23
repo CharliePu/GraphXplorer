@@ -1,4 +1,5 @@
 #include "ComputeBackend.h"
+#include "AffineInequality.h"
 #include "InequalityTileRefiner.h"
 
 #include <algorithm>
@@ -30,6 +31,35 @@ BatchResult CpuComputeBackend::classifyIntervals(const IntervalBatchView &batch,
         return {false, 0, "Invalid interval batch shape"};
     }
 
+    if (batch.formula->affineInequality)
+    {
+        const auto affine = *batch.formula->affineInequality;
+        for (size_t i = 0; i < batch.keys.size(); ++i)
+        {
+            if (batch.cancelled && batch.cancelled())
+            {
+                return {false, i, "Cancelled"};
+            }
+
+            const auto valueRange = affineValueRange(
+                affine,
+                Rect{batch.xMin[i], batch.xMax[i], batch.yMin[i], batch.yMax[i]});
+            const auto interval = truthRangeForAffineValue(valueRange, affine.comparison);
+            out[i] = {
+                batch.keys[i],
+                classificationForTruthRange(interval),
+                interval
+            };
+        }
+        return {true, batch.keys.size(), {}};
+    }
+
+    std::vector<Interval> variables(batch.formula->variableNames.size(), Interval{0.0});
+    std::vector<Interval> evaluationStack;
+    evaluationStack.reserve(batch.formula->evaluationIr.size());
+    const auto xSlot = batch.formula->variableSlot("x");
+    const auto ySlot = batch.formula->variableSlot("y");
+
     for (size_t i = 0; i < batch.keys.size(); ++i)
     {
         if (batch.cancelled && batch.cancelled())
@@ -37,17 +67,16 @@ BatchResult CpuComputeBackend::classifyIntervals(const IntervalBatchView &batch,
             return {false, i, "Cancelled"};
         }
 
-        std::vector<Interval> variables(batch.formula->variableNames.size(), Interval{0.0});
-        if (const auto slot = batch.formula->variableSlot("x"))
+        if (xSlot)
         {
-            variables[*slot] = Interval{batch.xMin[i], batch.xMax[i]};
+            variables[*xSlot] = Interval{batch.xMin[i], batch.xMax[i]};
         }
-        if (const auto slot = batch.formula->variableSlot("y"))
+        if (ySlot)
         {
-            variables[*slot] = Interval{batch.yMin[i], batch.yMax[i]};
+            variables[*ySlot] = Interval{batch.yMin[i], batch.yMax[i]};
         }
 
-        const auto interval = batch.formula->evaluateInterval(variables);
+        const auto interval = batch.formula->evaluateInterval(variables, evaluationStack);
 
         auto classification = TileClassification::Mixed;
         if (!interval.hasDiscontinuity() && !interval.undefined() && interval.allTrue())

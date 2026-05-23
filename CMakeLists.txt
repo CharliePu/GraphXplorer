@@ -47,6 +47,7 @@ add_library(GraphXplorerTile
 target_link_libraries(GraphXplorerTile PUBLIC GraphXplorerFormula GraphXplorerUtil)
 
 add_library(GraphXplorerCompute
+        src/Compute/AffineInequality.h
         src/Compute/BatchOptimizer.cpp
         src/Compute/BatchOptimizer.h
         src/Compute/ComputeBackend.h

@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <numbers>
 #include <string>
 
 #include "../src/Compute/ComputeBackend.h"
+#include "../src/Compute/InequalityTileRefiner.h"
 #include "../src/Compute/TilePlanner.h"
 #include "../src/Tile/TileCache.h"
 #include "../src/Util/ThreadPool.h"
@@ -94,6 +97,21 @@ gx::TileTransaction uniformTrueTransaction(const gx::FormulaSemanticsHash semant
             }
         }
     };
+}
+
+bool containsStrictPeriodicPoint(const double lower,
+                                 const double upper,
+                                 const double phase,
+                                 const double period)
+{
+    const auto k = std::ceil((lower - phase) / period);
+    const auto point = phase + k * period;
+    return point > lower && point < upper;
+}
+
+bool containsTangentPole(const double lower, const double upper)
+{
+    return containsStrictPeriodicPoint(lower, upper, std::numbers::pi / 2.0, std::numbers::pi);
 }
 }
 
@@ -671,6 +689,589 @@ TEST_CASE("CpuComputeBackend marks exhausted inequality pixels best-estimate", "
     REQUIRE(out.front().pixels.size() == 1);
     CHECK(static_cast<int>(out.front().pixels.front()) == 127);
     CHECK(out.front().certainty == gx::TextureCertainty::BestEstimate);
+}
+
+TEST_CASE("InequalityTileRefiner rasterizes affine inequalities exactly", "[ComputeBackend]")
+{
+    const auto formula = gx::FormulaCompiler{}.compile("x<=y");
+    REQUIRE(formula.diagnostics.ok);
+    REQUIRE(formula.affineInequality.has_value());
+
+    const auto result = gx::refineInequalityTile(
+        formula,
+        gx::TileKey{0, 0, 0},
+        gx::InequalityTileRefinementOptions{
+            .pixelsPerAxis = 16,
+            .rootBounds = gx::Rect{0.0, 1.0, 0.0, 1.0}
+        });
+
+    REQUIRE(result.ok);
+    CHECK(result.visitedNodes == 1);
+    CHECK(result.unknownPixels == 0);
+    CHECK(result.region.certainty == gx::TextureCertainty::Precise);
+    CHECK(std::ranges::none_of(result.region.pixels, [](const uint8_t pixel)
+    {
+        return pixel == uint8_t{127};
+    }));
+    CHECK(std::ranges::any_of(result.region.pixels, [](const uint8_t pixel)
+    {
+        return pixel == uint8_t{0};
+    }));
+    CHECK(std::ranges::any_of(result.region.pixels, [](const uint8_t pixel)
+    {
+        return pixel == uint8_t{255};
+    }));
+}
+
+TEST_CASE("InequalityTileRefiner prunes empty-domain comparison branches", "[ComputeBackend]")
+{
+    const auto formula = gx::FormulaCompiler{}.compile("y<log(x)");
+    REQUIRE(formula.diagnostics.ok);
+
+    const auto result = gx::refineInequalityTile(
+        formula,
+        gx::TileKey{0, 0, 0},
+        gx::InequalityTileRefinementOptions{
+            .pixelsPerAxis = 16,
+            .rootBounds = gx::Rect{-2.0, -1.0, 0.0, 1.0}
+        });
+
+    REQUIRE(result.ok);
+    CHECK(result.visitedNodes == 1);
+    CHECK(result.region.certainty == gx::TextureCertainty::BestEstimate);
+    CHECK(std::ranges::all_of(result.region.pixels, [](const uint8_t pixel)
+    {
+        return pixel == uint8_t{127};
+    }));
+}
+
+TEST_CASE("InequalityTileRefiner proves tangent pole pixels in one pass", "[ComputeBackend]")
+{
+    const auto formula = gx::FormulaCompiler{}.compile("tan(x)>y");
+    REQUIRE(formula.diagnostics.ok);
+    REQUIRE(formula.tangentPoleInequality.has_value());
+
+    const auto result = gx::refineInequalityTile(
+        formula,
+        gx::TileKey{0, 0, 0},
+        gx::InequalityTileRefinementOptions{
+            .pixelsPerAxis = 16,
+            .rootBounds = gx::Rect{-1000.0, 1000.0, -1.0, 1.0}
+        });
+
+    REQUIRE(result.ok);
+    CHECK(result.visitedNodes == 1);
+    CHECK(result.unknownPixels == 0);
+    CHECK(result.region.certainty == gx::TextureCertainty::Precise);
+    CHECK(std::ranges::all_of(result.region.pixels, [](const uint8_t pixel)
+    {
+        return pixel == uint8_t{255};
+    }));
+}
+
+TEST_CASE("InequalityTileRefiner rasterizes tangent-axis curves without recursive budget fallback", "[ComputeBackend]")
+{
+    constexpr auto pixels = uint32_t{256};
+    constexpr auto bounds = gx::Rect{-80.0, 80.0, 0.0, 20.0};
+    const auto formula = gx::FormulaCompiler{}.compile("tan(x)>y");
+    const auto flippedFormula = gx::FormulaCompiler{}.compile("y<tan(x)");
+    REQUIRE(formula.diagnostics.ok);
+    REQUIRE(flippedFormula.diagnostics.ok);
+
+    const auto options = gx::InequalityTileRefinementOptions{
+        .pixelsPerAxis = pixels,
+        .rootBounds = bounds
+    };
+    const auto result = gx::refineInequalityTile(formula, gx::TileKey{0, 0, 0}, options);
+    const auto flippedResult = gx::refineInequalityTile(flippedFormula, gx::TileKey{0, 0, 0}, options);
+
+    REQUIRE(result.ok);
+    REQUIRE(flippedResult.ok);
+    CHECK(result.region.pixels == flippedResult.region.pixels);
+    CHECK(result.visitedNodes == 1);
+    CHECK(result.unknownPixels == 0);
+    CHECK(result.region.certainty == gx::TextureCertainty::Precise);
+
+    const auto xStep = (bounds.xMax - bounds.xMin) / static_cast<double>(pixels);
+    const auto yStep = (bounds.yMax - bounds.yMin) / static_cast<double>(pixels);
+    auto truePixels = size_t{0};
+    auto falsePixels = size_t{0};
+    for (uint32_t y = 0; y < pixels; ++y)
+    {
+        const auto yMin = bounds.yMin + static_cast<double>(y) * yStep;
+        for (uint32_t x = 0; x < pixels; ++x)
+        {
+            const auto xMin = bounds.xMin + static_cast<double>(x) * xStep;
+            const auto xMax = x == pixels - 1 ? bounds.xMax : xMin + xStep;
+            auto expected = true;
+            if (!containsTangentPole(xMin, xMax))
+            {
+                const auto xTanMin = std::tan(xMin);
+                const auto xTanMax = std::tan(xMax);
+                expected = std::max(xTanMin, xTanMax) > yMin;
+            }
+
+            const auto pixel = result.region.pixels[static_cast<size_t>(y) * pixels + x];
+            CHECK(pixel == (expected ? uint8_t{255} : uint8_t{0}));
+            truePixels += pixel == uint8_t{255} ? 1u : 0u;
+            falsePixels += pixel == uint8_t{0} ? 1u : 0u;
+        }
+    }
+    CHECK(truePixels > 0);
+    CHECK(falsePixels > 0);
+}
+
+TEST_CASE("InequalityTileRefiner records compact proof trees by default", "[ComputeBackend]")
+{
+    const auto formula = gx::FormulaCompiler{}.compile("sin(x*y)<sin(sin(y))");
+    REQUIRE(formula.diagnostics.ok);
+
+    const auto summary = gx::refineInequalityTile(
+        formula,
+        gx::TileKey{0, 0, 0},
+        gx::InequalityTileRefinementOptions{
+            .pixelsPerAxis = 16,
+            .rootBounds = gx::Rect{-8.0, 8.0, -8.0, 8.0}
+        });
+    REQUIRE(summary.ok);
+    REQUIRE_FALSE(summary.region.proofTree.nodes.empty());
+    CHECK(summary.region.proofTree.nodes.size() == 1);
+    CHECK(summary.region.proofTree.nodes.front().key == gx::TileKey{0, 0, 0});
+
+    const auto detailed = gx::refineInequalityTile(
+        formula,
+        gx::TileKey{0, 0, 0},
+        gx::InequalityTileRefinementOptions{
+            .pixelsPerAxis = 16,
+            .rootBounds = gx::Rect{-8.0, 8.0, -8.0, 8.0},
+            .recordDetailedProofTree = true
+        });
+    REQUIRE(detailed.ok);
+    CHECK(detailed.region.pixels == summary.region.pixels);
+    CHECK(detailed.region.proofTree.nodes.size() > summary.region.proofTree.nodes.size());
+}
+
+TEST_CASE("InequalityTileRefiner large compact split preserves sequential output", "[ComputeBackend]")
+{
+    const auto formula = gx::FormulaCompiler{}.compile("sin(20*x*y)<sin(sin(10*y))");
+    REQUIRE(formula.diagnostics.ok);
+
+    const auto thresholdCompact = gx::refineInequalityTile(
+        formula,
+        gx::TileKey{0, 0, 0},
+        gx::InequalityTileRefinementOptions{
+            .pixelsPerAxis = 128,
+            .rootBounds = gx::Rect{-2.0, 2.0, -2.0, 2.0}
+        });
+    const auto thresholdSequential = gx::refineInequalityTile(
+        formula,
+        gx::TileKey{0, 0, 0},
+        gx::InequalityTileRefinementOptions{
+            .pixelsPerAxis = 128,
+            .rootBounds = gx::Rect{-2.0, 2.0, -2.0, 2.0},
+            .recordDetailedProofTree = true
+        });
+    REQUIRE(thresholdCompact.ok);
+    REQUIRE(thresholdSequential.ok);
+    CHECK(thresholdCompact.region.pixels == thresholdSequential.region.pixels);
+    CHECK(thresholdCompact.region.certainty == thresholdSequential.region.certainty);
+    CHECK(thresholdCompact.region.existence == thresholdSequential.region.existence);
+    CHECK(thresholdCompact.unknownPixels == thresholdSequential.unknownPixels);
+
+    const auto compact = gx::refineInequalityTile(
+        formula,
+        gx::TileKey{0, 0, 0},
+        gx::InequalityTileRefinementOptions{
+            .pixelsPerAxis = 1024,
+            .rootBounds = gx::Rect{-2.0, 2.0, -2.0, 2.0}
+        });
+    const auto sequential = gx::refineInequalityTile(
+        formula,
+        gx::TileKey{0, 0, 0},
+        gx::InequalityTileRefinementOptions{
+            .pixelsPerAxis = 1024,
+            .rootBounds = gx::Rect{-2.0, 2.0, -2.0, 2.0},
+            .recordDetailedProofTree = true
+        });
+
+    REQUIRE(compact.ok);
+    REQUIRE(sequential.ok);
+    CHECK(compact.region.pixels == sequential.region.pixels);
+    CHECK(compact.region.certainty == sequential.region.certainty);
+    CHECK(compact.region.existence == sequential.region.existence);
+    CHECK(compact.unknownPixels == sequential.unknownPixels);
+    CHECK(compact.region.proofTree.nodes.size() == 1);
+    CHECK(sequential.region.proofTree.nodes.size() > compact.region.proofTree.nodes.size());
+}
+
+TEST_CASE("InequalityTileRefiner preserves output with axis-only root operand cache", "[ComputeBackend]")
+{
+    const auto nestedCached = gx::FormulaCompiler{}.compile("sin(x*y)<sin(sin(y))");
+    const auto nestedUncached = gx::FormulaCompiler{}.compile("sin(x*y)<sin(sin(y+0*x))");
+    REQUIRE(nestedCached.diagnostics.ok);
+    REQUIRE(nestedUncached.diagnostics.ok);
+    REQUIRE(nestedCached.rootComparisonBytecode.has_value());
+    REQUIRE(nestedUncached.rootComparisonBytecode.has_value());
+    CHECK(nestedCached.rootComparisonBytecode->rhs.variableMask
+        != nestedUncached.rootComparisonBytecode->rhs.variableMask);
+
+    const auto nestedOptions = gx::InequalityTileRefinementOptions{
+        .pixelsPerAxis = 32,
+        .rootBounds = gx::Rect{-8.0, 8.0, -8.0, 8.0}
+    };
+    const auto nestedCachedResult = gx::refineInequalityTile(nestedCached, gx::TileKey{0, 0, 0}, nestedOptions);
+    const auto nestedUncachedResult = gx::refineInequalityTile(
+        nestedUncached,
+        gx::TileKey{0, 0, 0},
+        nestedOptions);
+
+    REQUIRE(nestedCachedResult.ok);
+    REQUIRE(nestedUncachedResult.ok);
+    CHECK(nestedCachedResult.region.pixels == nestedUncachedResult.region.pixels);
+    CHECK(nestedCachedResult.region.certainty == nestedUncachedResult.region.certainty);
+    CHECK(nestedCachedResult.region.existence == nestedUncachedResult.region.existence);
+
+    const auto logCached = gx::FormulaCompiler{}.compile("y<log(x)");
+    const auto logUncached = gx::FormulaCompiler{}.compile("y<log(x+0*y)");
+    REQUIRE(logCached.diagnostics.ok);
+    REQUIRE(logUncached.diagnostics.ok);
+    REQUIRE(logCached.rootComparisonBytecode.has_value());
+    REQUIRE(logUncached.rootComparisonBytecode.has_value());
+    CHECK(logCached.rootComparisonBytecode->rhs.variableMask != logUncached.rootComparisonBytecode->rhs.variableMask);
+
+    const auto logOptions = gx::InequalityTileRefinementOptions{
+        .pixelsPerAxis = 32,
+        .rootBounds = gx::Rect{-2.0, 2.0, -2.0, 2.0}
+    };
+    const auto logCachedResult = gx::refineInequalityTile(logCached, gx::TileKey{0, 0, 0}, logOptions);
+    const auto logUncachedResult = gx::refineInequalityTile(logUncached, gx::TileKey{0, 0, 0}, logOptions);
+
+    REQUIRE(logCachedResult.ok);
+    REQUIRE(logUncachedResult.ok);
+    CHECK(logCachedResult.region.pixels == logUncachedResult.region.pixels);
+    CHECK(logCachedResult.region.certainty == logUncachedResult.region.certainty);
+    CHECK(logCachedResult.region.existence == logUncachedResult.region.existence);
+}
+
+TEST_CASE("InequalityTileRefiner rasterizes log-domain curve rows in one pass", "[ComputeBackend]")
+{
+    const auto logDirect = gx::FormulaCompiler{}.compile("y<log(x)");
+    const auto logGeneric = gx::FormulaCompiler{}.compile("y<log(x+0*y)");
+    REQUIRE(logDirect.diagnostics.ok);
+    REQUIRE(logGeneric.diagnostics.ok);
+
+    const auto options = gx::InequalityTileRefinementOptions{
+        .pixelsPerAxis = 128,
+        .rootBounds = gx::Rect{-2.0, 2.0, -2.0, 2.0}
+    };
+    const auto directResult = gx::refineInequalityTile(logDirect, gx::TileKey{0, 0, 0}, options);
+    const auto genericResult = gx::refineInequalityTile(logGeneric, gx::TileKey{0, 0, 0}, options);
+
+    REQUIRE(directResult.ok);
+    REQUIRE(genericResult.ok);
+    CHECK(directResult.visitedNodes == 1);
+    CHECK(genericResult.visitedNodes > directResult.visitedNodes);
+    CHECK(directResult.region.pixels == genericResult.region.pixels);
+    CHECK(directResult.region.certainty == genericResult.region.certainty);
+    CHECK(directResult.region.existence == genericResult.region.existence);
+}
+
+TEST_CASE("InequalityTileRefiner rasterizes exp curve rows in one pass", "[ComputeBackend]")
+{
+    const auto expDirect = gx::FormulaCompiler{}.compile("exp(x)-y>0");
+    const auto expGeneric = gx::FormulaCompiler{}.compile("exp(x+0*y)-y>0");
+    REQUIRE(expDirect.diagnostics.ok);
+    REQUIRE(expGeneric.diagnostics.ok);
+
+    const auto options = gx::InequalityTileRefinementOptions{
+        .pixelsPerAxis = 128,
+        .rootBounds = gx::Rect{-4.0, 4.0, 0.0, 20.0}
+    };
+    const auto directResult = gx::refineInequalityTile(expDirect, gx::TileKey{0, 0, 0}, options);
+    const auto genericResult = gx::refineInequalityTile(expGeneric, gx::TileKey{0, 0, 0}, options);
+
+    REQUIRE(directResult.ok);
+    REQUIRE(genericResult.ok);
+    CHECK(directResult.visitedNodes == 1);
+    CHECK(genericResult.visitedNodes > directResult.visitedNodes);
+    CHECK(directResult.region.pixels == genericResult.region.pixels);
+    CHECK(directResult.region.certainty == genericResult.region.certainty);
+    CHECK(directResult.region.existence == genericResult.region.existence);
+}
+
+TEST_CASE("InequalityTileRefiner rasterizes sqrt curve rows with domain-boundary fallback", "[ComputeBackend]")
+{
+    const auto sqrtDirect = gx::FormulaCompiler{}.compile("y<sqrt(x)");
+    const auto sqrtGeneric = gx::FormulaCompiler{}.compile("y<sqrt(x+0*y)");
+    REQUIRE(sqrtDirect.diagnostics.ok);
+    REQUIRE(sqrtGeneric.diagnostics.ok);
+
+    const auto options = gx::InequalityTileRefinementOptions{
+        .pixelsPerAxis = 128,
+        .rootBounds = gx::Rect{-1.0, 4.0, -1.0, 3.0}
+    };
+    const auto directResult = gx::refineInequalityTile(sqrtDirect, gx::TileKey{0, 0, 0}, options);
+    const auto genericResult = gx::refineInequalityTile(sqrtGeneric, gx::TileKey{0, 0, 0}, options);
+
+    REQUIRE(directResult.ok);
+    REQUIRE(genericResult.ok);
+    CHECK(directResult.visitedNodes == 1);
+    auto directUnknown = size_t{0};
+    auto genericUnknown = size_t{0};
+    auto knownPixelsMatch = true;
+    REQUIRE(directResult.region.pixels.size() == genericResult.region.pixels.size());
+    for (auto index = size_t{0}; index < directResult.region.pixels.size(); ++index)
+    {
+        directUnknown += directResult.region.pixels[index] == uint8_t{127} ? 1u : 0u;
+        genericUnknown += genericResult.region.pixels[index] == uint8_t{127} ? 1u : 0u;
+        if (genericResult.region.pixels[index] != uint8_t{127})
+        {
+            knownPixelsMatch = knownPixelsMatch && directResult.region.pixels[index] == genericResult.region.pixels[index];
+        }
+    }
+    CHECK(knownPixelsMatch);
+    CHECK(directUnknown < genericUnknown);
+    CHECK(directResult.region.certainty == genericResult.region.certainty);
+    CHECK(directResult.region.existence == genericResult.region.existence);
+}
+
+TEST_CASE("InequalityTileRefiner rasterizes sum-squares disk rows in one pass", "[ComputeBackend]")
+{
+    const auto circleDirect = gx::FormulaCompiler{}.compile("x^2+y^2<16");
+    const auto circleGeneric = gx::FormulaCompiler{}.compile("x*x+y*y<16");
+    REQUIRE(circleDirect.diagnostics.ok);
+    REQUIRE(circleGeneric.diagnostics.ok);
+
+    const auto options = gx::InequalityTileRefinementOptions{
+        .pixelsPerAxis = 128,
+        .rootBounds = gx::Rect{-5.0, 5.0, -5.0, 5.0}
+    };
+    const auto directResult = gx::refineInequalityTile(circleDirect, gx::TileKey{0, 0, 0}, options);
+    const auto genericResult = gx::refineInequalityTile(circleGeneric, gx::TileKey{0, 0, 0}, options);
+
+    REQUIRE(directResult.ok);
+    REQUIRE(genericResult.ok);
+    CHECK(directResult.visitedNodes == 1);
+    CHECK(genericResult.visitedNodes > directResult.visitedNodes);
+    CHECK(directResult.region.pixels == genericResult.region.pixels);
+    CHECK(directResult.region.certainty == genericResult.region.certainty);
+    CHECK(directResult.region.existence == genericResult.region.existence);
+}
+
+TEST_CASE("InequalityTileRefiner rasterizes sum-squares exterior rows in one pass", "[ComputeBackend]")
+{
+    const auto circleDirect = gx::FormulaCompiler{}.compile("x^2+y^2>16");
+    const auto circleGeneric = gx::FormulaCompiler{}.compile("x*x+y*y>16");
+    REQUIRE(circleDirect.diagnostics.ok);
+    REQUIRE(circleGeneric.diagnostics.ok);
+
+    const auto options = gx::InequalityTileRefinementOptions{
+        .pixelsPerAxis = 128,
+        .rootBounds = gx::Rect{-5.0, 5.0, -5.0, 5.0}
+    };
+    const auto directResult = gx::refineInequalityTile(circleDirect, gx::TileKey{0, 0, 0}, options);
+    const auto genericResult = gx::refineInequalityTile(circleGeneric, gx::TileKey{0, 0, 0}, options);
+
+    REQUIRE(directResult.ok);
+    REQUIRE(genericResult.ok);
+    CHECK(directResult.visitedNodes == 1);
+    CHECK(genericResult.visitedNodes > directResult.visitedNodes);
+    CHECK(directResult.region.pixels == genericResult.region.pixels);
+    CHECK(directResult.region.certainty == genericResult.region.certainty);
+    CHECK(directResult.region.existence == genericResult.region.existence);
+}
+
+TEST_CASE("InequalityTileRefiner rasterizes square-difference band rows in one pass", "[ComputeBackend]")
+{
+    const auto bandDirect = gx::FormulaCompiler{}.compile("(x-y)^2<0.0001");
+    const auto bandGeneric = gx::FormulaCompiler{}.compile("(x-y)*(x-y)<0.0001");
+    REQUIRE(bandDirect.diagnostics.ok);
+    REQUIRE(bandGeneric.diagnostics.ok);
+
+    const auto options = gx::InequalityTileRefinementOptions{
+        .pixelsPerAxis = 128,
+        .rootBounds = gx::Rect{-1.0, 1.0, -1.0, 1.0}
+    };
+    const auto directResult = gx::refineInequalityTile(bandDirect, gx::TileKey{0, 0, 0}, options);
+    const auto genericResult = gx::refineInequalityTile(bandGeneric, gx::TileKey{0, 0, 0}, options);
+
+    REQUIRE(directResult.ok);
+    REQUIRE(genericResult.ok);
+    CHECK(directResult.visitedNodes == 1);
+    CHECK(genericResult.visitedNodes > directResult.visitedNodes);
+    CHECK(directResult.region.pixels == genericResult.region.pixels);
+    CHECK(directResult.region.certainty == genericResult.region.certainty);
+    CHECK(directResult.region.existence == genericResult.region.existence);
+}
+
+TEST_CASE("InequalityTileRefiner rasterizes square-difference exterior rows in one pass", "[ComputeBackend]")
+{
+    const auto bandDirect = gx::FormulaCompiler{}.compile("(x-y)^2>0.0001");
+    const auto bandGeneric = gx::FormulaCompiler{}.compile("(x-y)*(x-y)>0.0001");
+    REQUIRE(bandDirect.diagnostics.ok);
+    REQUIRE(bandGeneric.diagnostics.ok);
+
+    const auto options = gx::InequalityTileRefinementOptions{
+        .pixelsPerAxis = 128,
+        .rootBounds = gx::Rect{-1.0, 1.0, -1.0, 1.0}
+    };
+    const auto directResult = gx::refineInequalityTile(bandDirect, gx::TileKey{0, 0, 0}, options);
+    const auto genericResult = gx::refineInequalityTile(bandGeneric, gx::TileKey{0, 0, 0}, options);
+
+    REQUIRE(directResult.ok);
+    REQUIRE(genericResult.ok);
+    CHECK(directResult.visitedNodes == 1);
+    CHECK(genericResult.visitedNodes > directResult.visitedNodes);
+    CHECK(directResult.region.pixels == genericResult.region.pixels);
+    CHECK(directResult.region.certainty == genericResult.region.certainty);
+    CHECK(directResult.region.existence == genericResult.region.existence);
+}
+
+TEST_CASE("InequalityTileRefiner rasterizes reciprocal asymptote rows in one pass", "[ComputeBackend]")
+{
+    const auto rationalDirect = gx::FormulaCompiler{}.compile("y<1/(x-0.001)");
+    const auto rationalGeneric = gx::FormulaCompiler{}.compile("y<1/(x+0*y-0.001)");
+    REQUIRE(rationalDirect.diagnostics.ok);
+    REQUIRE(rationalGeneric.diagnostics.ok);
+
+    const auto options = gx::InequalityTileRefinementOptions{
+        .pixelsPerAxis = 128,
+        .rootBounds = gx::Rect{-2.0, 2.0, -5.0, 5.0}
+    };
+    const auto directResult = gx::refineInequalityTile(rationalDirect, gx::TileKey{0, 0, 0}, options);
+    const auto genericResult = gx::refineInequalityTile(rationalGeneric, gx::TileKey{0, 0, 0}, options);
+
+    REQUIRE(directResult.ok);
+    REQUIRE(genericResult.ok);
+    CHECK(directResult.visitedNodes == 1);
+    CHECK(genericResult.visitedNodes > directResult.visitedNodes);
+    CHECK(directResult.region.pixels == genericResult.region.pixels);
+    CHECK(directResult.region.certainty == genericResult.region.certainty);
+    CHECK(directResult.region.existence == genericResult.region.existence);
+}
+
+TEST_CASE("InequalityTileRefiner preserves output with direct root comparison operands", "[ComputeBackend]")
+{
+    const auto circleDirect = gx::FormulaCompiler{}.compile("x^2+y^2<16");
+    const auto circleGeneric = gx::FormulaCompiler{}.compile("x*x+y*y<16");
+    REQUIRE(circleDirect.diagnostics.ok);
+    REQUIRE(circleGeneric.diagnostics.ok);
+
+    const auto circleOptions = gx::InequalityTileRefinementOptions{
+        .pixelsPerAxis = 32,
+        .rootBounds = gx::Rect{-5.0, 5.0, -5.0, 5.0}
+    };
+    const auto circleDirectResult = gx::refineInequalityTile(
+        circleDirect,
+        gx::TileKey{0, 0, 0},
+        circleOptions);
+    const auto circleGenericResult = gx::refineInequalityTile(
+        circleGeneric,
+        gx::TileKey{0, 0, 0},
+        circleOptions);
+
+    REQUIRE(circleDirectResult.ok);
+    REQUIRE(circleGenericResult.ok);
+    CHECK(circleDirectResult.region.pixels == circleGenericResult.region.pixels);
+    CHECK(circleDirectResult.region.certainty == circleGenericResult.region.certainty);
+    CHECK(circleDirectResult.region.existence == circleGenericResult.region.existence);
+
+    const auto bandDirect = gx::FormulaCompiler{}.compile("(x-y)^2<0.0001");
+    const auto bandGeneric = gx::FormulaCompiler{}.compile("(x-y)*(x-y)<0.0001");
+    REQUIRE(bandDirect.diagnostics.ok);
+    REQUIRE(bandGeneric.diagnostics.ok);
+
+    const auto bandOptions = gx::InequalityTileRefinementOptions{
+        .pixelsPerAxis = 32,
+        .rootBounds = gx::Rect{-1.0, 1.0, -1.0, 1.0}
+    };
+    const auto bandDirectResult = gx::refineInequalityTile(
+        bandDirect,
+        gx::TileKey{0, 0, 0},
+        bandOptions);
+    const auto bandGenericResult = gx::refineInequalityTile(
+        bandGeneric,
+        gx::TileKey{0, 0, 0},
+        bandOptions);
+
+    REQUIRE(bandDirectResult.ok);
+    REQUIRE(bandGenericResult.ok);
+    CHECK(bandDirectResult.region.pixels == bandGenericResult.region.pixels);
+    CHECK(bandDirectResult.region.certainty == bandGenericResult.region.certainty);
+    CHECK(bandDirectResult.region.existence == bandGenericResult.region.existence);
+
+    const auto expDirect = gx::FormulaCompiler{}.compile("exp(x)-y>0");
+    const auto expGeneric = gx::FormulaCompiler{}.compile("exp(x+0*y)-y>0");
+    REQUIRE(expDirect.diagnostics.ok);
+    REQUIRE(expGeneric.diagnostics.ok);
+
+    const auto expOptions = gx::InequalityTileRefinementOptions{
+        .pixelsPerAxis = 32,
+        .rootBounds = gx::Rect{-4.0, 4.0, 0.0, 20.0}
+    };
+    const auto expDirectResult = gx::refineInequalityTile(
+        expDirect,
+        gx::TileKey{0, 0, 0},
+        expOptions);
+    const auto expGenericResult = gx::refineInequalityTile(
+        expGeneric,
+        gx::TileKey{0, 0, 0},
+        expOptions);
+
+    REQUIRE(expDirectResult.ok);
+    REQUIRE(expGenericResult.ok);
+    CHECK(expDirectResult.region.pixels == expGenericResult.region.pixels);
+    CHECK(expDirectResult.region.certainty == expGenericResult.region.certainty);
+    CHECK(expDirectResult.region.existence == expGenericResult.region.existence);
+
+    const auto rationalDirect = gx::FormulaCompiler{}.compile("y<1/(x-0.001)");
+    const auto rationalGeneric = gx::FormulaCompiler{}.compile("y<1/(x+0*y-0.001)");
+    REQUIRE(rationalDirect.diagnostics.ok);
+    REQUIRE(rationalGeneric.diagnostics.ok);
+
+    const auto rationalOptions = gx::InequalityTileRefinementOptions{
+        .pixelsPerAxis = 32,
+        .rootBounds = gx::Rect{-2.0, 2.0, -5.0, 5.0}
+    };
+    const auto rationalDirectResult = gx::refineInequalityTile(
+        rationalDirect,
+        gx::TileKey{0, 0, 0},
+        rationalOptions);
+    const auto rationalGenericResult = gx::refineInequalityTile(
+        rationalGeneric,
+        gx::TileKey{0, 0, 0},
+        rationalOptions);
+
+    REQUIRE(rationalDirectResult.ok);
+    REQUIRE(rationalGenericResult.ok);
+    CHECK(rationalDirectResult.region.pixels == rationalGenericResult.region.pixels);
+    CHECK(rationalDirectResult.region.certainty == rationalGenericResult.region.certainty);
+    CHECK(rationalDirectResult.region.existence == rationalGenericResult.region.existence);
+
+    const auto highFrequencyDirect = gx::FormulaCompiler{}.compile("sin(20*x*y)<sin(sin(10*y))");
+    const auto highFrequencyGeneric = gx::FormulaCompiler{}.compile(
+        "sin((20+0*x)*x*y)<sin(sin(10*y+0*x))");
+    REQUIRE(highFrequencyDirect.diagnostics.ok);
+    REQUIRE(highFrequencyGeneric.diagnostics.ok);
+
+    const auto highFrequencyOptions = gx::InequalityTileRefinementOptions{
+        .pixelsPerAxis = 32,
+        .rootBounds = gx::Rect{-2.0, 2.0, -2.0, 2.0}
+    };
+    const auto highFrequencyDirectResult = gx::refineInequalityTile(
+        highFrequencyDirect,
+        gx::TileKey{0, 0, 0},
+        highFrequencyOptions);
+    const auto highFrequencyGenericResult = gx::refineInequalityTile(
+        highFrequencyGeneric,
+        gx::TileKey{0, 0, 0},
+        highFrequencyOptions);
+
+    REQUIRE(highFrequencyDirectResult.ok);
+    REQUIRE(highFrequencyGenericResult.ok);
+    CHECK(highFrequencyDirectResult.region.pixels == highFrequencyGenericResult.region.pixels);
+    CHECK(highFrequencyDirectResult.region.certainty == highFrequencyGenericResult.region.certainty);
+    CHECK(highFrequencyDirectResult.region.existence == highFrequencyGenericResult.region.existence);
 }
 
 TEST_CASE("Default ComputeBackend rasterizes through the preferred backend with CPU-equivalent output",

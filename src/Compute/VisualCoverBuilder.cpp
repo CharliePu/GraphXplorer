@@ -184,8 +184,7 @@ void VisualCoverBuilder::visit(const ViewportRequest &request,
             queuePreloadTile(request, key, *record, state);
         }
 
-        if (hasPartialCover && key.level > LowestFiniteTileLevel
-            && record && record->regionPixels)
+        if (hasPartialCover && key.level > LowestFiniteTileLevel)
         {
             for (const auto &child : tileChildren(key))
             {
@@ -242,15 +241,6 @@ void VisualCoverBuilder::visit(const ViewportRequest &request,
     }
 
     if (hasPartialCover)
-    {
-        for (const auto &child : tileChildren(key))
-        {
-            visit(request, tileCache, previous, child, leafLevel, state);
-        }
-        return;
-    }
-
-    if (key.level > leafLevel)
     {
         for (const auto &child : tileChildren(key))
         {

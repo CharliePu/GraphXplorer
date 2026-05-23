@@ -377,7 +377,7 @@ FrameSnapshot FramePipeline::process(const InputEvent &event)
         drainResult = tileRuntime.drainCompleted(
             tileCache,
             regionPayloads,
-            std::chrono::microseconds{0});
+            frameBudget.completedTileApplyBudget);
     }
     pipelineCounters.tileDeltasApplied += drainResult.applied;
     pipelineCounters.tileDeltasRejected += drainResult.rejected;

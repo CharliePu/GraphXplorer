@@ -94,6 +94,7 @@ private:
 
     FrameBudgetControllerOptions options{};
     int refinementDepth{DefaultRefinementDepth};
+    std::chrono::microseconds applyBudget{0};
     FramebufferBudgetSignature framebufferSignature{};
     bool hasFramebufferSignature{false};
 };

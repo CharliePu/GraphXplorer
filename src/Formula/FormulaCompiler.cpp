@@ -8,6 +8,7 @@
 #include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 #include "../Util/StableHash.h"
@@ -24,6 +25,45 @@ struct FormulaCompiler::AstNode
 
 namespace
 {
+[[nodiscard]] double integerPower(const double base, const long long exponent)
+{
+    if (exponent == 0)
+    {
+        return 1.0;
+    }
+
+    auto remaining = exponent < 0 ? -exponent : exponent;
+    auto factor = base;
+    auto result = 1.0;
+    while (remaining > 0)
+    {
+        if ((remaining & 1LL) != 0LL)
+        {
+            result *= factor;
+        }
+        remaining >>= 1;
+        if (remaining > 0)
+        {
+            factor *= factor;
+        }
+    }
+
+    return exponent < 0 ? 1.0 / result : result;
+}
+
+[[nodiscard]] double powerDouble(const double base, const double exponent)
+{
+    if (std::isfinite(exponent) && std::floor(exponent) == exponent)
+    {
+        constexpr auto maxSpecializedExponent = 64.0;
+        if (exponent >= -maxSpecializedExponent && exponent <= maxSpecializedExponent)
+        {
+            return integerPower(base, static_cast<long long>(exponent));
+        }
+    }
+    return std::pow(base, exponent);
+}
+
 template<typename T>
 T applyBinary(const FormulaOp op, const T &a, const T &b)
 {
@@ -39,6 +79,10 @@ T applyBinary(const FormulaOp op, const T &a, const T &b)
     case FormulaOp::Divide:
         return a / b;
     case FormulaOp::Power:
+        if constexpr (std::is_same_v<T, double>)
+        {
+            return powerDouble(a, b);
+        }
         return pow(a, b);
     case FormulaOp::Greater:
         return a > b;
@@ -150,17 +194,22 @@ T evaluateTyped(const CompiledFormula &formula, const std::unordered_map<std::st
 }
 
 template<typename T>
-T evaluateTypedSlots(const CompiledFormula &formula, const std::span<const T> variablesBySlot)
+T evaluateTypedInstructions(const std::span<const FormulaInstruction> instructions,
+                            const std::span<const T> variablesBySlot,
+                            std::vector<T> &stack)
 {
-    std::vector<T> stack;
-    stack.reserve(formula.evaluationIr.size());
+    if (stack.size() < instructions.size())
+    {
+        stack.resize(instructions.size());
+    }
 
-    for (const auto &instruction : formula.evaluationIr)
+    auto depth = size_t{0};
+    for (const auto &instruction : instructions)
     {
         switch (instruction.op)
         {
         case FormulaOp::PushConstant:
-            stack.emplace_back(static_cast<T>(instruction.constant));
+            stack[depth++] = static_cast<T>(instruction.constant);
             break;
         case FormulaOp::PushVariable:
         {
@@ -168,7 +217,7 @@ T evaluateTypedSlots(const CompiledFormula &formula, const std::span<const T> va
             {
                 throw std::invalid_argument("Undefined variable slot in formula bytecode");
             }
-            stack.push_back(variablesBySlot[instruction.variableSlot]);
+            stack[depth++] = variablesBySlot[instruction.variableSlot];
             break;
         }
         case FormulaOp::Sin:
@@ -178,34 +227,66 @@ T evaluateTypedSlots(const CompiledFormula &formula, const std::span<const T> va
         case FormulaOp::Exp:
         case FormulaOp::Sqrt:
         {
-            if (stack.empty())
+            if (depth == 0)
             {
                 throw std::invalid_argument("Insufficient operands for unary formula opcode");
             }
-            auto value = stack.back();
-            stack.back() = applyUnary(instruction.op, value);
+            const auto value = stack[depth - 1];
+            stack[depth - 1] = applyUnary(instruction.op, value);
             break;
         }
         default:
         {
-            if (stack.size() < 2)
+            if (depth < 2)
             {
                 throw std::invalid_argument("Insufficient operands for binary formula opcode");
             }
-            auto rhs = stack.back();
-            stack.pop_back();
-            auto lhs = stack.back();
-            stack.back() = applyBinary(instruction.op, lhs, rhs);
+            const auto rhs = stack[--depth];
+            const auto lhs = stack[depth - 1];
+            stack[depth - 1] = applyBinary(instruction.op, lhs, rhs);
             break;
         }
         }
     }
 
-    if (stack.size() != 1)
+    if (depth != 1)
     {
         throw std::invalid_argument("Invalid compiled formula expression");
     }
-    return stack.back();
+    return stack[0];
+}
+
+template<typename T>
+T evaluateTypedSlots(const CompiledFormula &formula, const std::span<const T> variablesBySlot)
+{
+    std::vector<T> stack;
+    return evaluateTypedInstructions(std::span{formula.evaluationIr}, variablesBySlot, stack);
+}
+
+template<typename T>
+T evaluateTypedSlots(const CompiledFormula &formula,
+                     const std::span<const T> variablesBySlot,
+                     std::vector<T> &stack)
+{
+    return evaluateTypedInstructions(std::span{formula.evaluationIr}, variablesBySlot, stack);
+}
+
+[[nodiscard]] uint64_t variableMaskForInstructions(const std::span<const FormulaInstruction> instructions)
+{
+    auto mask = uint64_t{0};
+    for (const auto &instruction : instructions)
+    {
+        if (instruction.op != FormulaOp::PushVariable)
+        {
+            continue;
+        }
+        if (instruction.variableSlot >= std::numeric_limits<uint64_t>::digits)
+        {
+            return std::numeric_limits<uint64_t>::max();
+        }
+        mask |= uint64_t{1} << instruction.variableSlot;
+    }
+    return mask;
 }
 
 std::unique_ptr<FormulaCompiler::AstNode> cloneAst(const FormulaCompiler::AstNode &node)
@@ -370,6 +451,231 @@ std::unique_ptr<FormulaCompiler::AstNode> buildAstFromRpn(const RPN &rpn)
     buildCanonical(*root);
     return root;
 }
+
+struct AffineExpression
+{
+    double xCoefficient{0.0};
+    double yCoefficient{0.0};
+    double constant{0.0};
+};
+
+[[nodiscard]] bool isConstant(const AffineExpression &expression)
+{
+    return expression.xCoefficient == 0.0 && expression.yCoefficient == 0.0;
+}
+
+[[nodiscard]] AffineExpression add(const AffineExpression &lhs, const AffineExpression &rhs)
+{
+    return {
+        .xCoefficient = lhs.xCoefficient + rhs.xCoefficient,
+        .yCoefficient = lhs.yCoefficient + rhs.yCoefficient,
+        .constant = lhs.constant + rhs.constant
+    };
+}
+
+[[nodiscard]] AffineExpression subtract(const AffineExpression &lhs, const AffineExpression &rhs)
+{
+    return {
+        .xCoefficient = lhs.xCoefficient - rhs.xCoefficient,
+        .yCoefficient = lhs.yCoefficient - rhs.yCoefficient,
+        .constant = lhs.constant - rhs.constant
+    };
+}
+
+[[nodiscard]] AffineExpression scale(const AffineExpression &expression, const double factor)
+{
+    return {
+        .xCoefficient = expression.xCoefficient * factor,
+        .yCoefficient = expression.yCoefficient * factor,
+        .constant = expression.constant * factor
+    };
+}
+
+[[nodiscard]] std::optional<AffineExpression> affineExpressionFor(const FormulaCompiler::AstNode &node)
+{
+    if (node.token.type == TokenType::NUMBER)
+    {
+        return AffineExpression{.constant = std::stod(node.token.value)};
+    }
+    if (node.token.type == TokenType::VARIABLE)
+    {
+        if (node.token.value == "x")
+        {
+            return AffineExpression{.xCoefficient = 1.0};
+        }
+        if (node.token.value == "y")
+        {
+            return AffineExpression{.yCoefficient = 1.0};
+        }
+        return std::nullopt;
+    }
+    if (node.token.type != TokenType::OPERATOR || node.children.size() != 2)
+    {
+        return std::nullopt;
+    }
+
+    const auto lhs = affineExpressionFor(*node.children[0]);
+    const auto rhs = affineExpressionFor(*node.children[1]);
+    if (!lhs || !rhs)
+    {
+        return std::nullopt;
+    }
+
+    const auto &op = node.token.value;
+    if (op == "+")
+    {
+        return add(*lhs, *rhs);
+    }
+    if (op == "-")
+    {
+        return subtract(*lhs, *rhs);
+    }
+    if (op == "*")
+    {
+        if (isConstant(*lhs))
+        {
+            return scale(*rhs, lhs->constant);
+        }
+        if (isConstant(*rhs))
+        {
+            return scale(*lhs, rhs->constant);
+        }
+        return std::nullopt;
+    }
+    if (op == "/")
+    {
+        if (!isConstant(*rhs) || rhs->constant == 0.0)
+        {
+            return std::nullopt;
+        }
+        return scale(*lhs, 1.0 / rhs->constant);
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::optional<FormulaOp> comparisonOpFor(const std::string_view op)
+{
+    if (op == ">") return FormulaOp::Greater;
+    if (op == "<") return FormulaOp::Less;
+    if (op == ">=") return FormulaOp::GreaterEqual;
+    if (op == "<=") return FormulaOp::LessEqual;
+    if (op == "=") return FormulaOp::Equal;
+    if (op == "!=") return FormulaOp::NotEqual;
+    return std::nullopt;
+}
+
+[[nodiscard]] std::optional<FormulaOp> flipComparison(const FormulaOp op)
+{
+    switch (op)
+    {
+    case FormulaOp::Greater:
+        return FormulaOp::Less;
+    case FormulaOp::Less:
+        return FormulaOp::Greater;
+    case FormulaOp::GreaterEqual:
+        return FormulaOp::LessEqual;
+    case FormulaOp::LessEqual:
+        return FormulaOp::GreaterEqual;
+    case FormulaOp::Equal:
+    case FormulaOp::NotEqual:
+        return op;
+    default:
+        return std::nullopt;
+    }
+}
+
+[[nodiscard]] bool tangentPoleCanProveExistence(const FormulaOp comparison)
+{
+    return comparison == FormulaOp::Greater
+        || comparison == FormulaOp::Less
+        || comparison == FormulaOp::GreaterEqual
+        || comparison == FormulaOp::LessEqual
+        || comparison == FormulaOp::NotEqual;
+}
+
+[[nodiscard]] std::optional<AffineInequality> affineInequalityForRoot(const FormulaCompiler::AstNode &root)
+{
+    if (root.token.type != TokenType::OPERATOR || root.children.size() != 2)
+    {
+        return std::nullopt;
+    }
+    const auto comparison = comparisonOpFor(root.token.value);
+    if (!comparison)
+    {
+        return std::nullopt;
+    }
+
+    const auto lhs = affineExpressionFor(*root.children[0]);
+    const auto rhs = affineExpressionFor(*root.children[1]);
+    if (!lhs || !rhs)
+    {
+        return std::nullopt;
+    }
+
+    const auto residual = subtract(*lhs, *rhs);
+    return AffineInequality{
+        .xCoefficient = residual.xCoefficient,
+        .yCoefficient = residual.yCoefficient,
+        .constant = residual.constant,
+        .comparison = *comparison
+    };
+}
+
+[[nodiscard]] std::optional<AffineExpression> tanArgumentExpressionFor(const FormulaCompiler::AstNode &node)
+{
+    if (node.token.type != TokenType::FUNCTION || node.token.value != "tan" || node.children.size() != 1)
+    {
+        return std::nullopt;
+    }
+    return affineExpressionFor(*node.children.front());
+}
+
+[[nodiscard]] std::optional<TangentPoleInequality> tangentPoleInequalityForRoot(
+    const FormulaCompiler::AstNode &root)
+{
+    if (root.token.type != TokenType::OPERATOR || root.children.size() != 2)
+    {
+        return std::nullopt;
+    }
+
+    const auto comparison = comparisonOpFor(root.token.value);
+    if (!comparison)
+    {
+        return std::nullopt;
+    }
+
+    if (const auto lhsArgument = tanArgumentExpressionFor(*root.children[0]))
+    {
+        if (!tangentPoleCanProveExistence(*comparison) || !affineExpressionFor(*root.children[1]))
+        {
+            return std::nullopt;
+        }
+        return TangentPoleInequality{
+            .argumentXCoefficient = lhsArgument->xCoefficient,
+            .argumentYCoefficient = lhsArgument->yCoefficient,
+            .argumentConstant = lhsArgument->constant,
+            .comparison = *comparison
+        };
+    }
+
+    if (const auto rhsArgument = tanArgumentExpressionFor(*root.children[1]))
+    {
+        const auto flipped = flipComparison(*comparison);
+        if (!flipped || !tangentPoleCanProveExistence(*flipped) || !affineExpressionFor(*root.children[0]))
+        {
+            return std::nullopt;
+        }
+        return TangentPoleInequality{
+            .argumentXCoefficient = rhsArgument->xCoefficient,
+            .argumentYCoefficient = rhsArgument->yCoefficient,
+            .argumentConstant = rhsArgument->constant,
+            .comparison = *flipped
+        };
+    }
+
+    return std::nullopt;
+}
+
 }
 
 std::string FormulaCompiler::normalizeSource(const std::string_view source)
@@ -512,14 +818,49 @@ CompiledFormula FormulaCompiler::compile(std::string expression) const
                 + "-"
                 + root->children[1]->canonical
                 + ")";
+            result.affineInequality = affineInequalityForRoot(*root);
+            result.tangentPoleInequality = tangentPoleInequalityForRoot(*root);
         }
 
-        emitBytecode(*root, result.evaluationIr, result.variableNames);
+        const auto rootOpcode = opcodeForToken(root->token);
+        if (result.handle.traits.hasComparison && root->children.size() == 2 && rootOpcode)
+        {
+            const auto lhsOffset = result.evaluationIr.size();
+            emitBytecode(*root->children[0], result.evaluationIr, result.variableNames);
+            const auto lhsCount = result.evaluationIr.size() - lhsOffset;
+
+            const auto rhsOffset = result.evaluationIr.size();
+            emitBytecode(*root->children[1], result.evaluationIr, result.variableNames);
+            const auto rhsCount = result.evaluationIr.size() - rhsOffset;
+
+            result.evaluationIr.push_back({*rootOpcode, 0.0, 0});
+            result.rootComparisonBytecode = RootComparisonBytecode{
+                .comparison = *rootOpcode,
+                .lhs = FormulaBytecodeSlice{
+                    .offset = lhsOffset,
+                    .count = lhsCount,
+                    .variableMask = variableMaskForInstructions(std::span{result.evaluationIr}.subspan(
+                        lhsOffset,
+                        lhsCount))
+                },
+                .rhs = FormulaBytecodeSlice{
+                    .offset = rhsOffset,
+                    .count = rhsCount,
+                    .variableMask = variableMaskForInstructions(std::span{result.evaluationIr}.subspan(
+                        rhsOffset,
+                        rhsCount))
+                }
+            };
+        }
+        else
+        {
+            emitBytecode(*root, result.evaluationIr, result.variableNames);
+        }
 
         result.handle.sourceHash = FormulaSourceHash{stableHash(result.normalizedSource)};
         result.handle.semanticsHash = FormulaSemanticsHash{stableHash(result.canonicalExpression)};
         result.handle.backendHash = FormulaBackendHash{
-            stableHash(result.canonicalExpression + "|cpu-bytecode-v1|interval-bytecode-v1|opencl-lowering-v1")
+            stableHash(result.canonicalExpression + "|cpu-bytecode-v2|interval-bytecode-v2|opencl-lowering-v1")
         };
         result.handle.id = result.handle.semanticsHash.value;
         result.handle.version = 1;
@@ -543,6 +884,26 @@ double CompiledFormula::evaluateDouble(const std::span<const double> variablesBy
     return evaluateTypedSlots(*this, variablesBySlot);
 }
 
+double CompiledFormula::evaluateDouble(const std::span<const double> variablesBySlot,
+                                       std::vector<double> &stackScratch) const
+{
+    return evaluateTypedSlots(*this, variablesBySlot, stackScratch);
+}
+
+double CompiledFormula::evaluateDoubleBytecode(const FormulaBytecodeSlice &slice,
+                                               const std::span<const double> variablesBySlot,
+                                               std::vector<double> &stackScratch) const
+{
+    if (slice.offset > evaluationIr.size() || slice.count > evaluationIr.size() - slice.offset)
+    {
+        throw std::invalid_argument("Formula bytecode slice is out of range");
+    }
+    return evaluateTypedInstructions(
+        std::span{evaluationIr}.subspan(slice.offset, slice.count),
+        variablesBySlot,
+        stackScratch);
+}
+
 Interval CompiledFormula::evaluateInterval(const std::unordered_map<std::string, Interval> &variables) const
 {
     return evaluateTyped(*this, variables);
@@ -551,6 +912,26 @@ Interval CompiledFormula::evaluateInterval(const std::unordered_map<std::string,
 Interval CompiledFormula::evaluateInterval(const std::span<const Interval> variablesBySlot) const
 {
     return evaluateTypedSlots(*this, variablesBySlot);
+}
+
+Interval CompiledFormula::evaluateInterval(const std::span<const Interval> variablesBySlot,
+                                           std::vector<Interval> &stackScratch) const
+{
+    return evaluateTypedSlots(*this, variablesBySlot, stackScratch);
+}
+
+Interval CompiledFormula::evaluateIntervalBytecode(const FormulaBytecodeSlice &slice,
+                                                   const std::span<const Interval> variablesBySlot,
+                                                   std::vector<Interval> &stackScratch) const
+{
+    if (slice.offset > evaluationIr.size() || slice.count > evaluationIr.size() - slice.offset)
+    {
+        throw std::invalid_argument("Formula bytecode slice is out of range");
+    }
+    return evaluateTypedInstructions(
+        std::span{evaluationIr}.subspan(slice.offset, slice.count),
+        variablesBySlot,
+        stackScratch);
 }
 
 std::optional<size_t> CompiledFormula::variableSlot(const std::string_view name) const

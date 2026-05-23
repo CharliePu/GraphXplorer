@@ -152,6 +152,13 @@ TEST_CASE("Interval equality is conservative for overlap", "[Formula][Interval][
     REQUIRE(exact.allTrue());
 }
 
+TEST_CASE("Interval subtraction uses opposing endpoints", "[Formula][Interval][Arithmetic]") {
+    const auto difference = Interval{-1.0, 1.0} - Interval{-1.0, 1.0};
+
+    REQUIRE(difference.lower == -2.0);
+    REQUIRE(difference.upper == 2.0);
+}
+
 TEST_CASE("Formula uses '=' as equality operator", "[Formula][Operators][Equality]") {
     Formula aliasFormula("x=y^2");
     REQUIRE(aliasFormula.hasOperatorContainingEqualSign());

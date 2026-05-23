@@ -14,7 +14,7 @@
 
 namespace gx
 {
-inline constexpr int RasterTileScreenPixels = 256;
+inline constexpr int RasterTileScreenPixels = 128;
 inline constexpr int RasterTexturePixels = RasterTileScreenPixels;
 inline constexpr int RootRefinementLevels = 2;
 inline constexpr int LeafRefinementLevels = 0;

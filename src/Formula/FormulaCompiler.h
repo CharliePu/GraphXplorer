@@ -1,6 +1,7 @@
 #ifndef FORMULACOMPILER_H
 #define FORMULACOMPILER_H
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <span>
@@ -54,6 +55,40 @@ struct FormulaDiagnostics
     std::string message{};
 };
 
+struct AffineInequality
+{
+    double xCoefficient{0.0};
+    double yCoefficient{0.0};
+    double constant{0.0};
+    FormulaOp comparison{FormulaOp::LessEqual};
+    bool operator==(const AffineInequality &) const = default;
+};
+
+struct TangentPoleInequality
+{
+    double argumentXCoefficient{0.0};
+    double argumentYCoefficient{0.0};
+    double argumentConstant{0.0};
+    FormulaOp comparison{FormulaOp::Greater};
+    bool operator==(const TangentPoleInequality &) const = default;
+};
+
+struct FormulaBytecodeSlice
+{
+    size_t offset{0};
+    size_t count{0};
+    uint64_t variableMask{0};
+    bool operator==(const FormulaBytecodeSlice &) const = default;
+};
+
+struct RootComparisonBytecode
+{
+    FormulaOp comparison{FormulaOp::LessEqual};
+    FormulaBytecodeSlice lhs{};
+    FormulaBytecodeSlice rhs{};
+    bool operator==(const RootComparisonBytecode &) const = default;
+};
+
 struct CompiledFormula
 {
     CompiledFormulaHandle handle{};
@@ -61,6 +96,9 @@ struct CompiledFormula
     std::string normalizedSource{};
     std::string canonicalExpression{};
     std::optional<std::string> residualCanonicalExpression{};
+    std::optional<AffineInequality> affineInequality{};
+    std::optional<TangentPoleInequality> tangentPoleInequality{};
+    std::optional<RootComparisonBytecode> rootComparisonBytecode{};
     std::vector<std::string> variableNames{};
     std::vector<FormulaInstruction> evaluationIr{};
     RPN legacyRpn{};
@@ -68,8 +106,18 @@ struct CompiledFormula
 
     [[nodiscard]] double evaluateDouble(const std::unordered_map<std::string, double> &variables) const;
     [[nodiscard]] double evaluateDouble(std::span<const double> variablesBySlot) const;
+    [[nodiscard]] double evaluateDouble(std::span<const double> variablesBySlot,
+                                        std::vector<double> &stackScratch) const;
+    [[nodiscard]] double evaluateDoubleBytecode(const FormulaBytecodeSlice &slice,
+                                                std::span<const double> variablesBySlot,
+                                                std::vector<double> &stackScratch) const;
     [[nodiscard]] Interval evaluateInterval(const std::unordered_map<std::string, Interval> &variables) const;
     [[nodiscard]] Interval evaluateInterval(std::span<const Interval> variablesBySlot) const;
+    [[nodiscard]] Interval evaluateInterval(std::span<const Interval> variablesBySlot,
+                                            std::vector<Interval> &stackScratch) const;
+    [[nodiscard]] Interval evaluateIntervalBytecode(const FormulaBytecodeSlice &slice,
+                                                    std::span<const Interval> variablesBySlot,
+                                                    std::vector<Interval> &stackScratch) const;
     [[nodiscard]] std::optional<size_t> variableSlot(std::string_view name) const;
 };
 

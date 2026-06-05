@@ -80,8 +80,29 @@ private:
     long long processed_{0};
     double stepX_, stepY_, wpp_;
     bool equalityCurve_, notEqual_;
+    bool useCentered_{true};
+    long long centeredAttempts_{0};
+    long long centeredWins_{0};
     std::vector<double> acc_; // covered sub-cell area per pixel
     std::vector<double> unc_; // boundary/estimated sub-cell count per pixel
+
+    // Naive interval first; escalate to the centered (mean-value) form only while
+    // it is still earning its cost. On formulas where it never certifies a box
+    // (e.g. genuine 2-D oscillation), it is disabled after a sampling window so
+    // the tile stops paying ~3x per box for nothing.
+    Sign classifyAdaptive(const Interval &ix, const Interval &iy)
+    {
+        const Sign sn = rel_.classifyNaive(ix, iy, s_);
+        if (sn != Sign::Uncertain || !useCentered_) return sn;
+        const Sign sc = rel_.classifyRefined(ix, iy, s_);
+        ++centeredAttempts_;
+        if (sc != Sign::Uncertain) ++centeredWins_;
+        if (centeredAttempts_ == 1024 && centeredWins_ * 50 < centeredAttempts_)
+        {
+            useCentered_ = false; // <2% certify rate -> not worth it for this tile
+        }
+        return sc;
+    }
 
     [[nodiscard]] Interval xInterval(int a, int b) const
     {
@@ -96,7 +117,7 @@ private:
     {
         const Interval ix = xInterval(b.x0, b.x1);
         const Interval iy = yInterval(b.y0, b.y1);
-        const Sign sign = rel_.classifyBox(ix, iy, s_);
+        const Sign sign = classifyAdaptive(ix, iy);
 
         if (sign == Sign::AllFalse || sign == Sign::Undefined) return;
         if (sign == Sign::AllTrue)

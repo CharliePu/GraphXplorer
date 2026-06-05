@@ -60,6 +60,12 @@ public:
     // the value range wherever f is smooth on the box.
     [[nodiscard]] Sign classifyBox(const Interval &x, const Interval &y, EvalScratch &s) const;
 
+    // Two-stage classification for the adaptive solver: the cheap naive interval
+    // first, then (only if still uncertain and worth it) the costlier centered
+    // form. The solver disables the refined stage per-tile when it stops helping.
+    [[nodiscard]] Sign classifyNaive(const Interval &x, const Interval &y, EvalScratch &s) const;
+    [[nodiscard]] Sign classifyRefined(const Interval &x, const Interval &y, EvalScratch &s) const;
+
     // Point membership (used for unbiased sub-pixel sampling at the floor).
     [[nodiscard]] bool pointInside(double x, double y, EvalScratch &s) const;
 

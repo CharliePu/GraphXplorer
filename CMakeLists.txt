@@ -121,6 +121,9 @@ target_link_libraries(GraphXplorer PRIVATE glfw GraphXplorerApp)
 # Unit testing
 add_subdirectory(tests)
 
+# Fresh rewrite engine (claude_rewrite): self-contained CPU renderer in engine/
+add_subdirectory(engine)
+
 
 
 # Copy fonts and shaders to the build directory

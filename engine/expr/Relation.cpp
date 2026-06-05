@@ -195,18 +195,12 @@ Sign Relation::classifyValueVsZero(const Interval &v) const
     return Sign::Uncertain;
 }
 
-Sign Relation::classifyBox(const Interval &x, const Interval &y, EvalScratch &s) const
+Sign Relation::classifyNaive(const Interval &x, const Interval &y, EvalScratch &s) const
 {
     if (single_)
     {
-        // Cheap naive interval first; only pay for the jet-based centered form
-        // on boxes the naive range leaves uncertain (the boundary band).
-        const Interval naive = f_.evalInterval(x, y, s.si);
-        const Sign sn = classifyValueVsZero(naive);
-        if (sn != Sign::Uncertain) return sn;
-        return classifyValueVsZero(centeredValue(x, y, s));
+        return classifyValueVsZero(f_.evalInterval(x, y, s.si));
     }
-
     // general boolean truth program
     const Interval t = f_.evalInterval(x, y, s.si);
     if (t.undef) return Sign::Undefined;
@@ -214,6 +208,22 @@ Sign Relation::classifyBox(const Interval &x, const Interval &y, EvalScratch &s)
     if (t.lo >= 1.0) return Sign::AllTrue;
     if (t.hi <= 0.0) return Sign::AllFalse;
     return Sign::Uncertain;
+}
+
+Sign Relation::classifyRefined(const Interval &x, const Interval &y, EvalScratch &s) const
+{
+    if (single_)
+    {
+        return classifyValueVsZero(centeredValue(x, y, s));
+    }
+    return classifyNaive(x, y, s); // no centered form for compound boolean truth
+}
+
+Sign Relation::classifyBox(const Interval &x, const Interval &y, EvalScratch &s) const
+{
+    const Sign sn = classifyNaive(x, y, s);
+    if (sn != Sign::Uncertain || !single_) return sn;
+    return classifyRefined(x, y, s);
 }
 
 bool Relation::pointInside(double x, double y, EvalScratch &s) const

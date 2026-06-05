@@ -68,6 +68,9 @@ void emit(const Node &n, Program &p)
     case NodeKind::Sin: unary(Op::Sin); return;
     case NodeKind::Cos: unary(Op::Cos); return;
     case NodeKind::Tan: unary(Op::Tan); return;
+    case NodeKind::Asin: unary(Op::Asin); return;
+    case NodeKind::Acos: unary(Op::Acos); return;
+    case NodeKind::Atan: unary(Op::Atan); return;
     case NodeKind::Log: unary(Op::Log); return;
     case NodeKind::Exp: unary(Op::Exp); return;
     case NodeKind::Sqrt: unary(Op::Sqrt); return;
@@ -111,6 +114,9 @@ double Program::evalPoint(double x, double y, std::vector<double> &st) const
         case Op::Sin: st.back() = std::sin(st.back()); break;
         case Op::Cos: st.back() = std::cos(st.back()); break;
         case Op::Tan: st.back() = std::tan(st.back()); break;
+        case Op::Asin: st.back() = std::asin(st.back()); break;
+        case Op::Acos: st.back() = std::acos(st.back()); break;
+        case Op::Atan: st.back() = std::atan(st.back()); break;
         case Op::Log: st.back() = std::log(st.back()); break;
         case Op::Exp: st.back() = std::exp(st.back()); break;
         case Op::Sqrt: st.back() = std::sqrt(st.back()); break;
@@ -158,6 +164,9 @@ Interval Program::evalInterval(const Interval &x, const Interval &y, std::vector
         case Op::Sin: st.back() = sin(st.back()); break;
         case Op::Cos: st.back() = cos(st.back()); break;
         case Op::Tan: st.back() = tan(st.back()); break;
+        case Op::Asin: st.back() = asin(st.back()); break;
+        case Op::Acos: st.back() = acos(st.back()); break;
+        case Op::Atan: st.back() = atan(st.back()); break;
         case Op::Log: st.back() = log(st.back()); break;
         case Op::Exp: st.back() = exp(st.back()); break;
         case Op::Sqrt: st.back() = sqrt(st.back()); break;
@@ -248,6 +257,33 @@ Jet Program::evalJet(const Interval &x, const Interval &y, std::vector<Jet> &st)
             a.dx = c * a.dx;
             a.dy = c * a.dy;
             a.v = t;
+            break;
+        }
+        case Op::Asin:
+        {
+            Jet &a = st.back();
+            Interval c = one / sqrt(one - a.v * a.v); // straddles +-1 -> whole
+            a.dx = c * a.dx;
+            a.dy = c * a.dy;
+            a.v = asin(a.v);
+            break;
+        }
+        case Op::Acos:
+        {
+            Jet &a = st.back();
+            Interval c = -(one / sqrt(one - a.v * a.v));
+            a.dx = c * a.dx;
+            a.dy = c * a.dy;
+            a.v = acos(a.v);
+            break;
+        }
+        case Op::Atan:
+        {
+            Jet &a = st.back();
+            Interval c = one / (one + a.v * a.v); // always finite
+            a.dx = c * a.dx;
+            a.dy = c * a.dy;
+            a.v = atan(a.v);
             break;
         }
         case Op::Exp:

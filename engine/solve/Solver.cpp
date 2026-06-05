@@ -283,7 +283,9 @@ CoverageTile solveExplicit1D(const Relation &rel, const WorldRect &rect, const S
     const CmpOp op = rel.explicitOp();
     const bool greater = (op == CmpOp::Greater || op == CmpOp::GreaterEq);
     const bool yExplicit = rel.explicitIsY(); // y<op>g(x): sample over x. else x<op>g(y).
-    const int S = std::clamp(64 << params.subBits, 64, 4096);
+    // Samples per line scale with the refinement pass; more samples -> lower
+    // per-line measure variance -> smoother gray in the sub-pixel regime.
+    const int S = std::clamp(128 << params.subBits, 128, 8192);
     const double wppX = rect.width() / T;
     const double wppY = rect.height() / T;
 

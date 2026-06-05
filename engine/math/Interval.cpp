@@ -190,6 +190,32 @@ Interval pow(const Interval &base, const Interval &exp)
     return sanitize(rdownN(lo, 2), rupN(hi, 2), disc);
 }
 
+Interval asin(const Interval &a)
+{
+    if (a.undef) return a;
+    if (a.lo > 1.0 || a.hi < -1.0) return Interval::undefined();
+    const bool disc = a.disc || a.lo < -1.0 || a.hi > 1.0; // domain edge crossed
+    const double lo = std::asin(std::clamp(a.lo, -1.0, 1.0));
+    const double hi = std::asin(std::clamp(a.hi, -1.0, 1.0));
+    return sanitize(rdownN(lo, 2), rupN(hi, 2), disc); // increasing
+}
+
+Interval acos(const Interval &a)
+{
+    if (a.undef) return a;
+    if (a.lo > 1.0 || a.hi < -1.0) return Interval::undefined();
+    const bool disc = a.disc || a.lo < -1.0 || a.hi > 1.0;
+    const double lo = std::acos(std::clamp(a.hi, -1.0, 1.0)); // decreasing
+    const double hi = std::acos(std::clamp(a.lo, -1.0, 1.0));
+    return sanitize(rdownN(lo, 2), rupN(hi, 2), disc);
+}
+
+Interval atan(const Interval &a)
+{
+    if (a.undef) return a;
+    return sanitize(rdownN(std::atan(a.lo), 2), rupN(std::atan(a.hi), 2), a.disc); // increasing
+}
+
 Interval exp(const Interval &a)
 {
     if (a.undef) return a;

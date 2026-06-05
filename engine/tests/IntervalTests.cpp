@@ -115,6 +115,32 @@ TEST_CASE("truth comparisons certify the unambiguous cases", "[interval]")
     REQUIRE(f.hi == 0.0);
 }
 
+TEST_CASE("inverse trig: enclosure, domains, monotonicity", "[interval]")
+{
+    // atan: defined everywhere, increasing, bounded
+    const Interval at = gxr::atan(Interval{-1.0, 1.0});
+    REQUIRE(encloses(at, std::atan(-1.0)));
+    REQUIRE(encloses(at, std::atan(1.0)));
+    REQUIRE(at.lo <= -0.78);
+    REQUIRE(at.hi >= 0.78);
+
+    // asin: increasing on [-1,1]
+    const Interval as = gxr::asin(Interval{0.0, 0.5});
+    REQUIRE(encloses(as, std::asin(0.0)));
+    REQUIRE(encloses(as, std::asin(0.5)));
+
+    // acos: decreasing on [-1,1]
+    const Interval ac = gxr::acos(Interval{0.0, 0.5});
+    REQUIRE(encloses(ac, std::acos(0.0)));
+    REQUIRE(encloses(ac, std::acos(0.5)));
+    REQUIRE(ac.lo <= ac.hi);
+
+    // domain handling
+    REQUIRE(gxr::asin(Interval{2.0, 3.0}).undef);          // entirely outside [-1,1]
+    REQUIRE(gxr::asin(Interval{0.5, 2.0}).disc);           // crosses the domain edge
+    REQUIRE_FALSE(gxr::atan(Interval{-1e9, 1e9}).undef);   // atan never undefined
+}
+
 TEST_CASE("ipow handles even/odd and zero crossing", "[interval]")
 {
     const Interval sq = gxr::ipow(Interval{-2.0, 3.0}, 2); // [0, 9]

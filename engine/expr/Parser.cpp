@@ -242,8 +242,9 @@ private:
             auto arg = parseOr();
             if (!accept(")")) fail("missing ')' after function argument");
             static const std::unordered_map<std::string, NodeKind> fns{
-                {"sin", NodeKind::Sin},  {"cos", NodeKind::Cos}, {"tan", NodeKind::Tan},
-                {"log", NodeKind::Log},  {"ln", NodeKind::Log},  {"exp", NodeKind::Exp},
+                {"sin", NodeKind::Sin},   {"cos", NodeKind::Cos},   {"tan", NodeKind::Tan},
+                {"asin", NodeKind::Asin}, {"acos", NodeKind::Acos}, {"atan", NodeKind::Atan},
+                {"log", NodeKind::Log},   {"ln", NodeKind::Log},    {"exp", NodeKind::Exp},
                 {"sqrt", NodeKind::Sqrt}, {"abs", NodeKind::Abs}};
             const auto it = fns.find(name);
             if (it == fns.end()) fail("unknown function '" + name + "'");

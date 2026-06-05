@@ -77,7 +77,7 @@ int main(int argc, char **argv)
     SolveParams p;
     p.tilePx = size;
     p.subBits = subBits;
-    p.boxBudget = 8'000'000;
+    p.boxBudget = 4'000'000; // bounded; a 512px static render can afford more
 
     EvalScratch scratch;
     const CoverageTile tile = solveTile(*rel, rect, p, scratch);

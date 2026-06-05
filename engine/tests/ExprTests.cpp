@@ -52,23 +52,32 @@ TEST_CASE("centered form certifies disk interior/exterior (dependency win)", "[e
     REQUIRE(r.classifyBox(iv(0.6, 0.8), iv(0.6, 0.8), s) == Sign::Uncertain);
 }
 
-TEST_CASE("explicit-y structure is detected and normalized", "[expr]")
+TEST_CASE("explicit-1D structure is detected and normalized", "[expr]")
 {
     {
         Relation r = must("y < sin(x)");
-        REQUIRE(r.explicitY());
-        REQUIRE(r.explicitOpY() == CmpOp::Less);
+        REQUIRE(r.explicit1D());
+        REQUIRE(r.explicitIsY());
+        REQUIRE(r.explicitOp() == CmpOp::Less);
     }
     {
         // g(x) on the left: sin(x) > y  <=>  y < sin(x)
         Relation r = must("sin(x) > y");
-        REQUIRE(r.explicitY());
-        REQUIRE(r.explicitOpY() == CmpOp::Less);
+        REQUIRE(r.explicit1D());
+        REQUIRE(r.explicitIsY());
+        REQUIRE(r.explicitOp() == CmpOp::Less);
+    }
+    {
+        // explicit in x: x > sin(y)
+        Relation r = must("x > sin(y)");
+        REQUIRE(r.explicit1D());
+        REQUIRE_FALSE(r.explicitIsY());
+        REQUIRE(r.explicitOp() == CmpOp::Greater);
     }
     {
         // not explicit: y appears on both sides
         Relation r = must("y + x > sin(y)");
-        REQUIRE_FALSE(r.explicitY());
+        REQUIRE_FALSE(r.explicit1D());
     }
 }
 

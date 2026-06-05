@@ -37,37 +37,36 @@ public:
 
     CoverageTile run()
     {
-        std::vector<Box> cur{Box{0, 0, N_, N_}};
-        std::vector<Box> next;
+        // Depth-first traversal: the work stack stays O(tree depth) instead of
+        // the O(frontier) of a breadth-first sweep, so even a fully-uncertain
+        // tile keeps a tiny, cache-resident working set (orders of magnitude
+        // faster per box than a multi-hundred-MB BFS frontier).
+        std::vector<Box> stack;
+        stack.reserve(256);
+        stack.push_back(Box{0, 0, N_, N_});
         bool bailed = false;
 
-        while (!cur.empty() && !bailed)
+        while (!stack.empty())
         {
-            if (cancel_.cancelled())
+            if (++processed_ > budget_)
             {
                 bailed = true;
                 break;
             }
-            for (size_t bi = 0; bi < cur.size(); ++bi)
+            if ((processed_ & 2047) == 0 && cancel_.cancelled())
             {
-                if (++processed_ > budget_)
-                {
-                    // estimate the unprocessed frontier as half-covered
-                    for (size_t k = bi; k < cur.size(); ++k) addHalf(cur[k]);
-                    bailed = true;
-                    break;
-                }
-                processBox(cur[bi], next);
-            }
-            if (bailed)
-            {
-                for (const Box &b : next) addHalf(b);
+                bailed = true;
                 break;
             }
-            cur.swap(next);
-            next.clear();
+            const Box b = stack.back();
+            stack.pop_back();
+            processBox(b, stack);
         }
 
+        if (bailed)
+        {
+            for (const Box &b : stack) addHalf(b); // estimate the unprocessed frontier
+        }
         return finalize(!bailed);
     }
 
@@ -251,20 +250,27 @@ double columnPixelCoverage(const std::vector<double> &g, const std::vector<doubl
     return std::clamp((static_cast<double>(highCount) + partial) / S, 0.0, 1.0);
 }
 
-// Direct 1-D solver for `y <op> g(x)`: reduces the 2-D area to a per-column
-// quadrature of g. Exact for smooth g; for sub-pixel-oscillating g it converges
-// to the true Lebesgue measure (unbiased) -> stable smooth gray. Far cheaper
-// than 2-D subdivision and free of the half-floor bias.
-CoverageTile solveExplicitY(const Relation &rel, const WorldRect &rect, const SolveParams &params,
-                            EvalScratch &scratch, const CancelToken &cancel)
+// Direct 1-D solver for `v <op> g(w)` (v,w are x/y in either order): reduces the
+// 2-D area to a per-line quadrature of g. Exact for smooth g; for sub-pixel-
+// oscillating g it converges to the true Lebesgue measure (unbiased) -> stable
+// smooth gray. Far cheaper than 2-D subdivision and free of the half-floor bias.
+CoverageTile solveExplicit1D(const Relation &rel, const WorldRect &rect, const SolveParams &params,
+                             EvalScratch &scratch, const CancelToken &cancel)
 {
     const int T = params.tilePx;
     const Program &G = *rel.explicitG();
-    const CmpOp opY = rel.explicitOpY();
-    const bool greater = (opY == CmpOp::Greater || opY == CmpOp::GreaterEq);
+    const CmpOp op = rel.explicitOp();
+    const bool greater = (op == CmpOp::Greater || op == CmpOp::GreaterEq);
+    const bool yExplicit = rel.explicitIsY(); // y<op>g(x): sample over x. else x<op>g(y).
     const int S = std::clamp(64 << params.subBits, 64, 4096);
     const double wppX = rect.width() / T;
     const double wppY = rect.height() / T;
+
+    // outer axis = w (the function input), inner axis = v (the isolated variable)
+    const double wOrigin = yExplicit ? rect.x0 : rect.y0;
+    const double wStepPix = yExplicit ? wppX : wppY;
+    const double vOrigin = yExplicit ? rect.y0 : rect.x0;
+    const double vStepPix = yExplicit ? wppY : wppX;
 
     CoverageTile tile;
     tile.width = tile.height = T;
@@ -277,30 +283,33 @@ CoverageTile solveExplicitY(const Relation &rel, const WorldRect &rect, const So
     g.reserve(S);
     prefix.reserve(S + 1);
 
-    for (int px = 0; px < T; ++px)
+    for (int o = 0; o < T; ++o)
     {
-        if ((px & 31) == 0 && cancel.cancelled())
+        if ((o & 31) == 0 && cancel.cancelled())
         {
             tile.converged = false;
             break;
         }
-        const double xa = rect.x0 + px * wppX;
+        const double wa = wOrigin + o * wStepPix;
         g.clear();
         for (int k = 0; k < S; ++k)
         {
-            const double x = xa + (k + 0.5) * wppX / S;
-            const double v = G.evalPoint(x, 0.0, scratch.sd);
-            if (std::isfinite(v)) g.push_back(v); // undefined -> contributes 0, still in S
+            const double w = wa + (k + 0.5) * wStepPix / S;
+            const double val = yExplicit ? G.evalPoint(w, 0.0, scratch.sd)
+                                         : G.evalPoint(0.0, w, scratch.sd);
+            if (std::isfinite(val)) g.push_back(val); // undefined -> 0, still in S
         }
         std::sort(g.begin(), g.end());
         prefix.assign(g.size() + 1, 0.0);
         for (size_t k = 0; k < g.size(); ++k) prefix[k + 1] = prefix[k] + g[k];
 
-        for (int py = 0; py < T; ++py)
+        for (int i = 0; i < T; ++i)
         {
-            const double ya = rect.y0 + py * wppY;
-            const double cov = columnPixelCoverage(g, prefix, ya, ya + wppY, wppY, S, greater);
-            tile.alpha[static_cast<size_t>(py) * T + px] = static_cast<float>(cov);
+            const double va = vOrigin + i * vStepPix;
+            const double cov = columnPixelCoverage(g, prefix, va, va + vStepPix, vStepPix, S, greater);
+            const size_t idx = yExplicit ? static_cast<size_t>(i) * T + o
+                                         : static_cast<size_t>(o) * T + i;
+            tile.alpha[idx] = static_cast<float>(cov);
         }
     }
     return tile;
@@ -310,10 +319,10 @@ CoverageTile solveExplicitY(const Relation &rel, const WorldRect &rect, const So
 CoverageTile solveTile(const Relation &rel, const WorldRect &rect, const SolveParams &params,
                        EvalScratch &scratch, const CancelToken &cancel)
 {
-    // Fast, exact-measure path for explicit-y inequalities (y <op> g(x)).
-    if (params.analytic && rel.explicitY() && !rel.isEquality())
+    // Fast, exact-measure path for explicit-1D inequalities (v <op> g(w)).
+    if (params.analytic && rel.explicit1D() && !rel.isEquality())
     {
-        return solveExplicitY(rel, rect, params, scratch, cancel);
+        return solveExplicit1D(rel, rect, params, scratch, cancel);
     }
     TileSolver solver(rel, rect, params, scratch, cancel);
     return solver.run();

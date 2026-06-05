@@ -74,20 +74,42 @@ std::optional<Relation> Relation::parse(const std::string &text, std::string &er
         fNode->kind = NodeKind::Sub;
         fNode->a = std::move(root.a);
         fNode->b = std::move(root.b);
-        // detect explicit-y BEFORE the operands are consumed by compile
-        const bool lhsIsY = fNode->a && fNode->a->kind == NodeKind::Var && fNode->a->slot == 1;
-        const bool rhsIsY = fNode->b && fNode->b->kind == NodeKind::Var && fNode->b->slot == 1;
-        if (lhsIsY && fNode->b && !usesVar(*fNode->b, 1))
+
+        // Detect explicit-1D structure BEFORE the operands are consumed by
+        // compile: v <op> g(w) where v is x or y, isolated, and g uses only w.
+        const Node *lhs = fNode->a.get();
+        const Node *rhs = fNode->b.get();
+        auto isVar = [](const Node *n, int slot) {
+            return n && n->kind == NodeKind::Var && n->slot == slot;
+        };
+        // prefer y-explicit (y op g(x)), then x-explicit (x op g(y))
+        if (isVar(lhs, 1) && !usesVar(*rhs, 1))
         {
-            r.explicitY_ = true;
-            r.gProgram_ = Program::compile(*fNode->b); // g(x) = rhs
-            r.opY_ = r.op_;                            // y op g
+            r.explicit1D_ = true;
+            r.explicitIsY_ = true;
+            r.g1d_ = Program::compile(*rhs);
+            r.op1d_ = r.op_;
         }
-        else if (rhsIsY && fNode->a && !usesVar(*fNode->a, 1))
+        else if (isVar(rhs, 1) && !usesVar(*lhs, 1))
         {
-            r.explicitY_ = true;
-            r.gProgram_ = Program::compile(*fNode->a); // g(x) = lhs
-            r.opY_ = flipOp(r.op_);                    // g op y  <=>  y flip(op) g
+            r.explicit1D_ = true;
+            r.explicitIsY_ = true;
+            r.g1d_ = Program::compile(*lhs);
+            r.op1d_ = flipOp(r.op_);
+        }
+        else if (isVar(lhs, 0) && !usesVar(*rhs, 0))
+        {
+            r.explicit1D_ = true;
+            r.explicitIsY_ = false;
+            r.g1d_ = Program::compile(*rhs);
+            r.op1d_ = r.op_;
+        }
+        else if (isVar(rhs, 0) && !usesVar(*lhs, 0))
+        {
+            r.explicit1D_ = true;
+            r.explicitIsY_ = false;
+            r.g1d_ = Program::compile(*lhs);
+            r.op1d_ = flipOp(r.op_);
         }
 
         r.f_ = Program::compile(*fNode);

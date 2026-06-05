@@ -38,18 +38,20 @@ Four-way box classification (not three):
 `enum class Sign { AllTrue, AllFalse, Undefined, Uncertain }`.
 `Undefined` contributes **0** area and does **not** subdivide.
 
-### 1.2 Affine arithmetic (`Affine`)
-`struct Affine { double c0; small_vector<Term> noise; double err; }` (Comba–Stolfi AAF).
-First-order form `x = c0 + Σ cᵢ εᵢ + err·ε±` tracks correlations between subexpressions, so `x−x→0`,
-`x·x` is tight, and repeated variables don't bloat. The evaluator runs **affine first** (cheap, kills
-the dependency problem); only boxes still `Uncertain` under affine fall back to plain interval +
-subdivision. This is the single biggest quality lever for complex formulas. Affine ranges are always
-intersected with the sound interval range, so soundness is preserved.
+### 1.2 Interval automatic differentiation + centered form (the tightening core)
+Rather than a separate affine-arithmetic type, tightening and the gradient are produced by **one**
+mechanism: forward-mode interval AD. The compiled program evaluates to a `Jet = {Interval v, dx, dy}`
+(value plus interval partials). The **centered (mean-value) form**
+`F_c(B) = f(mid) + dx·(x−mid_x) + dy·(y−mid_y)`, intersected with the naive range, kills the
+dependency problem (`x−x→0`, `x·x` tight, repeated variables don't bloat) and gives quadratic
+convergence under bisection — the single biggest quality lever for complex formulas. It is only
+trusted where `f` is smooth on the box (finite, gap-free derivatives); otherwise the sound naive range
+stands. The same Jet supplies the gradient for the equality band (§3.3) and structure detection. This
+is a sound, simpler equivalent of affine arithmetic that also yields derivatives for free.
 
-### 1.3 Why both: interval is sound and cheap for ranges & domains; affine is tight for boundaries.
-The compiled program can be evaluated in three modes from one bytecode: `double` (point),
-`Interval` (sound range), `Affine` (tight range). A 4th mode yields an **interval gradient** (for the
-equality band, §3.3) by carrying `∂/∂x, ∂/∂y` interval duals.
+### 1.3 Three evaluation modes from one bytecode
+`double` (point, for sub-pixel sampling), `Interval` (sound naive range, domain/discontinuity), and
+`Jet` (value + interval gradient, for the centered form and the equality band).
 
 ---
 
@@ -82,7 +84,12 @@ Integer-relative subdivision: the tile is the integer box `[0, T·2^K]²` of *su
 rects; world coords are derived only at evaluation as `origin + local·step` with `step` an exact power
 of two → **bit-exact** parent/child boundaries and deep-zoom stability.
 
-Breadth-first worklist of boxes. For each box `B` (covering an integer cell-rect, ≥ 1 cell):
+**Depth-first** worklist of boxes (an explicit stack: the working set stays O(tree depth) and
+cache-resident, instead of the hundreds of MB an O(frontier) breadth-first sweep reaches on a fully
+oscillating tile). Classification is **adaptive**: the cheap naive interval runs first, and the
+centered form is escalated to only while it keeps certifying boxes — a tile that is genuine 2-D
+oscillation (centered never decides until sub-pixel) disables it after a 1024-box sampling window and
+stops paying ~3× per box. For each box `B` (covering an integer cell-rect, ≥ 1 cell):
 - Evaluate affine→interval. Classify:
   - `AllTrue`  → add `area(B)` to every pixel `B` overlaps (whole or fractional).
   - `AllFalse` / `Undefined` → contribute 0.
@@ -109,15 +116,18 @@ bounded (oscillation), fall back to **sign-change at a fixed sub-pixel depth**: 
 coverage = lit-fraction. Both keep the curve ~1px and non-vanishing at all zoom levels; oscillating
 equalities fill to gray. `≠` is the complement.
 
-### 3.4 Analytic oscillation model (the `y>sin(2^x)` centerpiece)
-For `ExplicitY` relations `y rel g(x)` where, over a pixel column, `g` is monotone (g′ no sign change,
-checked via interval-gradient) **and** its argument spans ≫ 2π (detected from the interval of the inner
-argument), the true-set measure has a closed form instead of infinite subdivision. For `g=sin(arg)`:
-`P[sin(t) > y] = ½ − arcsin(clamp(y,−1,1))/π`, so for `y > sin(t)`, coverage(y)= ½ + arcsin(y)/π,
-averaged over the pixel's y-range using `∫arcsin(y)dy = y·arcsin y + √(1−y²)`. Analogous closed forms
-for `cos`, and `tan` via its CDF. This yields the **exact, perfectly smooth gray** under pan/zoom —
-the property the old renderer lacked. Outside the oscillating regime the same `ExplicitY` path does a
-fast per-column 1-D bracket of `g(x)` (monotone → one root; few roots → enumerate) for crisp AA.
+### 3.4 Explicit-1D exact-measure accelerator (the `y>sin(2^x)` centerpiece — but general)
+For any relation reducible to `v <op> g(w)` (v,w ∈ {x,y} in **either order** — `y>g(x)`, `x<g(y)`,
+…), the 2-D area collapses to a per-line quadrature: for each line of constant w (a pixel column or
+row), `g(w)` is densely sampled across the line's w-extent (world-aligned, so deterministic and
+flicker-free), sorted, and each pixel's coverage is the exact fraction of its v-range satisfying the
+relation, via prefix sums. This is **not** a sin special-case: it converges to the true Lebesgue
+measure for an arbitrary `g`. For a smooth `g` it is exact AA; for a sub-pixel-oscillating `g`
+(`g=sin(2^x)` at large x) it converges to the measure — which for `y>sin(t)` is the closed form
+`½ + arcsin(clamp(y,−1,1))/π` (a smooth, deterministic gray), the property the old renderer lacked.
+Sample count scales with the refinement pass, so idle passes smooth the gray further. Relations
+without explicit structure (`sin(x·y)>0`) fall back to the general 2-D solver (§3.1) and still converge
+to the correct measure, just more slowly.
 
 ### 3.5 Leaf estimate (unbiased)
 At the floor, an `Uncertain` cell straddles the boundary. Instead of a biased constant ½, estimate the

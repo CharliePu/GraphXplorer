@@ -6,12 +6,16 @@
 #include <glfwpp/glfwpp.h>
 
 #include "app/Engine.h"
+#include "image/Png.h"
 #include "present/GlPresenter.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace gxr;
@@ -35,8 +39,19 @@ const char *kPresets[] = {
 };
 }
 
+// Render the live GL pipeline headlessly to a PNG (validates context, shaders,
+// tile-texture upload and compositing end-to-end). Usage: --selftest out.png [formula]
+int runSelftest(const std::string &outPng, const std::string &formula);
+
 int main(int argc, char **argv)
 {
+    if (argc >= 2 && std::string(argv[1]) == "--selftest")
+    {
+        const std::string out = argc >= 3 ? argv[2] : "selftest.png";
+        const std::string f = argc >= 4 ? argv[3] : kPresets[0];
+        return runSelftest(out, f);
+    }
+
     auto glfwLib = glfw::init();
 
     glfw::WindowHints{
@@ -160,5 +175,64 @@ int main(int argc, char **argv)
         presenter.renderFrame(vp, present, /*uploadBudget=*/12);
         window.swapBuffers();
     }
+    return 0;
+}
+
+int runSelftest(const std::string &outPng, const std::string &formula)
+{
+    auto glfwLib = glfw::init();
+    glfw::WindowHints{
+        .clientApi = glfw::ClientApi::OpenGl,
+        .contextVersionMajor = 3,
+        .contextVersionMinor = 3,
+        .openglProfile = glfw::OpenGlProfile::Core,
+    }
+        .apply();
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE); // offscreen
+
+    const int W = 512, H = 512;
+    glfw::Window window(W, H, "selftest");
+    glfw::makeContextCurrent(window);
+    glfw::swapInterval(0);
+    if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(glfw::getProcAddress)))
+    {
+        std::fprintf(stderr, "selftest: failed to load GL\n");
+        return 1;
+    }
+
+    constexpr int tilePx = 64;
+    Engine engine(tilePx);
+    GlPresenter presenter(tilePx);
+    auto [fbW, fbH] = window.getFramebufferSize();
+    presenter.resize(fbW, fbH);
+    Viewport vp{0.0, 0.0, 16.0 / fbW, fbW, fbH};
+
+    auto rel = parseOrNull(formula);
+    if (!rel) return 1;
+    engine.setRelation(rel);
+    engine.setViewport(vp);
+
+    std::vector<PresentTile> present;
+    for (int f = 0; f < 200; ++f) // let workers solve coarse->fine
+    {
+        glfw::pollEvents();
+        engine.buildPresent(vp, present);
+        presenter.renderFrame(vp, present, /*uploadBudget=*/64);
+        window.swapBuffers();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    std::vector<uint8_t> px(static_cast<size_t>(fbW) * fbH * 4);
+    glReadPixels(0, 0, fbW, fbH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    std::vector<uint8_t> flipped(px.size()); // GL is bottom-up; PNG is top-down
+    for (int y = 0; y < fbH; ++y)
+        std::memcpy(&flipped[static_cast<size_t>(fbH - 1 - y) * fbW * 4],
+                    &px[static_cast<size_t>(y) * fbW * 4], static_cast<size_t>(fbW) * 4);
+    if (!writePng(outPng, fbW, fbH, flipped))
+    {
+        std::fprintf(stderr, "selftest: failed to write %s\n", outPng.c_str());
+        return 1;
+    }
+    std::printf("selftest: wrote %s (%dx%d)\n", outPng.c_str(), fbW, fbH);
     return 0;
 }

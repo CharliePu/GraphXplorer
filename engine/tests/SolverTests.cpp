@@ -133,6 +133,31 @@ TEST_CASE("OBJECTIVE 1: oscillation coverage equals the analytic Lebesgue measur
     }
 }
 
+TEST_CASE("explicit-x 1-D path agrees with the general 2-D solver", "[solver]")
+{
+    Relation r = must("x > sin(y)"); // explicit in x: sideways sine
+    EvalScratch s;
+    const WorldRect rect{-3, -3, 3, 3};
+    SolveParams analytic;
+    analytic.tilePx = 64;
+    analytic.subBits = 4;
+    analytic.analytic = true;
+    SolveParams general = analytic;
+    general.analytic = false; // force the 2-D subdivision path
+
+    CoverageTile a = solveTile(r, rect, analytic, s);
+    CoverageTile b = solveTile(r, rect, general, s);
+
+    double mad = 0.0;
+    for (size_t i = 0; i < a.alpha.size(); ++i) mad += std::abs(a.alpha[i] - b.alpha[i]);
+    mad /= a.alpha.size();
+    REQUIRE(mad < 0.02); // the fast 1-D measure matches the general solver
+
+    // and it actually fills the right half-ish (x>sin(y))
+    REQUIRE(a.at(60, 32) == Approx(1.0f).margin(0.05)); // far right: inside
+    REQUIRE(a.at(4, 32) == Approx(0.0f).margin(0.05));  // far left: outside
+}
+
 TEST_CASE("equality renders a thin, non-vanishing curve", "[solver]")
 {
     Relation r = must("y = x");

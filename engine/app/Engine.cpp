@@ -8,8 +8,8 @@ namespace gxr
 {
 namespace
 {
-constexpr long long kCoarseBudget = 30'000;
-constexpr long long kFineBudget = 600'000;
+constexpr long long kCoarseBudget = 20'000;  // fast first paint (~few ms/tile)
+constexpr long long kFineBudget = 200'000;    // bounded refinement (~tens of ms/tile)
 constexpr int kCoarseSubBits = 1;
 constexpr int kFineSubBits = 4;
 constexpr size_t kResidencyTiles = 4096;

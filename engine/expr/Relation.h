@@ -67,11 +67,12 @@ public:
     void valueAndGrad(const Interval &x, const Interval &y, EvalScratch &s, Interval &val,
                       Interval &gx, Interval &gy) const;
 
-    // structure
-    [[nodiscard]] bool explicitY() const { return explicitY_; }
-    [[nodiscard]] const Program *explicitG() const { return explicitY_ ? &gProgram_ : nullptr; }
-    // normalized op for "y <opY> g(x)"
-    [[nodiscard]] CmpOp explicitOpY() const { return opY_; }
+    // structure: explicit-1D means the relation is `v <op> g(w)` where v is one
+    // axis variable (isolated, coefficient 1) and g depends only on the other.
+    [[nodiscard]] bool explicit1D() const { return explicit1D_; }
+    [[nodiscard]] bool explicitIsY() const { return explicitIsY_; } // y<op>g(x) vs x<op>g(y)
+    [[nodiscard]] const Program *explicitG() const { return explicit1D_ ? &g1d_ : nullptr; }
+    [[nodiscard]] CmpOp explicitOp() const { return op1d_; }
 
     [[nodiscard]] const std::string &source() const { return source_; }
 
@@ -80,9 +81,10 @@ private:
     bool single_{true};
     CmpOp op_{CmpOp::Less};
     Program f_;       // for SingleCompare: f(x,y); for GeneralBool: truth program
-    bool explicitY_{false};
-    Program gProgram_; // g(x) for explicit y relations
-    CmpOp opY_{CmpOp::Less};
+    bool explicit1D_{false};
+    bool explicitIsY_{true};
+    Program g1d_; // g(.) for explicit relations
+    CmpOp op1d_{CmpOp::Less};
 
     [[nodiscard]] Interval centeredValue(const Interval &x, const Interval &y, EvalScratch &s) const;
     [[nodiscard]] Sign classifyValueVsZero(const Interval &v) const;

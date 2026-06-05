@@ -8,11 +8,14 @@
 #include "app/Engine.h"
 #include "image/Png.h"
 #include "present/GlPresenter.h"
+#include "present/Overlay.h"
 
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <thread>
@@ -37,6 +40,41 @@ std::shared_ptr<const Relation> parseOrNull(const std::string &src)
 const char *kPresets[] = {
     "y > sin(2^x)", "x^2 + y^2 < 1", "y = x^2", "tan(x) > y", "sin(x*y) > 0", "y = x^3 - x",
 };
+
+std::string findFont()
+{
+#ifdef GXR_ASSET_DIR
+    const std::string a = std::string(GXR_ASSET_DIR) + "/font/FiraCode-Regular.ttf";
+    if (std::filesystem::exists(a)) return a;
+#endif
+    return "font/FiraCode-Regular.ttf";
+}
+
+// Draw the on-screen UI: a formula bar (editable), a status line, and a help bar.
+void drawUi(Overlay &ui, int fbW, int fbH, const std::string &formula, bool editing,
+           const std::string &edit, const std::string &status)
+{
+    if (!ui.ok()) return;
+    ui.begin();
+    const float w = static_cast<float>(fbW), h = static_cast<float>(fbH);
+
+    // top formula bar
+    ui.fillRect(0, 0, w, 40, {0.05f, 0.05f, 0.08f, 0.86f});
+    const std::string shown = editing ? ("f:  " + edit + "_") : ("f:  " + formula);
+    const std::array<float, 4> fcol = editing ? std::array<float, 4>{1.0f, 0.92f, 0.55f, 1.0f}
+                                              : std::array<float, 4>{0.88f, 0.94f, 1.0f, 1.0f};
+    ui.text(14, 9, shown, 1.0f, fcol);
+
+    // status (e.g. parse error)
+    if (!status.empty())
+        ui.text(14, 46, status, 0.82f, {1.0f, 0.5f, 0.5f, 1.0f});
+
+    // bottom help bar
+    ui.fillRect(0, h - 28, w, 28, {0.05f, 0.05f, 0.08f, 0.82f});
+    const std::string help =
+        "drag: pan    scroll: zoom    [Enter] edit formula    [1-6] presets    [R] reset    [Esc] quit";
+    ui.text(14, h - 23, help, 0.78f, {0.66f, 0.72f, 0.84f, 1.0f});
+}
 }
 
 // Render the live GL pipeline headlessly to a PNG (validates context, shaders,
@@ -75,9 +113,11 @@ int main(int argc, char **argv)
     constexpr int tilePx = 64;
     Engine engine(tilePx);
     GlPresenter presenter(tilePx);
+    Overlay overlay(findFont(), 22);
 
     auto [fbW, fbH] = window.getFramebufferSize();
     presenter.resize(fbW, fbH);
+    overlay.resize(fbW, fbH);
 
     Viewport vp{0.0, 0.0, 16.0 / fbW, fbW, fbH}; // initial span ~[-8,8]
     std::string formula = argc >= 2 ? argv[1] : kPresets[0];
@@ -92,13 +132,27 @@ int main(int argc, char **argv)
     double lastX = 0, lastY = 0;
     bool viewportDirty = false;
 
+    // formula editing state
+    bool editing = false;
+    std::string editBuffer;
+    std::string status;
+
     window.framebufferSizeEvent.setCallback([&](glfw::Window &, int w, int h) {
         fbW = std::max(1, w);
         fbH = std::max(1, h);
         presenter.resize(fbW, fbH);
+        overlay.resize(fbW, fbH);
         vp.pxW = fbW;
         vp.pxH = fbH;
         viewportDirty = true;
+    });
+
+    // typed characters feed the formula editor
+    window.charEvent.setCallback([&](glfw::Window &, unsigned int codepoint) {
+        if (editing && codepoint >= 32 && codepoint < 127)
+        {
+            editBuffer.push_back(static_cast<char>(codepoint));
+        }
     });
 
     window.mouseButtonEvent.setCallback(
@@ -135,16 +189,60 @@ int main(int argc, char **argv)
 
     window.keyEvent.setCallback(
         [&](glfw::Window &w, glfw::KeyCode key, int, glfw::KeyState action, glfw::ModifierKeyBit) {
-            if (action != glfw::KeyState::Press) return;
-            if (key == glfw::KeyCode::Escape) w.setShouldClose(true);
-            if (key == glfw::KeyCode::R)
+            using K = glfw::KeyCode;
+            const bool press = action == glfw::KeyState::Press;
+            const bool held = press || action == glfw::KeyState::Repeat;
+
+            if (editing)
+            {
+                if ((key == K::Backspace) && held && !editBuffer.empty()) editBuffer.pop_back();
+                if (!press) return;
+                if (key == K::Enter || key == K::KeyPadEnter)
+                {
+                    std::string err;
+                    auto parsed = Relation::parse(editBuffer, err);
+                    if (parsed)
+                    {
+                        formula = editBuffer;
+                        engine.setRelation(std::make_shared<const Relation>(std::move(*parsed)));
+                        editing = false;
+                        status.clear();
+                        std::printf("GraphXplorer2: %s\n", formula.c_str());
+                    }
+                    else
+                    {
+                        status = "parse error: " + err;
+                    }
+                }
+                else if (key == K::Escape)
+                {
+                    editing = false;
+                    status.clear();
+                }
+                return;
+            }
+
+            if (!press) return;
+            if (key == K::Escape)
+            {
+                w.setShouldClose(true);
+                return;
+            }
+            if (key == K::Enter || key == K::KeyPadEnter)
+            {
+                editing = true;
+                editBuffer = formula;
+                status.clear();
+                return;
+            }
+            if (key == K::R)
             {
                 vp.centerX = vp.centerY = 0.0;
                 vp.worldPerPixel = 16.0 / fbW;
                 viewportDirty = true;
+                return;
             }
             int idx = -1;
-            using K = glfw::KeyCode;
             if (key == K::One) idx = 0;
             else if (key == K::Two) idx = 1;
             else if (key == K::Three) idx = 2;
@@ -157,6 +255,7 @@ int main(int argc, char **argv)
                 if (auto r = parseOrNull(formula))
                 {
                     engine.setRelation(r);
+                    status.clear();
                     std::printf("GraphXplorer2: %s\n", formula.c_str());
                 }
             }
@@ -173,6 +272,7 @@ int main(int argc, char **argv)
         }
         engine.buildPresent(vp, present);
         presenter.renderFrame(vp, present, /*uploadBudget=*/12);
+        drawUi(overlay, fbW, fbH, formula, editing, editBuffer, status);
         window.swapBuffers();
     }
     return 0;
@@ -203,8 +303,10 @@ int runSelftest(const std::string &outPng, const std::string &formula)
     constexpr int tilePx = 64;
     Engine engine(tilePx);
     GlPresenter presenter(tilePx);
+    Overlay overlay(findFont(), 22);
     auto [fbW, fbH] = window.getFramebufferSize();
     presenter.resize(fbW, fbH);
+    overlay.resize(fbW, fbH);
     Viewport vp{0.0, 0.0, 16.0 / fbW, fbW, fbH};
 
     auto rel = parseOrNull(formula);
@@ -218,6 +320,7 @@ int runSelftest(const std::string &outPng, const std::string &formula)
         glfw::pollEvents();
         engine.buildPresent(vp, present);
         presenter.renderFrame(vp, present, /*uploadBudget=*/64);
+        drawUi(overlay, fbW, fbH, formula, /*editing=*/false, "", "");
         window.swapBuffers();
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }

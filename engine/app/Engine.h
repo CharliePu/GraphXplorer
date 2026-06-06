@@ -11,6 +11,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -28,6 +29,7 @@ struct PresentTile
     CoverageTilePtr cov;
     int level{0};
     bool fallback{false};
+    TileState state{TileState::Missing};
 };
 
 // One visible tile's address + solve state, for the debug overlay.
@@ -45,7 +47,10 @@ struct DebugTile
 class Engine
 {
 public:
-    explicit Engine(int tilePx = 64, int numWorkers = 0);
+    // `wake` (optional) is invoked from worker threads when a tile is published,
+    // so an event-driven main loop blocked on glfwWaitEvents wakes to recomposite.
+    // It is stored before any worker thread is spawned, so the read is race-free.
+    explicit Engine(int tilePx = 64, int numWorkers = 0, std::function<void()> wake = {});
     ~Engine();
 
     Engine(const Engine &) = delete;
@@ -87,6 +92,7 @@ private:
     std::vector<TileKey> visibleKeys(const Viewport &vp, uint64_t epoch) const;
 
     int tilePx_;
+    std::function<void()> wake_; // set in ctor before threads spawn
     TileStore store_;
 
     // mailbox (latest-wins): viewport + relation + epoch

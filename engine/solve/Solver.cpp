@@ -350,4 +350,55 @@ CoverageTile solveTile(const Relation &rel, const WorldRect &rect, const SolvePa
     TileSolver solver(rel, rect, params, scratch, cancel);
     return solver.run();
 }
+
+NodeClass classifyRegion(const Relation &rel, const WorldRect &rect, EvalScratch &scratch,
+                         const CancelToken &cancel, long long splitBudget)
+{
+    struct DBox
+    {
+        double x0, y0, x1, y1;
+    };
+    std::vector<DBox> stack;
+    stack.reserve(64);
+    stack.push_back({rect.x0, rect.y0, rect.x1, rect.y1});
+    // A boundary still uncertain below this size means the region is genuinely
+    // mixed (not uniform). Bounded depth -> cheap, and Mixed is always the safe
+    // answer, so a too-shallow floor only loses greediness, never soundness.
+    const double minW = rect.width() / 256.0;
+    const double minH = rect.height() / 256.0;
+    bool sawTrue = false, sawFalse = false;
+    long long processed = 0;
+
+    while (!stack.empty())
+    {
+        if (++processed > splitBudget) return NodeClass::Mixed; // unproven -> safe
+        if ((processed & 255) == 0 && cancel.cancelled()) return NodeClass::Mixed;
+        const DBox b = stack.back();
+        stack.pop_back();
+        const Sign s = rel.classifyBox(Interval{b.x0, b.x1}, Interval{b.y0, b.y1}, scratch);
+        if (s == Sign::AllTrue)
+        {
+            sawTrue = true;
+            if (sawFalse) return NodeClass::Mixed;
+        }
+        else if (s == Sign::AllFalse || s == Sign::Undefined)
+        {
+            sawFalse = true; // undefined renders nothing == false
+            if (sawTrue) return NodeClass::Mixed;
+        }
+        else // Uncertain: a boundary or discontinuity is inside this box
+        {
+            if ((b.x1 - b.x0) <= minW || (b.y1 - b.y0) <= minH) return NodeClass::Mixed;
+            const double mx = 0.5 * (b.x0 + b.x1);
+            const double my = 0.5 * (b.y0 + b.y1);
+            stack.push_back({b.x0, b.y0, mx, my});
+            stack.push_back({mx, b.y0, b.x1, my});
+            stack.push_back({b.x0, my, mx, b.y1});
+            stack.push_back({mx, my, b.x1, b.y1});
+        }
+    }
+    if (sawTrue && !sawFalse) return NodeClass::UniformTrue;
+    if (sawFalse && !sawTrue) return NodeClass::UniformFalse;
+    return NodeClass::Mixed;
+}
 }

@@ -7,6 +7,18 @@
 
 namespace gxr
 {
+// A quadtree node's proven classification. UniformTrue/UniformFalse are exact at
+// ANY zoom (greedy tiles); Mixed must be subdivided / rastered. A node is marked
+// Uniform ONLY when the interval solver PROVES it (never on a sample or a budget
+// bail), so a greedy tile never renders a wrong region.
+enum class NodeClass : uint8_t
+{
+    Unknown,
+    UniformTrue,
+    UniformFalse,
+    Mixed,
+};
+
 // A solved tile: per-pixel coverage in [0,1] (fraction of the pixel where the
 // relation holds), row-major, width*height. Immutable once published; the main
 // thread reads it through a shared_ptr<const CoverageTile>.

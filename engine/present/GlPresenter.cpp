@@ -13,12 +13,13 @@ namespace
 {
 const char *kTileVs = R"(#version 330 core
 layout(location=0) in vec2 uv;
-uniform vec4 ndcRect; // x0,y0,x1,y1
+uniform vec4 ndcRect; // x0,y0,x1,y1 on screen
+uniform vec4 uvRect;  // texture sub-rect to sample (u0,v0,u1,v1)
 out vec2 vUv;
 void main(){
     vec2 p = mix(ndcRect.xy, ndcRect.zw, uv);
     gl_Position = vec4(p, 0.0, 1.0);
-    vUv = uv;
+    vUv = mix(uvRect.xy, uvRect.zw, uv);
 })";
 
 const char *kTileFs = R"(#version 330 core
@@ -26,8 +27,10 @@ in vec2 vUv;
 out vec4 frag;
 uniform sampler2D tex;
 uniform vec3 fill;
+uniform int flatMode;     // 1 = greedy uniform tile (no texture sample)
+uniform float flatValue;  // coverage for a flat tile (0 or 1)
 void main(){
-    float c = texture(tex, vUv).r;
+    float c = (flatMode == 1) ? flatValue : texture(tex, vUv).r;
     if (c <= 0.0015) discard;
     frag = vec4(fill, c);
 })";
@@ -57,9 +60,21 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     tileProgram_ = compile(kTileVs, kTileFs);
     lineProgram_ = compile(kLineVs, kLineFs);
     uNdcRect_ = glGetUniformLocation(tileProgram_, "ndcRect");
+    uUvRect_ = glGetUniformLocation(tileProgram_, "uvRect");
     uTex_ = glGetUniformLocation(tileProgram_, "tex");
     uFill_ = glGetUniformLocation(tileProgram_, "fill");
+    uFlatMode_ = glGetUniformLocation(tileProgram_, "flatMode");
+    uFlatValue_ = glGetUniformLocation(tileProgram_, "flatValue");
     uLineColor_ = glGetUniformLocation(lineProgram_, "color");
+
+    // 1x1 white texture, bound for flat (textureless) draws so the sampler is valid.
+    glGenTextures(1, &dummyTex_);
+    glBindTexture(GL_TEXTURE_2D, dummyTex_);
+    const float one = 1.0f;
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, 1, 1, 0, GL_RED, GL_FLOAT, &one);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
     constexpr float quad[] = {0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1};
     glGenVertexArrays(1, &quadVao_);
@@ -84,6 +99,7 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
 GlPresenter::~GlPresenter()
 {
     for (auto &[k, t] : textures_) glDeleteTextures(1, &t.id);
+    glDeleteTextures(1, &dummyTex_);
     glDeleteProgram(tileProgram_);
     glDeleteProgram(lineProgram_);
     glDeleteVertexArrays(1, &quadVao_);
@@ -133,46 +149,38 @@ void GlPresenter::resize(int fbWidth, int fbHeight)
     fbH_ = std::max(1, fbHeight);
 }
 
-void GlPresenter::ensureTexture(const PresentTile &t, int &budget, uint64_t frame)
+unsigned int GlPresenter::ensureTexture(const CoverageTilePtr &cov, int &budget, uint64_t frame)
 {
-    if (!t.cov) return;
-    auto it = textures_.find(t.key);
-    if (it != textures_.end() && it->second.payload == t.cov->payloadId)
+    if (!cov || cov->alpha.empty()) return 0;
+    // Coverage tiles are immutable and uniquely identified by payloadId, so an
+    // uploaded payload never needs re-uploading; just refresh its LRU stamp.
+    const auto it = textures_.find(cov->payloadId);
+    if (it != textures_.end())
     {
-        it->second.lastFrame = frame; // already current
-        return;
+        it->second.lastFrame = frame;
+        return it->second.id;
     }
-    if (budget <= 0 && it == textures_.end()) return; // no texture yet, out of budget
-
-    const int w = t.cov->width, h = t.cov->height;
-    if (it == textures_.end())
-    {
-        TileTex tex;
-        glGenTextures(1, &tex.id);
-        glBindTexture(GL_TEXTURE_2D, tex.id);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, w, h, 0, GL_RED, GL_FLOAT, t.cov->alpha.data());
-        tex.payload = t.cov->payloadId;
-        tex.lastFrame = frame;
-        textures_.emplace(t.key, tex);
-        --budget;
-        return;
-    }
-    if (budget <= 0) return; // keep stale texture this frame
-    glBindTexture(GL_TEXTURE_2D, it->second.id);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_FLOAT, t.cov->alpha.data());
-    it->second.payload = t.cov->payloadId;
-    it->second.lastFrame = frame;
+    if (budget <= 0) return 0; // out of upload budget this frame -> caller falls back
+    TileTex tex;
+    glGenTextures(1, &tex.id);
+    glBindTexture(GL_TEXTURE_2D, tex.id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, cov->width, cov->height, 0, GL_RED, GL_FLOAT,
+                 cov->alpha.data());
+    tex.lastFrame = frame;
+    textures_.emplace(cov->payloadId, tex);
     --budget;
+    return tex.id;
 }
 
 void GlPresenter::evictTextures(uint64_t frame)
 {
     if (textures_.size() <= kMaxResidentTextures) return;
-    std::vector<std::pair<uint64_t, TileKey>> refs;
+    std::vector<std::pair<uint64_t, uint64_t>> refs; // (lastFrame, payloadId)
     refs.reserve(textures_.size());
     for (const auto &[k, t] : textures_) refs.emplace_back(t.lastFrame, k);
     std::sort(refs.begin(), refs.end(), [](auto &a, auto &b) { return a.first < b.first; });
@@ -235,7 +243,7 @@ void GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile>
         glDrawArrays(GL_LINES, static_cast<GLsizei>(gridCount), 4);
     }
 
-    // ---- coverage tiles ----
+    // ---- coverage tiles (greedy quadtree leaves) ----
     glUseProgram(tileProgram_);
     glBindVertexArray(quadVao_);
     glUniform1i(uTex_, 0);
@@ -245,14 +253,31 @@ void GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile>
     int budget = uploadBudget;
     for (const PresentTile &t : tiles)
     {
-        ensureTexture(t, budget, frame_);
-        auto it = textures_.find(t.key);
-        if (it == textures_.end()) continue; // no texture yet this frame
+        unsigned int texId = 0;
+        float u0 = 0, v0 = 0, u1 = 1, v1 = 1;
+        if (t.flat)
+        {
+            if (t.flatValue <= 0.0f) continue; // proven-empty: draw nothing
+            glUniform1i(uFlatMode_, 1);
+            glUniform1f(uFlatValue_, t.flatValue);
+            texId = dummyTex_;
+        }
+        else
+        {
+            texId = ensureTexture(t.cov, budget, frame_);
+            if (texId == 0) continue; // no texture available this frame
+            glUniform1i(uFlatMode_, 0);
+            u0 = t.u0;
+            v0 = t.v0;
+            u1 = t.u1;
+            v1 = t.v1;
+        }
         float nx0, ny0, nx1, ny1;
         worldToNdc(vp, fbW_, fbH_, t.rect.x0, t.rect.y0, nx0, ny0);
         worldToNdc(vp, fbW_, fbH_, t.rect.x1, t.rect.y1, nx1, ny1);
         glUniform4f(uNdcRect_, nx0, ny0, nx1, ny1);
-        glBindTexture(GL_TEXTURE_2D, it->second.id);
+        glUniform4f(uUvRect_, u0, v0, u1, v1);
+        glBindTexture(GL_TEXTURE_2D, texId);
         glDrawArrays(GL_TRIANGLES, 0, 6);
     }
 

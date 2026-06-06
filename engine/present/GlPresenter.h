@@ -30,12 +30,14 @@ private:
     struct TileTex
     {
         unsigned int id{0};
-        uint64_t payload{0};
         uint64_t lastFrame{0};
     };
 
     unsigned int compile(const char *vs, const char *fs);
-    void ensureTexture(const PresentTile &t, int &budget, uint64_t frame);
+    // Upload/refresh the texture for a coverage tile, keyed by its payload id so a
+    // fallback ancestor's texture is shared by every child quad sampling it.
+    // Returns the GL texture id, or 0 if not resident this frame (out of budget).
+    unsigned int ensureTexture(const CoverageTilePtr &cov, int &budget, uint64_t frame);
     void evictTextures(uint64_t frame);
 
     int tilePx_;
@@ -46,11 +48,12 @@ private:
     unsigned int lineProgram_{0};
     unsigned int quadVao_{0}, quadVbo_{0};
     unsigned int lineVao_{0}, lineVbo_{0};
+    unsigned int dummyTex_{0}; // 1x1, bound for flat (textureless) draws
 
-    int uNdcRect_{-1}, uTex_{-1}, uFill_{-1};
+    int uNdcRect_{-1}, uUvRect_{-1}, uTex_{-1}, uFill_{-1}, uFlatMode_{-1}, uFlatValue_{-1};
     int uLineColor_{-1};
 
-    std::unordered_map<TileKey, TileTex> textures_;
+    std::unordered_map<uint64_t, TileTex> textures_;
 };
 }
 

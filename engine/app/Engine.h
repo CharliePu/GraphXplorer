@@ -25,11 +25,14 @@ namespace gxr
 struct PresentTile
 {
     TileKey key;
-    WorldRect rect;
-    CoverageTilePtr cov;
+    WorldRect rect;     // the SCREEN footprint to draw (always the leaf's own rect)
+    CoverageTilePtr cov; // texture to sample (own tile, or an ancestor for fallback); null if flat
     int level{0};
     bool fallback{false};
     TileState state{TileState::Missing};
+    bool flat{false};       // greedy uniform tile: draw a solid fill, no texture
+    float flatValue{0.0f};  // 0 or 1
+    float u0{0.0f}, v0{0.0f}, u1{1.0f}, v1{1.0f}; // texture sub-rect (for ancestor fallback)
 };
 
 // One visible tile's address + solve state, for the debug overlay.
@@ -83,13 +86,18 @@ private:
         uint64_t epoch;
         std::shared_ptr<std::atomic<bool>> cancel;
         WorldRect rect;
+        int detailLevel{0};    // pixel-scale level; Mixed nodes at/below it get the fine raster
+        bool baseRaster{false}; // start-level Mixed node: render a coarse placeholder raster
     };
 
     void schedulerLoop();
     void workerLoop(int workerIndex);
     void enqueueVisible(const Viewport &vp, std::shared_ptr<const Relation> rel, uint64_t epoch,
                         const std::shared_ptr<std::atomic<bool>> &cancel);
-    std::vector<TileKey> visibleKeys(const Viewport &vp, uint64_t epoch) const;
+    void pushJobs(std::vector<Job> &jobs);
+    // greedy quadtree: coarsest level whose nodes cover the viewport in a few cells
+    [[nodiscard]] int chooseStartLevel(const Viewport &vp) const;
+    [[nodiscard]] std::vector<TileKey> startNodes(const Viewport &vp, uint64_t epoch) const;
 
     int tilePx_;
     std::function<void()> wake_; // set in ctor before threads spawn

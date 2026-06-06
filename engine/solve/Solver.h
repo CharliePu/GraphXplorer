@@ -30,6 +30,15 @@ struct CancelToken
 [[nodiscard]] CoverageTile solveTile(const Relation &rel, const WorldRect &rect,
                                      const SolveParams &params, EvalScratch &scratch,
                                      const CancelToken &cancel = {});
+
+// Classify a whole region for the greedy quadtree. Returns UniformTrue/UniformFalse
+// ONLY when the interval solver proves every sub-box has that one sign (sound at
+// any zoom); returns Mixed whenever a boundary, discontinuity, or unresolved box
+// is found, or the split budget is hit (safe default). Cheap: uniform regions
+// prove in a few boxes, boundaries early-out as soon as both signs appear.
+[[nodiscard]] NodeClass classifyRegion(const Relation &rel, const WorldRect &rect,
+                                       EvalScratch &scratch, const CancelToken &cancel = {},
+                                       long long splitBudget = 600);
 }
 
 #endif // GXR_SOLVE_SOLVER_H

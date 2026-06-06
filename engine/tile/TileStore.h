@@ -43,6 +43,17 @@ public:
     void setClass(const TileKey &key, NodeClass c);
     [[nodiscard]] NodeClass classOf(const TileKey &key) const;
 
+    // Claim a stuck node for (re)solving: atomically transition Coarse->Queued or
+    // Missing->Queued (returns true if this caller claimed it). Used to re-solve a
+    // tile that was an intermediate node at a finer zoom (Coarse, no raster) or was
+    // culled off-screen (Missing) and is now needed at the detail level. A node
+    // already Queued or Done is not re-claimed (so it enqueues exactly once).
+    bool claimForResolve(const TileKey &key);
+
+    // Reset a node to Missing (used when a worker culls an off-screen job, so it
+    // can be re-scheduled if it later returns to view).
+    void resetToMissing(const TileKey &key);
+
     void touch(const TileKey &key, uint64_t frame);
 
     // Evict least-recently-touched tiles down to `maxTiles`, preferring tiles

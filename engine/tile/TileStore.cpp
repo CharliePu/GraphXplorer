@@ -66,6 +66,26 @@ NodeClass TileStore::classOf(const TileKey &key) const
     return it->second->klass.load(std::memory_order_acquire);
 }
 
+bool TileStore::claimForResolve(const TileKey &key)
+{
+    std::shared_lock lock(mutex_);
+    const auto it = map_.find(key);
+    if (it == map_.end()) return false;
+    auto &st = it->second->state;
+    TileState expected = TileState::Coarse;
+    if (st.compare_exchange_strong(expected, TileState::Queued)) return true;
+    expected = TileState::Missing;
+    if (st.compare_exchange_strong(expected, TileState::Queued)) return true;
+    return false;
+}
+
+void TileStore::resetToMissing(const TileKey &key)
+{
+    std::shared_lock lock(mutex_);
+    const auto it = map_.find(key);
+    if (it != map_.end()) it->second->state.store(TileState::Missing, std::memory_order_release);
+}
+
 void TileStore::touch(const TileKey &key, uint64_t frame)
 {
     std::shared_lock lock(mutex_);

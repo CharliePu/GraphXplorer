@@ -172,18 +172,42 @@ void Engine::schedulerLoop()
         std::shared_ptr<const Relation> rel;
         std::shared_ptr<std::atomic<bool>> cancel;
         uint64_t epoch;
+        bool dirty;
+        std::vector<TileKey> resolve;
         {
             std::unique_lock lock(mailMutex_);
-            mailCv_.wait(lock, [this] { return mailDirty_ || stop_.load(); });
+            mailCv_.wait(lock, [this] { return mailDirty_ || resolvePending_ || stop_.load(); });
             if (stop_.load()) break;
             vp = mailViewport_;
             rel = mailRelation_;
             cancel = liveCancel_;
             epoch = epoch_.load();
+            dirty = mailDirty_;
             mailDirty_ = false;
+            resolve.swap(resolveReq_);
+            resolvePending_ = false;
         }
-        enqueueVisible(vp, rel, epoch, cancel);
+        if (dirty) enqueueVisible(vp, rel, epoch, cancel);
+        if (!resolve.empty() && rel) serviceResolve(resolve, vp, rel, epoch, cancel);
     }
+}
+
+void Engine::serviceResolve(const std::vector<TileKey> &keys, const Viewport &vp,
+                            const std::shared_ptr<const Relation> &rel, uint64_t epoch,
+                            const std::shared_ptr<std::atomic<bool>> &cancel)
+{
+    const int detail = vp.activeLevel();
+    const uint64_t gen = viewportGen_.load(std::memory_order_acquire);
+    std::vector<Job> jobs;
+    for (const TileKey &k : keys)
+    {
+        if (k.epoch != epoch) continue;        // drop stale-epoch requests
+        if (!store_.claimForResolve(k)) continue; // already Done / in flight
+        Job j{k, rel, epoch, cancel, tileRect(k, tilePx_), detail, false};
+        j.viewportGen = gen;
+        jobs.push_back(std::move(j));
+    }
+    pushJobs(jobs);
 }
 
 void Engine::workerLoop(int)
@@ -213,6 +237,7 @@ void Engine::workerLoop(int)
             && !keepForViewport(job.rect, *vpNow, kCullMargin))
         {
             culled = true;
+            store_.resetToMissing(job.key); // re-claimable if it returns to view
         }
 
         if (!culled && !ct.cancelled())
@@ -295,6 +320,7 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
     const uint64_t epoch = epoch_.load();
     const uint64_t frame = frameCounter_.fetch_add(1);
     const int detail = vp.activeLevel();
+    std::vector<TileKey> stuck; // detail tiles that need a (re)solve (see below)
 
     // Fallback for a node with no ready leaf: draw the node's OWN footprint sampling
     // the nearest ready ancestor's content (UV sub-rect) -> exactly one quad per
@@ -393,9 +419,15 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
             }
         }
 
-        // Not a ready leaf (Unknown, or detail-Mixed still solving). Prefer reusing
-        // finer cached children (zoom-out / refinement); else fall back to a coarser
-        // ancestor (zoom-in / pan). Either way every region is covered exactly once.
+        // Not a ready leaf (Unknown, or detail-Mixed still solving). If this is a
+        // detail-level tile, it needs its own raster -- request a (re)solve. This is
+        // what un-sticks an intermediate node reused at a coarser zoom (Coarse, no
+        // raster) or a culled node back in view (Missing): neither is re-enqueued by
+        // discovery or the cascade, so the compositor asks for it directly.
+        if (node.level <= detail) stuck.push_back(node);
+
+        // Prefer reusing finer cached children (zoom-out / refinement); else fall
+        // back to a coarser ancestor (zoom-in / pan). Every region is covered once.
         if (down > 0)
         {
             TileKey ch[4];
@@ -422,6 +454,18 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
 
     constexpr int kReuseDown = 4; // levels of finer-tile reuse on zoom-out
     for (const TileKey &s : startNodes(vp, epoch)) emit(s, kReuseDown);
+
+    // Hand any stuck detail tiles to the scheduler, which re-solves them with a
+    // consistent relation/epoch/cancel. The main thread does no solving itself.
+    if (!stuck.empty())
+    {
+        {
+            std::scoped_lock lock(mailMutex_);
+            resolveReq_.insert(resolveReq_.end(), stuck.begin(), stuck.end());
+            resolvePending_ = true;
+        }
+        mailCv_.notify_all();
+    }
     return out.size();
 }
 
@@ -460,7 +504,7 @@ void Engine::waitUntilQuiescent()
         bool idle = false;
         {
             std::scoped_lock lock(mailMutex_, jobMutex_);
-            idle = !mailDirty_ && jobs_.empty() && jobsInFlight_.load() == 0;
+            idle = !mailDirty_ && !resolvePending_ && jobs_.empty() && jobsInFlight_.load() == 0;
         }
         if (idle) return;
         std::unique_lock lock(jobMutex_);

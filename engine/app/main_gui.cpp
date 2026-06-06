@@ -372,7 +372,10 @@ int main(int argc, char **argv)
                 break;
             }
 
-        presenter.renderFrame(vp, present, /*uploadBudget=*/12);
+        // A solved tile is only "done" once its texture is uploaded; keep rendering
+        // (not final) until the per-frame upload budget has drained the backlog.
+        const int pendingUploads = presenter.renderFrame(vp, present, /*uploadBudget=*/64);
+        if (pendingUploads > 0) finalRender = false;
         drawUi(overlay, fbW, fbH, formula, editing, editBuffer, status);
         if (showDebug)
         {
@@ -427,7 +430,7 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
     {
         glfw::pollEvents();
         engine.buildPresent(vp, present);
-        presenter.renderFrame(vp, present, /*uploadBudget=*/64);
+        (void)presenter.renderFrame(vp, present, /*uploadBudget=*/64);
         drawUi(overlay, fbW, fbH, formula, /*editing=*/false, "", "");
         if (debug)
         {

@@ -23,8 +23,8 @@ public:
     GlPresenter &operator=(const GlPresenter &) = delete;
 
     void resize(int fbWidth, int fbHeight) override;
-    void renderFrame(const Viewport &vp, const std::vector<PresentTile> &tiles,
-                     int uploadBudget) override;
+    [[nodiscard]] int renderFrame(const Viewport &vp, const std::vector<PresentTile> &tiles,
+                                  int uploadBudget) override;
 
 private:
     struct TileTex

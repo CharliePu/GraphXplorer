@@ -172,7 +172,8 @@ int main(int argc, char **argv)
     }
 
     constexpr int tilePx = 64;
-    Engine engine(tilePx);
+    // Wake the (possibly blocked) main thread when a worker publishes a tile.
+    Engine engine(tilePx, 0, [] { glfw::postEmptyEvent(); });
     GlPresenter presenter(tilePx);
     Overlay overlay(findFont(), 22);
 
@@ -332,14 +333,23 @@ int main(int argc, char **argv)
     std::vector<DebugTile> dbgTiles;
     auto lastT = std::chrono::steady_clock::now();
     double fps = 0.0, frameMs = 0.0;
+    bool finalRender = false;
 
     while (!window.shouldClose())
     {
-        glfw::pollEvents();
+        // Event-driven: when the visible image is final, block at ~0% CPU until
+        // input arrives or a worker wakes us (postEmptyEvent). While tiles are
+        // still arriving, wake on each publish, with a short timeout as a backstop.
+        if (finalRender)
+            glfw::waitEvents();
+        else
+            glfw::waitEvents(0.05);
+
         if (viewportDirty)
         {
             engine.setViewport(vp);
             viewportDirty = false;
+            finalRender = false;
         }
 
         const auto now = std::chrono::steady_clock::now();
@@ -351,7 +361,17 @@ int main(int argc, char **argv)
             frameMs = frameMs * 0.9 + dt * 1000.0 * 0.1;
         }
 
-        engine.buildPresent(vp, present);
+        const size_t visible = engine.buildPresent(vp, present);
+        // The render is final iff every visible tile is shown at its own (not a
+        // fallback ancestor) full-detail Done state.
+        finalRender = (present.size() == visible);
+        for (const PresentTile &p : present)
+            if (p.fallback || p.state != TileState::Done)
+            {
+                finalRender = false;
+                break;
+            }
+
         presenter.renderFrame(vp, present, /*uploadBudget=*/12);
         drawUi(overlay, fbW, fbH, formula, editing, editBuffer, status);
         if (showDebug)

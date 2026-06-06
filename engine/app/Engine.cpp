@@ -17,7 +17,8 @@ constexpr size_t kResidencyTiles = 4096;
 std::atomic<uint64_t> g_payloadCounter{1};
 }
 
-Engine::Engine(int tilePx, int numWorkers) : tilePx_(tilePx)
+Engine::Engine(int tilePx, int numWorkers, std::function<void()> wake)
+    : tilePx_(tilePx), wake_(std::move(wake))
 {
     liveCancel_ = std::make_shared<std::atomic<bool>>(false);
     if (numWorkers <= 0)
@@ -163,6 +164,7 @@ void Engine::workerLoop(int)
             {
                 c.payloadId = g_payloadCounter.fetch_add(1);
                 store_.publish(job.key, std::make_shared<CoverageTile>(std::move(c)), false);
+                if (wake_) wake_(); // coarse ready -> wake the main thread
 
                 // fine pass -> converge
                 SolveParams fine{tilePx_, kFineSubBits, kFineBudget, true};
@@ -171,6 +173,7 @@ void Engine::workerLoop(int)
                 {
                     f.payloadId = g_payloadCounter.fetch_add(1);
                     store_.publish(job.key, std::make_shared<CoverageTile>(std::move(f)), true);
+                    if (wake_) wake_(); // fine ready -> wake the main thread
                 }
             }
         }
@@ -194,10 +197,11 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
     for (const TileKey &k : keys)
     {
         store_.touch(k, frame);
+        const TileState st = store_.state(k);
         CoverageTilePtr cov = store_.snapshot(k);
         if (cov)
         {
-            out.push_back(PresentTile{k, tileRect(k, tilePx_), std::move(cov), k.level, false});
+            out.push_back(PresentTile{k, tileRect(k, tilePx_), std::move(cov), k.level, false, st});
             continue;
         }
         // fall back to a coarser ancestor in the same epoch (upscaled on screen)

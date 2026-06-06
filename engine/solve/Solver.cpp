@@ -275,8 +275,11 @@ double columnPixelCoverage(const std::vector<double> &g, const std::vector<doubl
 // 2-D area to a per-line quadrature of g. Exact for smooth g; for sub-pixel-
 // oscillating g it converges to the true Lebesgue measure (unbiased) -> stable
 // smooth gray. Far cheaper than 2-D subdivision and free of the half-floor bias.
-CoverageTile solveExplicit1D(const Relation &rel, const WorldRect &rect, const SolveParams &params,
-                             EvalScratch &scratch, const CancelToken &cancel)
+// Returns false if a sample was non-finite (overflow / asymptote -> the fast point
+// sampler can't be trusted here); the caller then falls back to the sound interval
+// subdivision, which correctly distinguishes "bounded but unknown" from "undefined".
+bool solveExplicit1D(const Relation &rel, const WorldRect &rect, const SolveParams &params,
+                     EvalScratch &scratch, const CancelToken &cancel, CoverageTile &tile)
 {
     const int T = params.tilePx;
     const Program &G = *rel.explicitG();
@@ -295,7 +298,6 @@ CoverageTile solveExplicit1D(const Relation &rel, const WorldRect &rect, const S
     const double vOrigin = yExplicit ? rect.y0 : rect.x0;
     const double vStepPix = yExplicit ? wppY : wppX;
 
-    CoverageTile tile;
     tile.width = tile.height = T;
     tile.subBits = params.subBits;
     tile.converged = true;
@@ -311,7 +313,7 @@ CoverageTile solveExplicit1D(const Relation &rel, const WorldRect &rect, const S
         if ((o & 31) == 0 && cancel.cancelled())
         {
             tile.converged = false;
-            break;
+            return true; // cancelled (not unreliable): caller handles the cancel token
         }
         const double wa = wOrigin + o * wStepPix;
         g.clear();
@@ -320,7 +322,11 @@ CoverageTile solveExplicit1D(const Relation &rel, const WorldRect &rect, const S
             const double w = wa + (k + 0.5) * wStepPix / S;
             const double val = yExplicit ? G.evalPoint(w, 0.0, scratch.sd)
                                          : G.evalPoint(0.0, w, scratch.sd);
-            if (std::isfinite(val)) g.push_back(val); // undefined -> 0, still in S
+            // A non-finite sample means g(x) overflowed or hit an asymptote here -- the
+            // point sampler can't measure this column. Bail so solveTile uses the sound
+            // interval subdivision instead (which bounds e.g. sin by [-1,1] correctly).
+            if (!std::isfinite(val)) return false;
+            g.push_back(val);
         }
         std::sort(g.begin(), g.end());
         prefix.assign(g.size() + 1, 0.0);
@@ -335,17 +341,20 @@ CoverageTile solveExplicit1D(const Relation &rel, const WorldRect &rect, const S
             tile.alpha[idx] = static_cast<float>(cov);
         }
     }
-    return tile;
+    return true;
 }
 }
 
 CoverageTile solveTile(const Relation &rel, const WorldRect &rect, const SolveParams &params,
                        EvalScratch &scratch, const CancelToken &cancel)
 {
-    // Fast, exact-measure path for explicit-1D inequalities (v <op> g(w)).
+    // Fast, exact-measure path for explicit-1D inequalities (v <op> g(w)). Falls
+    // back to the sound subdivision when g(x) is non-finite (overflow/asymptote),
+    // which the point sampler can't measure but interval arithmetic bounds correctly.
     if (params.analytic && rel.explicit1D() && !rel.isEquality())
     {
-        return solveExplicit1D(rel, rect, params, scratch, cancel);
+        CoverageTile t;
+        if (solveExplicit1D(rel, rect, params, scratch, cancel, t)) return t;
     }
     TileSolver solver(rel, rect, params, scratch, cancel);
     return solver.run();

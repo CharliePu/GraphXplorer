@@ -30,6 +30,13 @@ struct PresentTile
     bool fallback{false};
 };
 
+// One visible tile's address + solve state, for the debug overlay.
+struct DebugTile
+{
+    WorldRect rect;
+    TileState state{TileState::Missing};
+};
+
 // Async render engine. The main thread only calls setRelation/setViewport
 // (cheap, non-blocking) and buildPresent (O(visible tiles), reads cached
 // snapshots only). All solving happens on worker threads driven by a scheduler
@@ -51,6 +58,9 @@ public:
     // main thread: select visible tiles for vp from cache. O(visible tiles).
     // Returns the number of store snapshot lookups performed (== visible count).
     size_t buildPresent(const Viewport &vp, std::vector<PresentTile> &out);
+
+    // main thread: visible tiles with their solve state, for the debug overlay.
+    void debugTiles(const Viewport &vp, std::vector<DebugTile> &out);
 
     // diagnostics / proofs
     [[nodiscard]] size_t storeSize() const { return store_.size(); }

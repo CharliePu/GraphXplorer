@@ -202,6 +202,25 @@ void Overlay::fillRect(float x, float y, float w, float h, std::array<float, 4> 
     drawVerts(verts, 6, 0, color);
 }
 
+void Overlay::rectOutline(float x, float y, float w, float h, float t, std::array<float, 4> color)
+{
+    if (!ok_) return;
+    std::vector<float> verts;
+    verts.reserve(24 * 4);
+    auto pushRect = [&](float rx, float ry, float rw, float rh) {
+        float a, b, c, d;
+        toNdc(rx, ry, a, b);
+        toNdc(rx + rw, ry + rh, c, d);
+        const float q[] = {a, b, 0, 0, c, b, 0, 0, c, d, 0, 0, a, b, 0, 0, c, d, 0, 0, a, d, 0, 0};
+        verts.insert(verts.end(), std::begin(q), std::end(q));
+    };
+    pushRect(x, y, w, t);         // top
+    pushRect(x, y + h - t, w, t); // bottom
+    pushRect(x, y, t, h);         // left
+    pushRect(x + w - t, y, t, h); // right
+    drawVerts(verts.data(), static_cast<int>(verts.size() / 4), 0, color);
+}
+
 void Overlay::text(float x, float y, const std::string &s, float scale, std::array<float, 4> color)
 {
     if (!ok_) return;

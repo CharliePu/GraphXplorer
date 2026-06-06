@@ -26,6 +26,7 @@ public:
     void begin(); // sets program + blend state for a batch of overlay draws
 
     void fillRect(float x, float y, float w, float h, std::array<float, 4> color);
+    void rectOutline(float x, float y, float w, float h, float thickness, std::array<float, 4> color);
     void text(float x, float y, const std::string &s, float scale, std::array<float, 4> color);
 
     [[nodiscard]] float textWidth(const std::string &s, float scale) const;

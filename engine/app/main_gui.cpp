@@ -72,14 +72,74 @@ void drawUi(Overlay &ui, int fbW, int fbH, const std::string &formula, bool edit
     // bottom help bar
     ui.fillRect(0, h - 28, w, 28, {0.05f, 0.05f, 0.08f, 0.82f});
     const std::string help =
-        "drag: pan    scroll: zoom    [Enter] edit formula    [1-6] presets    [R] reset    [Esc] quit";
+        "drag pan   scroll zoom   [Enter] edit   [1-6] presets   [D] debug   [R] reset   [Esc] quit";
     ui.text(14, h - 23, help, 0.78f, {0.66f, 0.72f, 0.84f, 1.0f});
+}
+
+// Debug overlay: visible tiles outlined and coloured by solve state, plus an
+// info panel (fps, level, viewport, tile/store/job counts) and a legend.
+void drawDebug(Overlay &ui, const Viewport &vp, int fbW, int fbH,
+              const std::vector<DebugTile> &tiles, size_t storeSize, unsigned long long jobs,
+              double fps, double frameMs)
+{
+    if (!ui.ok()) return;
+    ui.begin();
+    const double cx = vp.centerX, cy = vp.centerY, wpp = vp.worldPerPixel;
+    auto sx = [&](double wx) { return (wx - cx) / wpp + fbW * 0.5; };
+    auto syTop = [&](double wy) { return fbH * 0.5 - (wy - cy) / wpp; };
+
+    for (const DebugTile &t : tiles)
+    {
+        const float x = static_cast<float>(sx(t.rect.x0));
+        const float top = static_cast<float>(syTop(t.rect.y1));
+        const float tw = static_cast<float>((t.rect.x1 - t.rect.x0) / wpp);
+        const float th = static_cast<float>((t.rect.y1 - t.rect.y0) / wpp);
+        std::array<float, 4> c;
+        switch (t.state)
+        {
+        case TileState::Done: c = {0.25f, 0.9f, 0.45f, 0.5f}; break;
+        case TileState::Coarse: c = {0.98f, 0.82f, 0.2f, 0.6f}; break;
+        case TileState::Queued: c = {1.0f, 0.5f, 0.15f, 0.65f}; break;
+        default: c = {1.0f, 0.3f, 0.3f, 0.55f}; break;
+        }
+        ui.rectOutline(x, top, tw, th, 1.0f, c);
+    }
+
+    // info panel (top-right)
+    const float pw = 320, ph = 184, px = fbW - pw - 10, py = 50;
+    ui.fillRect(px, py, pw, ph, {0.04f, 0.04f, 0.06f, 0.88f});
+    const std::array<float, 4> tc{0.85f, 0.9f, 1.0f, 1.0f};
+    float ty = py + 8;
+    char buf[160];
+    auto line = [&](const char *s) {
+        ui.text(px + 12, ty, s, 0.8f, tc);
+        ty += ui.lineHeight(0.8f) + 2;
+    };
+    std::snprintf(buf, sizeof buf, "fps %.0f    frame %.1f ms", fps, frameMs);
+    line(buf);
+    std::snprintf(buf, sizeof buf, "level %d    wpp %.4g", vp.activeLevel(), wpp);
+    line(buf);
+    std::snprintf(buf, sizeof buf, "center  %.4g , %.4g", cx, cy);
+    line(buf);
+    std::snprintf(buf, sizeof buf, "visible %zu    store %zu", tiles.size(), storeSize);
+    line(buf);
+    std::snprintf(buf, sizeof buf, "jobs done %llu", jobs);
+    line(buf);
+    ty += 6;
+    auto legend = [&](std::array<float, 4> col, const char *lbl) {
+        ui.fillRect(px + 12, ty + 2, 12, 12, col);
+        ui.text(px + 30, ty, lbl, 0.78f, tc);
+        ty += 19;
+    };
+    legend({0.25f, 0.9f, 0.45f, 1}, "done (converged)");
+    legend({0.98f, 0.82f, 0.2f, 1}, "refining (coarse)");
+    legend({1.0f, 0.5f, 0.15f, 1}, "queued");
 }
 }
 
 // Render the live GL pipeline headlessly to a PNG (validates context, shaders,
 // tile-texture upload and compositing end-to-end). Usage: --selftest out.png [formula]
-int runSelftest(const std::string &outPng, const std::string &formula);
+int runSelftest(const std::string &outPng, const std::string &formula, bool debug);
 
 int main(int argc, char **argv)
 {
@@ -87,7 +147,8 @@ int main(int argc, char **argv)
     {
         const std::string out = argc >= 3 ? argv[2] : "selftest.png";
         const std::string f = argc >= 4 ? argv[3] : kPresets[0];
-        return runSelftest(out, f);
+        const bool dbg = argc >= 5 && std::string(argv[4]) == "debug";
+        return runSelftest(out, f, dbg);
     }
 
     auto glfwLib = glfw::init();
@@ -136,6 +197,7 @@ int main(int argc, char **argv)
     bool editing = false;
     std::string editBuffer;
     std::string status;
+    bool showDebug = false;
 
     window.framebufferSizeEvent.setCallback([&](glfw::Window &, int w, int h) {
         fbW = std::max(1, w);
@@ -242,6 +304,11 @@ int main(int argc, char **argv)
                 viewportDirty = true;
                 return;
             }
+            if (key == K::D)
+            {
+                showDebug = !showDebug;
+                return;
+            }
             int idx = -1;
             if (key == K::One) idx = 0;
             else if (key == K::Two) idx = 1;
@@ -262,6 +329,10 @@ int main(int argc, char **argv)
         });
 
     std::vector<PresentTile> present;
+    std::vector<DebugTile> dbgTiles;
+    auto lastT = std::chrono::steady_clock::now();
+    double fps = 0.0, frameMs = 0.0;
+
     while (!window.shouldClose())
     {
         glfw::pollEvents();
@@ -270,15 +341,31 @@ int main(int argc, char **argv)
             engine.setViewport(vp);
             viewportDirty = false;
         }
+
+        const auto now = std::chrono::steady_clock::now();
+        const double dt = std::chrono::duration<double>(now - lastT).count();
+        lastT = now;
+        if (dt > 0.0)
+        {
+            fps = fps * 0.9 + (1.0 / dt) * 0.1;
+            frameMs = frameMs * 0.9 + dt * 1000.0 * 0.1;
+        }
+
         engine.buildPresent(vp, present);
         presenter.renderFrame(vp, present, /*uploadBudget=*/12);
         drawUi(overlay, fbW, fbH, formula, editing, editBuffer, status);
+        if (showDebug)
+        {
+            engine.debugTiles(vp, dbgTiles);
+            drawDebug(overlay, vp, fbW, fbH, dbgTiles, engine.storeSize(), engine.jobsCompleted(),
+                      fps, frameMs);
+        }
         window.swapBuffers();
     }
     return 0;
 }
 
-int runSelftest(const std::string &outPng, const std::string &formula)
+int runSelftest(const std::string &outPng, const std::string &formula, bool debug)
 {
     auto glfwLib = glfw::init();
     glfw::WindowHints{
@@ -315,12 +402,19 @@ int runSelftest(const std::string &outPng, const std::string &formula)
     engine.setViewport(vp);
 
     std::vector<PresentTile> present;
+    std::vector<DebugTile> dbgTiles;
     for (int f = 0; f < 200; ++f) // let workers solve coarse->fine
     {
         glfw::pollEvents();
         engine.buildPresent(vp, present);
         presenter.renderFrame(vp, present, /*uploadBudget=*/64);
         drawUi(overlay, fbW, fbH, formula, /*editing=*/false, "", "");
+        if (debug)
+        {
+            engine.debugTiles(vp, dbgTiles);
+            drawDebug(overlay, vp, fbW, fbH, dbgTiles, engine.storeSize(), engine.jobsCompleted(),
+                      120.0, 8.0);
+        }
         window.swapBuffers();
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }

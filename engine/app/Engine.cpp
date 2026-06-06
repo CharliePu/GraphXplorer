@@ -218,6 +218,18 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
     return keys.size();
 }
 
+void Engine::debugTiles(const Viewport &vp, std::vector<DebugTile> &out)
+{
+    out.clear();
+    const uint64_t epoch = epoch_.load();
+    const std::vector<TileKey> keys = visibleKeys(vp, epoch);
+    out.reserve(keys.size());
+    for (const TileKey &k : keys)
+    {
+        out.push_back(DebugTile{tileRect(k, tilePx_), store_.state(k)});
+    }
+}
+
 void Engine::waitUntilQuiescent()
 {
     for (;;)

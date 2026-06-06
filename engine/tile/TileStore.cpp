@@ -51,6 +51,21 @@ void TileStore::publish(const TileKey &key, CoverageTilePtr cov, bool done)
     it->second->state.store(done ? TileState::Done : TileState::Coarse, std::memory_order_release);
 }
 
+void TileStore::setClass(const TileKey &key, NodeClass c)
+{
+    std::shared_lock lock(mutex_);
+    const auto it = map_.find(key);
+    if (it != map_.end()) it->second->klass.store(c, std::memory_order_release);
+}
+
+NodeClass TileStore::classOf(const TileKey &key) const
+{
+    std::shared_lock lock(mutex_);
+    const auto it = map_.find(key);
+    if (it == map_.end()) return NodeClass::Unknown;
+    return it->second->klass.load(std::memory_order_acquire);
+}
+
 void TileStore::touch(const TileKey &key, uint64_t frame)
 {
     std::shared_lock lock(mutex_);

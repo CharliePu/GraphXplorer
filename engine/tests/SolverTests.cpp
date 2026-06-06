@@ -133,6 +133,34 @@ TEST_CASE("OBJECTIVE 1: oscillation coverage equals the analytic Lebesgue measur
     }
 }
 
+TEST_CASE("classifyRegion proves uniform regions and detects boundaries (greedy)", "[solver][greedy]")
+{
+    EvalScratch s;
+    auto cls = [&](const std::string &src, WorldRect r) {
+        std::string err;
+        auto rel = Relation::parse(src, err);
+        REQUIRE(rel.has_value());
+        return classifyRegion(*rel, r, s);
+    };
+
+    // always-false collapses to one uniform tile over any region
+    REQUIRE(cls("x > x + 1", WorldRect{-1000, -1000, 1000, 1000}) == NodeClass::UniformFalse);
+
+    // disk: interior proven true, exterior proven false, straddle is mixed
+    REQUIRE(cls("x^2 + y^2 < 1", WorldRect{-0.1, -0.1, 0.1, 0.1}) == NodeClass::UniformTrue);
+    REQUIRE(cls("x^2 + y^2 < 1", WorldRect{3, 3, 4, 4}) == NodeClass::UniformFalse);
+    REQUIRE(cls("x^2 + y^2 < 1", WorldRect{0.5, 0.5, 0.95, 0.95}) == NodeClass::Mixed);
+
+    // half-plane
+    REQUIRE(cls("y > x", WorldRect{0, 5, 1, 6}) == NodeClass::UniformTrue);
+    REQUIRE(cls("y > x", WorldRect{5, 0, 6, 1}) == NodeClass::UniformFalse);
+    REQUIRE(cls("y > x", WorldRect{0, 0, 2, 2}) == NodeClass::Mixed);
+
+    // equality off the curve is uniformly empty; on the curve is mixed
+    REQUIRE(cls("y = x^2", WorldRect{3, 0, 4, 1}) == NodeClass::UniformFalse);
+    REQUIRE(cls("y = x^2", WorldRect{-0.5, -0.5, 0.5, 0.5}) == NodeClass::Mixed);
+}
+
 TEST_CASE("explicit-x 1-D path agrees with the general 2-D solver", "[solver]")
 {
     Relation r = must("x > sin(y)"); // explicit in x: sideways sine

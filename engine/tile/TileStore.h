@@ -39,6 +39,10 @@ public:
     // Worker publishes a refined snapshot. The slot must already exist.
     void publish(const TileKey &key, CoverageTilePtr cov, bool done);
 
+    // Greedy quadtree node classification (proven uniform vs mixed).
+    void setClass(const TileKey &key, NodeClass c);
+    [[nodiscard]] NodeClass classOf(const TileKey &key) const;
+
     void touch(const TileKey &key, uint64_t frame);
 
     // Evict least-recently-touched tiles down to `maxTiles`, preferring tiles
@@ -52,6 +56,7 @@ private:
     {
         std::atomic<CoverageTilePtr> snap{nullptr};
         std::atomic<TileState> state{TileState::Missing};
+        std::atomic<NodeClass> klass{NodeClass::Unknown};
         std::atomic<uint64_t> lastTouched{0};
     };
 

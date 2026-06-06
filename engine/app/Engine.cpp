@@ -12,9 +12,21 @@ constexpr long long kCoarseBudget = 20'000;  // fast first paint (~few ms/tile)
 constexpr long long kFineBudget = 200'000;    // bounded refinement (~tens of ms/tile)
 constexpr int kCoarseSubBits = 1;
 constexpr int kFineSubBits = 4;
-constexpr size_t kResidencyTiles = 4096;
+constexpr size_t kResidencyTiles = 8192;
+constexpr int kMaxAncestorUp = 16; // fallback search depth for a covering ancestor
 
 std::atomic<uint64_t> g_payloadCounter{1};
+
+TileKey parentKey(const TileKey &k) { return {k.epoch, k.level + 1, k.i >> 1, k.j >> 1}; }
+
+void childKeys(const TileKey &k, TileKey out[4])
+{
+    const int cl = k.level - 1;
+    out[0] = {k.epoch, cl, k.i * 2, k.j * 2};
+    out[1] = {k.epoch, cl, k.i * 2 + 1, k.j * 2};
+    out[2] = {k.epoch, cl, k.i * 2, k.j * 2 + 1};
+    out[3] = {k.epoch, cl, k.i * 2 + 1, k.j * 2 + 1};
+}
 }
 
 Engine::Engine(int tilePx, int numWorkers, std::function<void()> wake)
@@ -68,52 +80,65 @@ void Engine::setViewport(const Viewport &vp)
     mailCv_.notify_all();
 }
 
-std::vector<TileKey> Engine::visibleKeys(const Viewport &vp, uint64_t epoch) const
+int Engine::chooseStartLevel(const Viewport &vp) const
 {
-    const int level = vp.activeLevel();
+    const int detail = vp.activeLevel();
+    const WorldRect r = vp.worldBounds();
+    int level = detail;
+    for (int extra = 0; extra < 24; ++extra)
+    {
+        const double span = tileSpanWorld(level, tilePx_);
+        const int64_t nx = floorDiv(r.x1, span) - floorDiv(r.x0, span) + 1;
+        const int64_t ny = floorDiv(r.y1, span) - floorDiv(r.y0, span) + 1;
+        if (nx <= 2 && ny <= 2) break; // ~2x2 coarse roots cover the viewport
+        ++level;
+    }
+    return level;
+}
+
+std::vector<TileKey> Engine::startNodes(const Viewport &vp, uint64_t epoch) const
+{
+    const int level = chooseStartLevel(vp);
     const double span = tileSpanWorld(level, tilePx_);
     const WorldRect r = vp.worldBounds();
     const int64_t i0 = floorDiv(r.x0, span), i1 = floorDiv(r.x1, span);
     const int64_t j0 = floorDiv(r.y0, span), j1 = floorDiv(r.y1, span);
-
     std::vector<TileKey> keys;
     keys.reserve(static_cast<size_t>((i1 - i0 + 1) * (j1 - j0 + 1)));
     for (int64_t j = j0; j <= j1; ++j)
         for (int64_t i = i0; i <= i1; ++i)
             keys.push_back(TileKey{epoch, level, i, j});
-
-    // center-out ordering so the screen paints from the focus outward
-    const double cx = 0.5 * (i0 + i1), cy = 0.5 * (j0 + j1);
-    std::sort(keys.begin(), keys.end(), [cx, cy](const TileKey &a, const TileKey &b) {
-        const double da = (a.i - cx) * (a.i - cx) + (a.j - cy) * (a.j - cy);
-        const double db = (b.i - cx) * (b.i - cx) + (b.j - cy) * (b.j - cy);
-        return da < db;
-    });
     return keys;
+}
+
+void Engine::pushJobs(std::vector<Job> &jobs)
+{
+    if (jobs.empty()) return;
+    {
+        std::scoped_lock lock(jobMutex_);
+        for (auto &j : jobs) jobs_.push_back(std::move(j));
+    }
+    jobCv_.notify_all();
 }
 
 void Engine::enqueueVisible(const Viewport &vp, std::shared_ptr<const Relation> rel, uint64_t epoch,
                             const std::shared_ptr<std::atomic<bool>> &cancel)
 {
     if (!rel) return;
-    const std::vector<TileKey> keys = visibleKeys(vp, epoch);
+    const int detail = vp.activeLevel();
+    const std::vector<TileKey> keys = startNodes(vp, epoch);
     std::vector<Job> toEnqueue;
     toEnqueue.reserve(keys.size());
     for (const TileKey &k : keys)
     {
         if (store_.ensureQueued(k) == TileState::Missing)
         {
-            toEnqueue.push_back(Job{k, rel, epoch, cancel, tileRect(k, tilePx_)});
+            // start nodes are above the detail level; if Mixed they render a
+            // coarse placeholder raster (the no-holes base layer) and spawn children.
+            toEnqueue.push_back(Job{k, rel, epoch, cancel, tileRect(k, tilePx_), detail, true});
         }
     }
-    if (!toEnqueue.empty())
-    {
-        {
-            std::scoped_lock lock(jobMutex_);
-            for (auto &j : toEnqueue) jobs_.push_back(std::move(j));
-        }
-        jobCv_.notify_all();
-    }
+    pushJobs(toEnqueue);
     store_.evictToBudget(kResidencyTiles, epoch);
 }
 
@@ -157,23 +182,57 @@ void Engine::workerLoop(int)
         const CancelToken ct{job.cancel.get()};
         if (!ct.cancelled())
         {
-            // coarse pass -> publish immediately for fast first paint
-            SolveParams coarse{tilePx_, kCoarseSubBits, kCoarseBudget, true};
-            CoverageTile c = solveTile(*job.rel, job.rect, coarse, scratch, ct);
+            // 1) Greedy classification of the whole node (sound: uniform only if proven).
+            const NodeClass nc = classifyRegion(*job.rel, job.rect, scratch, ct);
             if (!ct.cancelled())
             {
-                c.payloadId = g_payloadCounter.fetch_add(1);
-                store_.publish(job.key, std::make_shared<CoverageTile>(std::move(c)), false);
-                if (wake_) wake_(); // coarse ready -> wake the main thread
+                store_.setClass(job.key, nc);
+                const bool atDetail = job.key.level <= job.detailLevel;
 
-                // fine pass -> converge
-                SolveParams fine{tilePx_, kFineSubBits, kFineBudget, true};
-                CoverageTile f = solveTile(*job.rel, job.rect, fine, scratch, ct);
-                if (!ct.cancelled())
+                if (nc == NodeClass::UniformTrue || nc == NodeClass::UniformFalse)
                 {
-                    f.payloadId = g_payloadCounter.fetch_add(1);
-                    store_.publish(job.key, std::make_shared<CoverageTile>(std::move(f)), true);
-                    if (wake_) wake_(); // fine ready -> wake the main thread
+                    // greedy leaf: no raster; the flat is drawn from the classification.
+                    store_.publish(job.key, nullptr, true);
+                    if (wake_) wake_();
+                }
+                else // Mixed: needs a raster (fine at detail level) and, if coarse, children.
+                {
+                    const bool wantRaster = atDetail || job.baseRaster;
+                    if (wantRaster)
+                    {
+                        const int sub = atDetail ? kFineSubBits : kCoarseSubBits;
+                        const long long budget = atDetail ? kFineBudget : kCoarseBudget;
+                        SolveParams p{tilePx_, sub, budget, true};
+                        CoverageTile c = solveTile(*job.rel, job.rect, p, scratch, ct);
+                        if (!ct.cancelled())
+                        {
+                            c.payloadId = g_payloadCounter.fetch_add(1);
+                            store_.publish(job.key, std::make_shared<CoverageTile>(std::move(c)),
+                                           /*done=*/atDetail);
+                            if (wake_) wake_();
+                        }
+                    }
+                    else
+                    {
+                        // intermediate Mixed node: classified, no raster; just descend.
+                        store_.publish(job.key, nullptr, false);
+                    }
+
+                    if (!atDetail && !ct.cancelled())
+                    {
+                        TileKey ch[4];
+                        childKeys(job.key, ch);
+                        std::vector<Job> kids;
+                        for (const TileKey &c : ch)
+                        {
+                            if (store_.ensureQueued(c) == TileState::Missing)
+                            {
+                                kids.push_back(Job{c, job.rel, job.epoch, job.cancel,
+                                                   tileRect(c, tilePx_), job.detailLevel, false});
+                            }
+                        }
+                        pushJobs(kids);
+                    }
                 }
             }
         }
@@ -192,46 +251,137 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
     out.clear();
     const uint64_t epoch = epoch_.load();
     const uint64_t frame = frameCounter_.fetch_add(1);
-    const std::vector<TileKey> keys = visibleKeys(vp, epoch);
+    const int detail = vp.activeLevel();
 
-    for (const TileKey &k : keys)
-    {
-        store_.touch(k, frame);
-        const TileState st = store_.state(k);
-        CoverageTilePtr cov = store_.snapshot(k);
-        if (cov)
+    // Fallback for a node with no ready leaf: draw the node's OWN footprint sampling
+    // the nearest ready ancestor's content (UV sub-rect) -> exactly one quad per
+    // region, no overlap, no holes. A proven-uniform ancestor is exact (final).
+    auto emitFallback = [&](const TileKey &node) {
+        TileKey anc = node;
+        for (int up = 1; up <= kMaxAncestorUp; ++up)
         {
-            out.push_back(PresentTile{k, tileRect(k, tilePx_), std::move(cov), k.level, false, st});
-            continue;
-        }
-        // fall back to a coarser ancestor in the same epoch (upscaled on screen)
-        bool found = false;
-        TileKey anc = k;
-        for (int up = 0; up < 6 && !found; ++up)
-        {
-            anc = TileKey{epoch, anc.level + 1, anc.i >> 1, anc.j >> 1};
+            anc = parentKey(anc);
+            store_.touch(anc, frame); // keep fallback ancestors resident
+            const NodeClass ac = store_.classOf(anc);
+            if (ac == NodeClass::UniformTrue)
+            {
+                PresentTile p{};
+                p.key = node;
+                p.rect = tileRect(node, tilePx_);
+                p.level = node.level;
+                p.state = TileState::Done; // a uniform ancestor is exact -> final
+                p.flat = true;
+                p.flatValue = 1.0f;
+                out.push_back(std::move(p));
+                return;
+            }
+            if (ac == NodeClass::UniformFalse) return; // proven empty -> draw nothing (final)
             CoverageTilePtr acov = store_.snapshot(anc);
             if (acov)
             {
-                out.push_back(PresentTile{anc, tileRect(anc, tilePx_), std::move(acov), anc.level, true});
-                found = true;
+                const int64_t span = int64_t{1} << up;
+                const int64_t li = node.i - (anc.i << up);
+                const int64_t lj = node.j - (anc.j << up);
+                const float inv = 1.0f / static_cast<float>(span);
+                PresentTile p{};
+                p.key = node;
+                p.rect = tileRect(node, tilePx_);
+                p.cov = std::move(acov);
+                p.level = node.level;
+                p.fallback = true; // a coarse stand-in until this node's own tile is ready
+                p.state = TileState::Coarse;
+                p.u0 = static_cast<float>(li) * inv;
+                p.v0 = static_cast<float>(lj) * inv;
+                p.u1 = static_cast<float>(li + 1) * inv;
+                p.v1 = static_cast<float>(lj + 1) * inv;
+                out.push_back(std::move(p));
+                return;
             }
         }
-        // if still nothing, the tile is simply absent this frame (fills shortly)
-    }
-    return keys.size();
+        // nothing ready anywhere up the chain: mark a (brief) not-final gap.
+        PresentTile p{};
+        p.key = node;
+        p.rect = tileRect(node, tilePx_);
+        p.level = node.level;
+        p.fallback = true;
+        out.push_back(std::move(p));
+    };
+
+    std::function<void(const TileKey &)> emit = [&](const TileKey &node) {
+        store_.touch(node, frame);
+        const NodeClass nc = store_.classOf(node);
+        if (nc == NodeClass::UniformTrue)
+        {
+            PresentTile p{};
+            p.key = node;
+            p.rect = tileRect(node, tilePx_);
+            p.level = node.level;
+            p.state = TileState::Done;
+            p.flat = true;
+            p.flatValue = 1.0f;
+            out.push_back(std::move(p));
+            return;
+        }
+        if (nc == NodeClass::UniformFalse) return; // background
+        if (nc == NodeClass::Mixed)
+        {
+            if (node.level <= detail)
+            {
+                CoverageTilePtr cov = store_.snapshot(node);
+                if (cov && store_.state(node) == TileState::Done)
+                {
+                    PresentTile p{};
+                    p.key = node;
+                    p.rect = tileRect(node, tilePx_);
+                    p.cov = std::move(cov);
+                    p.level = node.level;
+                    p.state = TileState::Done;
+                    out.push_back(std::move(p));
+                }
+                else
+                {
+                    emitFallback(node);
+                }
+                return;
+            }
+            TileKey ch[4];
+            childKeys(node, ch);
+            for (const TileKey &c : ch) emit(c);
+            return;
+        }
+        emitFallback(node); // Unknown: not classified yet
+    };
+
+    for (const TileKey &s : startNodes(vp, epoch)) emit(s);
+    return out.size();
 }
 
 void Engine::debugTiles(const Viewport &vp, std::vector<DebugTile> &out)
 {
     out.clear();
     const uint64_t epoch = epoch_.load();
-    const std::vector<TileKey> keys = visibleKeys(vp, epoch);
-    out.reserve(keys.size());
-    for (const TileKey &k : keys)
-    {
-        out.push_back(DebugTile{tileRect(k, tilePx_), store_.state(k)});
-    }
+    const int detail = vp.activeLevel();
+
+    // Mirror the compositor traversal, emitting one box per leaf so the overlay
+    // shows the ACTUAL variable-size greedy tiling (big boxes for uniform regions,
+    // fine boxes along boundaries).
+    std::function<void(const TileKey &)> visit = [&](const TileKey &node) {
+        const NodeClass nc = store_.classOf(node);
+        if (nc == NodeClass::UniformTrue || nc == NodeClass::UniformFalse)
+        {
+            out.push_back(DebugTile{tileRect(node, tilePx_), TileState::Done}); // greedy leaf
+            return;
+        }
+        if (nc == NodeClass::Mixed && node.level > detail)
+        {
+            TileKey ch[4];
+            childKeys(node, ch);
+            for (const TileKey &c : ch) visit(c);
+            return;
+        }
+        out.push_back(DebugTile{tileRect(node, tilePx_), store_.state(node)}); // leaf (detail/unknown)
+    };
+    for (const TileKey &s : startNodes(vp, epoch)) visit(s);
 }
 
 void Engine::waitUntilQuiescent()

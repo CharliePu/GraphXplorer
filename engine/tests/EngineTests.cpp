@@ -176,14 +176,21 @@ TEST_CASE("OBJECTIVE 7: after a pan storm the current viewport fully completes, 
 
     // Viewport prioritization + off-screen cull => the CURRENT viewport is fully
     // generated (no fallback, every leaf Done), not stuck behind the stale backlog.
+    // buildPresent itself may request re-solves of stuck detail tiles, so settle
+    // until stable (this MUST converge in a few cycles -- a freeze would not).
     std::vector<PresentTile> present;
-    engine.buildPresent(finalVp, present);
-    REQUIRE_FALSE(present.empty());
-    for (const PresentTile &p : present)
+    int fb = 1;
+    for (int iter = 0; iter < 8 && fb > 0; ++iter)
     {
-        REQUIRE_FALSE(p.fallback);
-        REQUIRE(p.state == TileState::Done);
+        engine.waitUntilQuiescent();
+        engine.buildPresent(finalVp, present);
+        fb = 0;
+        for (const PresentTile &p : present)
+            if (p.fallback) ++fb;
     }
+    REQUIRE_FALSE(present.empty());
+    REQUIRE(fb == 0); // converged: the current viewport is fully generated
+    for (const PresentTile &p : present) REQUIRE(p.state == TileState::Done);
     // off-screen detail work was culled at the source -> store never exploded.
     REQUIRE(engine.storeSize() < 16000);
 }

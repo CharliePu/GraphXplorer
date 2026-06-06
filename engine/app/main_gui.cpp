@@ -404,7 +404,9 @@ int main(int argc, char **argv)
             frameMs = frameMs * 0.9 + dt * 1000.0 * 0.1;
         }
 
+        const auto tBP0 = std::chrono::steady_clock::now();
         const size_t visible = engine.buildPresent(vp, present);
+        const auto tBP1 = std::chrono::steady_clock::now();
         // The render is final iff every visible tile is shown at its own (not a
         // fallback ancestor) full-detail Done state.
         finalRender = (present.size() == visible);
@@ -418,6 +420,9 @@ int main(int argc, char **argv)
         // A solved tile is only "done" once its texture is uploaded; keep rendering
         // (not final) until the per-frame upload budget has drained the backlog.
         const int pendingUploads = presenter.renderFrame(vp, present, /*uploadBudget=*/64);
+        const auto tRF1 = std::chrono::steady_clock::now();
+        const double bpMs = std::chrono::duration<double, std::milli>(tBP1 - tBP0).count();
+        const double rfMs = std::chrono::duration<double, std::milli>(tRF1 - tBP1).count();
         if (pendingUploads > 0) finalRender = false;
         drawUi(overlay, fbW, fbH, formula, editing, editBuffer, status);
         if (showDebug)
@@ -436,16 +441,18 @@ int main(int argc, char **argv)
             if (p.fallback) ++fbCount;
         const bool settled = finalRender && !prevFinal;
         const double sinceDiag = std::chrono::duration<double>(now - lastDiag).count();
-        if (glErr != GL_NO_ERROR || settled || (!finalRender && sinceDiag > 0.15))
+        // Also log any SLOW frame (>5ms in buildPresent or renderFrame) to catch lag.
+        const bool slow = bpMs > 5.0 || rfMs > 5.0;
+        if (glErr != GL_NO_ERROR || settled || slow || (!finalRender && sinceDiag > 0.15))
         {
-            char b[256];
+            char b[300];
             std::snprintf(b, sizeof b,
                           "[%s] fb=%dx%d wpp=%.5g lvl=%d present=%zu fallback=%d pending=%d store=%zu "
-                          "jobs=%llu glErr=0x%x",
+                          "jobs=%llu frameMs=%.1f bpMs=%.1f rfMs=%.1f glErr=0x%x",
                           finalRender ? "final" : "gen", fbW, fbH, vp.worldPerPixel, vp.activeLevel(),
                           present.size(), fbCount, pendingUploads, engine.storeSize(),
-                          static_cast<unsigned long long>(engine.jobsCompleted()),
-                          static_cast<unsigned>(glErr));
+                          static_cast<unsigned long long>(engine.jobsCompleted()), dt * 1000.0, bpMs,
+                          rfMs, static_cast<unsigned>(glErr));
             logln(b);
             lastDiag = now;
         }

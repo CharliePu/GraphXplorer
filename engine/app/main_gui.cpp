@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -40,6 +41,17 @@ std::shared_ptr<const Relation> parseOrNull(const std::string &src)
 const char *kPresets[] = {
     "y > sin(2^x)", "x^2 + y^2 < 1", "y = x^2", "tan(x) > y", "sin(x*y) > 0", "y = x^3 - x",
 };
+
+void saveFramebuffer(int fbW, int fbH, const std::string &path)
+{
+    std::vector<uint8_t> px(static_cast<size_t>(fbW) * fbH * 4);
+    glReadPixels(0, 0, fbW, fbH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    std::vector<uint8_t> flipped(px.size()); // GL bottom-up -> PNG top-down
+    for (int y = 0; y < fbH; ++y)
+        std::memcpy(&flipped[static_cast<size_t>(fbH - 1 - y) * fbW * 4],
+                    &px[static_cast<size_t>(y) * fbW * 4], static_cast<size_t>(fbW) * 4);
+    (void)writePng(path, fbW, fbH, flipped);
+}
 
 std::string findFont()
 {
@@ -140,6 +152,10 @@ void drawDebug(Overlay &ui, const Viewport &vp, int fbW, int fbH,
 // Render the live GL pipeline headlessly to a PNG (validates context, shaders,
 // tile-texture upload and compositing end-to-end). Usage: --selftest out.png [formula]
 int runSelftest(const std::string &outPng, const std::string &formula, bool debug);
+// Drive the REAL render loop offscreen through small -> maximize -> zoom-out and
+// save a framebuffer readback after each settles. Validates the resize + texture
+// upload path (the GL side of the maximize-then-zoom-out bug). Usage: --reprogl prefix
+int runReproGl(const std::string &prefix);
 
 int main(int argc, char **argv)
 {
@@ -149,6 +165,10 @@ int main(int argc, char **argv)
         const std::string f = argc >= 4 ? argv[3] : kPresets[0];
         const bool dbg = argc >= 5 && std::string(argv[4]) == "debug";
         return runSelftest(out, f, dbg);
+    }
+    if (argc >= 2 && std::string(argv[1]) == "--reprogl")
+    {
+        return runReproGl(argc >= 3 ? argv[2] : "reprogl_");
     }
 
     auto glfwLib = glfw::init();
@@ -200,6 +220,24 @@ int main(int argc, char **argv)
     std::string status;
     bool showDebug = false;
 
+    // Diagnostics log (for the maximize-then-zoom-out bug). Captures resize/zoom,
+    // tile generation progress, pending uploads, store size, and GL errors.
+    std::ofstream logf("out/gx2.log", std::ios::trunc);
+    auto logln = [&](const std::string &s) {
+        if (logf)
+        {
+            logf << s << "\n";
+            logf.flush();
+        }
+        std::puts(s.c_str());
+    };
+    {
+        char b[200];
+        std::snprintf(b, sizeof b, "[start] fb=%dx%d wpp=%.5g level=%d", fbW, fbH, vp.worldPerPixel,
+                      vp.activeLevel());
+        logln(b);
+    }
+
     window.framebufferSizeEvent.setCallback([&](glfw::Window &, int w, int h) {
         fbW = std::max(1, w);
         fbH = std::max(1, h);
@@ -208,6 +246,9 @@ int main(int argc, char **argv)
         vp.pxW = fbW;
         vp.pxH = fbH;
         viewportDirty = true;
+        char b[120];
+        std::snprintf(b, sizeof b, "[resize] fb=%dx%d", fbW, fbH);
+        logln(b);
     });
 
     // typed characters feed the formula editor
@@ -332,8 +373,10 @@ int main(int argc, char **argv)
     std::vector<PresentTile> present;
     std::vector<DebugTile> dbgTiles;
     auto lastT = std::chrono::steady_clock::now();
+    auto lastDiag = lastT;
     double fps = 0.0, frameMs = 0.0;
     bool finalRender = false;
+    bool prevFinal = false;
 
     while (!window.shouldClose())
     {
@@ -384,6 +427,29 @@ int main(int argc, char **argv)
                       fps, frameMs);
         }
         window.swapBuffers();
+
+        // Diagnostics: log a GL error immediately, a line when the image settles,
+        // and a throttled progress line while it is still generating.
+        const GLenum glErr = glGetError();
+        int fbCount = 0;
+        for (const PresentTile &p : present)
+            if (p.fallback) ++fbCount;
+        const bool settled = finalRender && !prevFinal;
+        const double sinceDiag = std::chrono::duration<double>(now - lastDiag).count();
+        if (glErr != GL_NO_ERROR || settled || (!finalRender && sinceDiag > 0.15))
+        {
+            char b[256];
+            std::snprintf(b, sizeof b,
+                          "[%s] fb=%dx%d wpp=%.5g lvl=%d present=%zu fallback=%d pending=%d store=%zu "
+                          "jobs=%llu glErr=0x%x",
+                          finalRender ? "final" : "gen", fbW, fbH, vp.worldPerPixel, vp.activeLevel(),
+                          present.size(), fbCount, pendingUploads, engine.storeSize(),
+                          static_cast<unsigned long long>(engine.jobsCompleted()),
+                          static_cast<unsigned>(glErr));
+            logln(b);
+            lastDiag = now;
+        }
+        prevFinal = finalRender;
     }
     return 0;
 }
@@ -454,5 +520,94 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
         return 1;
     }
     std::printf("selftest: wrote %s (%dx%d)\n", outPng.c_str(), fbW, fbH);
+    return 0;
+}
+
+int runReproGl(const std::string &prefix)
+{
+    auto glfwLib = glfw::init();
+    glfw::WindowHints{
+        .clientApi = glfw::ClientApi::OpenGl,
+        .contextVersionMajor = 3,
+        .contextVersionMinor = 3,
+        .openglProfile = glfw::OpenGlProfile::Core,
+    }
+        .apply();
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+
+    glfw::Window window(560, 360, "reprogl");
+    glfw::makeContextCurrent(window);
+    glfw::swapInterval(0);
+    if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(glfw::getProcAddress)))
+    {
+        std::fprintf(stderr, "reprogl: failed to load GL\n");
+        return 1;
+    }
+
+    constexpr int tilePx = 64;
+    Engine engine(tilePx, 0, [] { glfw::postEmptyEvent(); });
+    GlPresenter presenter(tilePx);
+    auto rel = parseOrNull("y > sin(2^x)");
+    if (!rel) return 1;
+    engine.setRelation(rel);
+
+    auto sz0 = window.getFramebufferSize();
+    int fbW = std::get<0>(sz0), fbH = std::get<1>(sz0);
+    presenter.resize(fbW, fbH);
+    Viewport vp{0.0, 0.0, 8.0 / fbW, fbW, fbH};
+
+    std::vector<PresentTile> present;
+    // Drive the REAL loop (buildPresent -> renderFrame with the pending-upload
+    // guard) until the image is fully solved AND uploaded, then read it back.
+    auto renderToCompletion = [&](const std::string &name) {
+        engine.setViewport(vp);
+        int frame = 0;
+        bool finalRender = false;
+        for (; frame < 1500; ++frame)
+        {
+            glfw::pollEvents();
+            const size_t visible = engine.buildPresent(vp, present);
+            finalRender = (present.size() == visible);
+            for (const PresentTile &p : present)
+                if (p.fallback || p.state != TileState::Done)
+                {
+                    finalRender = false;
+                    break;
+                }
+            const int pending = presenter.renderFrame(vp, present, 128);
+            if (pending > 0) finalRender = false;
+            window.swapBuffers();
+            if (finalRender && frame > 2) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+        }
+        int fb = 0;
+        for (const PresentTile &p : present)
+            if (p.fallback) ++fb;
+        saveFramebuffer(fbW, fbH, prefix + name + ".png");
+        std::printf("%-11s fb=%4dx%-4d wpp=%-8.4g frames=%-5d FALLBACK=%-3d present=%zu\n",
+                    name.c_str(), fbW, fbH, vp.worldPerPixel, frame, fb, present.size());
+    };
+
+    renderToCompletion("1small");
+
+    // maximize: grow the window / framebuffer
+    window.setSize(1280, 720);
+    glfw::pollEvents();
+    auto sz1 = window.getFramebufferSize();
+    fbW = std::get<0>(sz1);
+    fbH = std::get<1>(sz1);
+    presenter.resize(fbW, fbH);
+    vp.pxW = fbW;
+    vp.pxH = fbH;
+    renderToCompletion("2maximize");
+
+    vp.worldPerPixel *= 4.0;
+    renderToCompletion("3zoomout");
+    vp.worldPerPixel *= 4.0;
+    renderToCompletion("4zoomout2");
+    vp.worldPerPixel *= 4.0;
+    renderToCompletion("5zoomout3");
+
+    std::printf("(FALLBACK must be 0 and each PNG must show the full graph, no holes)\n");
     return 0;
 }

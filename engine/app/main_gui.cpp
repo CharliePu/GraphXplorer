@@ -220,8 +220,7 @@ int main(int argc, char **argv)
     std::string status;
     bool showDebug = false;
 
-    // Diagnostics log (for the maximize-then-zoom-out bug). Captures resize/zoom,
-    // tile generation progress, pending uploads, store size, and GL errors.
+    // Lightweight status log: resize/zoom, settle, store/job counts, GL errors.
     std::ofstream logf("out/gx2.log", std::ios::trunc);
     auto logln = [&](const std::string &s) {
         if (logf)
@@ -238,18 +237,204 @@ int main(int argc, char **argv)
         logln(b);
     }
 
+    // ---- Single shared render path --------------------------------------------
+    // Defined BEFORE the window callbacks so the framebuffer-size and (crucially)
+    // the window-REFRESH callbacks can drive it. On Windows a move/resize/maximize
+    // runs a nested modal loop that blocks glfw event processing; the documented
+    // GLFW remedy is to redraw from the window-refresh callback. The frame ends in
+    // swapBuffers() THEN glFinish() so the result is actually made visible during
+    // that blocking operation (otherwise the present is deferred and the resize
+    // looks frozen/laggy). See glfwPollEvents docs + glfwSwapInterval(1) above.
+    std::vector<PresentTile> present;
+    std::vector<DebugTile> dbgTiles;
+    auto lastT = std::chrono::steady_clock::now();
+    auto lastDiag = lastT;
+    double fps = 0.0, frameMs = 0.0;
+    bool finalRender = false;
+    bool prevFinal = false;
+    bool rendering = false; // re-entry guard: a callback must not recurse into render
+
+    // ---- Resize present guard (ported from the legacy app's complete fix) -------
+    // The first present(s) at a new (larger) framebuffer size can trigger a driver
+    // swapchain reallocation costing hundreds of ms to ~2s. An unconditional
+    // glFinish turns that into a hard UI freeze; instead, for a short settle window
+    // after each resize we wait on a GPU FENCE with a 10ms timeout -- if the GPU
+    // isn't done we DON'T block, we skip this present and let the loop re-check next
+    // frame, so the window stays responsive through the realloc. glFinish is only a
+    // last-resort fallback. Zero cost in steady state (guard inactive).
+    using Ms = std::chrono::milliseconds;
+    constexpr Ms kGuardSettle{250};       // keep guarding for this long after a resize
+    constexpr Ms kGuardMaxDuration{1000}; // hard cap on the whole guarded window
+    constexpr int kGuardRequiredPresents = 3;
+    constexpr int kGuardTimeoutsBeforeFinish = 3;
+    constexpr uint64_t kFenceTimeoutNs = 10'000'000ULL; // 10ms per fence wait
+    bool guardOn = false;
+    std::chrono::steady_clock::time_point guardStarted{}, guardUntil{};
+    int guardPresents = 0, guardTimeouts = 0;
+    auto markGuard = [&]() {
+        const auto now = std::chrono::steady_clock::now();
+        guardOn = true;
+        guardStarted = now;
+        guardUntil = now + kGuardSettle;
+        guardPresents = 0;
+        guardTimeouts = 0;
+    };
+    auto guardActive = [&](std::chrono::steady_clock::time_point now) {
+        if (!guardOn) return false;
+        if (now >= guardUntil &&
+            std::chrono::duration_cast<Ms>(now - guardStarted) >= kGuardMaxDuration)
+            return false;
+        return now < guardUntil || guardPresents < kGuardRequiredPresents;
+    };
+
+    auto renderOnce = [&]() {
+        if (rendering) return; // a refresh fired while already rendering -> ignore
+        rendering = true;
+
+        if (viewportDirty)
+        {
+            engine.setViewport(vp);
+            viewportDirty = false;
+            finalRender = false;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        const double dt = std::chrono::duration<double>(now - lastT).count();
+        lastT = now;
+        if (dt > 0.0)
+        {
+            fps = fps * 0.9 + (1.0 / dt) * 0.1;
+            frameMs = frameMs * 0.9 + dt * 1000.0 * 0.1;
+        }
+
+        const size_t visible = engine.buildPresent(vp, present);
+        finalRender = (present.size() == visible);
+        for (const PresentTile &p : present)
+            if (p.fallback || p.state != TileState::Done)
+            {
+                finalRender = false;
+                break;
+            }
+
+        const int pendingUploads = presenter.renderFrame(vp, present, /*uploadBudget=*/64);
+        if (pendingUploads > 0) finalRender = false;
+        drawUi(overlay, fbW, fbH, formula, editing, editBuffer, status);
+        if (showDebug)
+        {
+            engine.debugTiles(vp, dbgTiles);
+            drawDebug(overlay, vp, fbW, fbH, dbgTiles, engine.storeSize(), engine.jobsCompleted(), fps,
+                      frameMs);
+        }
+
+        // Resize-guarded present (see guard state above). In the settle window
+        // after a resize, wait on a GPU fence with a bounded timeout for the draw
+        // to complete before swapping; on timeout DON'T block -- skip this present
+        // and retry next frame, so the UI stays live through the driver's swapchain
+        // realloc. glFinish is only a last-resort fallback. Outside the guard the
+        // fence is skipped entirely (zero steady-state cost).
+        bool doSwap = true;
+        if (guardActive(now))
+        {
+            GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+            if (fence)
+            {
+                const GLenum r = glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, kFenceTimeoutNs);
+                glDeleteSync(fence);
+                if (r == GL_TIMEOUT_EXPIRED)
+                {
+                    const bool giveUp =
+                        ++guardTimeouts >= kGuardTimeoutsBeforeFinish ||
+                        std::chrono::duration_cast<Ms>(std::chrono::steady_clock::now() - guardStarted) >=
+                            kGuardMaxDuration;
+                    if (giveUp)
+                    {
+                        glFinish(); // last resort: accept one block rather than starve
+                        guardTimeouts = 0;
+                    }
+                    else
+                    {
+                        doSwap = false; // GPU still busy (realloc) -> retry next frame
+                    }
+                }
+                else
+                {
+                    guardTimeouts = 0;
+                }
+            }
+            else
+            {
+                glFinish(); // no fence-sync support -> fallback
+            }
+        }
+        if (doSwap)
+        {
+            const auto tSwap0 = std::chrono::steady_clock::now();
+            window.swapBuffers();
+            const double swapMs =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tSwap0)
+                    .count();
+            if (guardOn)
+            {
+                if (swapMs >= 50.0)
+                {
+                    // a slow present means the realloc isn't done -> extend the guard
+                    guardUntil = std::chrono::steady_clock::now() + kGuardSettle;
+                    guardPresents = 0;
+                    guardTimeouts = 0;
+                }
+                else
+                {
+                    ++guardPresents;
+                    if (!guardActive(std::chrono::steady_clock::now())) guardOn = false;
+                }
+            }
+        }
+
+        // Quiet diagnostics: a GL error, the settle line, or a throttled progress
+        // line while still generating tiles.
+        const GLenum glErr = glGetError();
+        const bool settled = finalRender && !prevFinal;
+        const double sinceDiag = std::chrono::duration<double>(now - lastDiag).count();
+        if (glErr != GL_NO_ERROR || settled || (!finalRender && sinceDiag > 0.2))
+        {
+            int fbCount = 0;
+            for (const PresentTile &p : present)
+                if (p.fallback) ++fbCount;
+            char b[220];
+            std::snprintf(b, sizeof b,
+                          "[%s] fb=%dx%d wpp=%.5g present=%zu fallback=%d store=%zu jobs=%llu glErr=0x%x",
+                          finalRender ? "final" : "gen", fbW, fbH, vp.worldPerPixel, present.size(),
+                          fbCount, engine.storeSize(),
+                          static_cast<unsigned long long>(engine.jobsCompleted()),
+                          static_cast<unsigned>(glErr));
+            logln(b);
+            lastDiag = now;
+        }
+        prevFinal = finalRender;
+
+        rendering = false;
+    };
+
     window.framebufferSizeEvent.setCallback([&](glfw::Window &, int w, int h) {
         fbW = std::max(1, w);
         fbH = std::max(1, h);
-        presenter.resize(fbW, fbH);
+        presenter.resize(fbW, fbH); // stores size; glViewport is set each renderFrame
         overlay.resize(fbW, fbH);
         vp.pxW = fbW;
         vp.pxH = fbH;
         viewportDirty = true;
+        markGuard(); // arm the resize present guard for the settle window
         char b[120];
         std::snprintf(b, sizeof b, "[resize] fb=%dx%d", fbW, fbH);
         logln(b);
+        renderOnce(); // redraw the new size immediately, mid-resize
     });
+
+    // THE fix for the "window waits then snaps" lag: GLFW calls this on each
+    // WM_PAINT, including *inside* the blocking maximize/resize modal loop, so we
+    // redraw (and the resize present guard keeps it responsive) while the OS owns
+    // the main thread. Documented under glfwPollEvents.
+    window.refreshEvent.setCallback([&](glfw::Window &) { renderOnce(); });
 
     // typed characters feed the formula editor
     window.charEvent.setCallback([&](glfw::Window &, unsigned int codepoint) {
@@ -370,102 +555,18 @@ int main(int argc, char **argv)
             }
         });
 
-    std::vector<PresentTile> present;
-    std::vector<DebugTile> dbgTiles;
-    auto lastT = std::chrono::steady_clock::now();
-    auto lastDiag = lastT;
-    double fps = 0.0, frameMs = 0.0;
-    bool finalRender = false;
-    bool prevFinal = false;
-
     while (!window.shouldClose())
     {
         // Event-driven: when the visible image is final, block at ~0% CPU until
         // input arrives or a worker wakes us (postEmptyEvent). While tiles are
         // still arriving, wake on each publish, with a short timeout as a backstop.
-        const auto tW0 = std::chrono::steady_clock::now();
-        if (finalRender)
+        if (guardActive(std::chrono::steady_clock::now()))
+            glfw::waitEvents(0.004); // settle window: keep re-checking the fence/realloc
+        else if (finalRender)
             glfw::waitEvents();
         else
             glfw::waitEvents(0.05);
-        const double waitMs = std::chrono::duration<double, std::milli>(
-                                  std::chrono::steady_clock::now() - tW0)
-                                  .count();
-
-        if (viewportDirty)
-        {
-            engine.setViewport(vp);
-            viewportDirty = false;
-            finalRender = false;
-        }
-
-        const auto now = std::chrono::steady_clock::now();
-        const double dt = std::chrono::duration<double>(now - lastT).count();
-        lastT = now;
-        if (dt > 0.0)
-        {
-            fps = fps * 0.9 + (1.0 / dt) * 0.1;
-            frameMs = frameMs * 0.9 + dt * 1000.0 * 0.1;
-        }
-
-        const auto tBP0 = std::chrono::steady_clock::now();
-        const size_t visible = engine.buildPresent(vp, present);
-        const auto tBP1 = std::chrono::steady_clock::now();
-        // The render is final iff every visible tile is shown at its own (not a
-        // fallback ancestor) full-detail Done state.
-        finalRender = (present.size() == visible);
-        for (const PresentTile &p : present)
-            if (p.fallback || p.state != TileState::Done)
-            {
-                finalRender = false;
-                break;
-            }
-
-        // A solved tile is only "done" once its texture is uploaded; keep rendering
-        // (not final) until the per-frame upload budget has drained the backlog.
-        const int pendingUploads = presenter.renderFrame(vp, present, /*uploadBudget=*/64);
-        const auto tRF1 = std::chrono::steady_clock::now();
-        const double bpMs = std::chrono::duration<double, std::milli>(tBP1 - tBP0).count();
-        const double rfMs = std::chrono::duration<double, std::milli>(tRF1 - tBP1).count();
-        if (pendingUploads > 0) finalRender = false;
-        drawUi(overlay, fbW, fbH, formula, editing, editBuffer, status);
-        if (showDebug)
-        {
-            engine.debugTiles(vp, dbgTiles);
-            drawDebug(overlay, vp, fbW, fbH, dbgTiles, engine.storeSize(), engine.jobsCompleted(),
-                      fps, frameMs);
-        }
-        const auto tSwap0 = std::chrono::steady_clock::now();
-        window.swapBuffers();
-        const double swapMs = std::chrono::duration<double, std::milli>(
-                                  std::chrono::steady_clock::now() - tSwap0)
-                                  .count();
-
-        // Diagnostics: log a GL error immediately, a line when the image settles,
-        // and a throttled progress line while it is still generating.
-        const GLenum glErr = glGetError();
-        int fbCount = 0;
-        for (const PresentTile &p : present)
-            if (p.fallback) ++fbCount;
-        const bool settled = finalRender && !prevFinal;
-        const double sinceDiag = std::chrono::duration<double>(now - lastDiag).count();
-        // Log any SLOW frame: high bp/rf = our compute; high wait (when NOT final,
-        // so not idle-block) or high swap = the windowing/OS-resize/present layer.
-        const bool slow = bpMs > 5.0 || rfMs > 5.0 || swapMs > 8.0 || (!finalRender && waitMs > 8.0);
-        if (glErr != GL_NO_ERROR || settled || slow || (!finalRender && sinceDiag > 0.15))
-        {
-            char b[340];
-            std::snprintf(b, sizeof b,
-                          "[%s] fb=%dx%d wpp=%.5g lvl=%d present=%zu fallback=%d pending=%d store=%zu "
-                          "jobs=%llu frameMs=%.1f bpMs=%.1f rfMs=%.1f waitMs=%.1f swapMs=%.1f glErr=0x%x",
-                          finalRender ? "final" : "gen", fbW, fbH, vp.worldPerPixel, vp.activeLevel(),
-                          present.size(), fbCount, pendingUploads, engine.storeSize(),
-                          static_cast<unsigned long long>(engine.jobsCompleted()), dt * 1000.0, bpMs,
-                          rfMs, waitMs, swapMs, static_cast<unsigned>(glErr));
-            logln(b);
-            lastDiag = now;
-        }
-        prevFinal = finalRender;
+        renderOnce();
     }
     return 0;
 }

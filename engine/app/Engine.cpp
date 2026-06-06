@@ -27,6 +27,17 @@ void childKeys(const TileKey &k, TileKey out[4])
     out[2] = {k.epoch, cl, k.i * 2, k.j * 2 + 1};
     out[3] = {k.epoch, cl, k.i * 2 + 1, k.j * 2 + 1};
 }
+
+constexpr double kCullMargin = 0.5; // keep a half-viewport ring around the screen
+
+// Does a tile rect fall within the viewport expanded by a margin ring?
+bool keepForViewport(const WorldRect &r, const Viewport &vp, double marginFrac)
+{
+    const WorldRect b = vp.worldBounds();
+    const double mx = (b.x1 - b.x0) * marginFrac;
+    const double my = (b.y1 - b.y0) * marginFrac;
+    return !(r.x1 < b.x0 - mx || r.x0 > b.x1 + mx || r.y1 < b.y0 - my || r.y0 > b.y1 + my);
+}
 }
 
 Engine::Engine(int tilePx, int numWorkers, std::function<void()> wake)
@@ -72,6 +83,10 @@ void Engine::setRelation(std::shared_ptr<const Relation> rel)
 
 void Engine::setViewport(const Viewport &vp)
 {
+    // publish the latest viewport (for worker culling) and bump the generation
+    // (for job priority) before waking the scheduler.
+    currentVp_.store(std::make_shared<const Viewport>(vp), std::memory_order_release);
+    viewportGen_.fetch_add(1, std::memory_order_release);
     {
         std::scoped_lock lock(mailMutex_);
         mailViewport_ = vp;
@@ -116,7 +131,11 @@ void Engine::pushJobs(std::vector<Job> &jobs)
     if (jobs.empty()) return;
     {
         std::scoped_lock lock(jobMutex_);
-        for (auto &j : jobs) jobs_.push_back(std::move(j));
+        for (auto &j : jobs)
+        {
+            j.seq = jobSeq_.fetch_add(1, std::memory_order_relaxed);
+            jobs_.push(std::move(j));
+        }
     }
     jobCv_.notify_all();
 }
@@ -126,6 +145,7 @@ void Engine::enqueueVisible(const Viewport &vp, std::shared_ptr<const Relation> 
 {
     if (!rel) return;
     const int detail = vp.activeLevel();
+    const uint64_t gen = viewportGen_.load(std::memory_order_acquire);
     const std::vector<TileKey> keys = startNodes(vp, epoch);
     std::vector<Job> toEnqueue;
     toEnqueue.reserve(keys.size());
@@ -135,7 +155,9 @@ void Engine::enqueueVisible(const Viewport &vp, std::shared_ptr<const Relation> 
         {
             // start nodes are above the detail level; if Mixed they render a
             // coarse placeholder raster (the no-holes base layer) and spawn children.
-            toEnqueue.push_back(Job{k, rel, epoch, cancel, tileRect(k, tilePx_), detail, true});
+            Job j{k, rel, epoch, cancel, tileRect(k, tilePx_), detail, true};
+            j.viewportGen = gen;
+            toEnqueue.push_back(std::move(j));
         }
     }
     pushJobs(toEnqueue);
@@ -174,13 +196,26 @@ void Engine::workerLoop(int)
             std::unique_lock lock(jobMutex_);
             jobCv_.wait(lock, [this] { return !jobs_.empty() || stop_.load(); });
             if (stop_.load()) break;
-            job = std::move(jobs_.front());
-            jobs_.pop_front();
+            job = jobs_.top(); // priority: newest viewport, coarsest, FIFO
+            jobs_.pop();
             jobsInFlight_.fetch_add(1);
         }
 
+        const std::shared_ptr<const Viewport> vpNow = currentVp_.load(std::memory_order_acquire);
         const CancelToken ct{job.cancel.get()};
-        if (!ct.cancelled())
+
+        // Viewport cull: discard un-started DETAIL-or-finer work that is now off
+        // screen (panned away). Coarse nodes (level > detail) are always processed
+        // -- they cover the viewport and feed the no-holes fallback chain, so
+        // dropping them would punch holes. Already-published tiles are untouched.
+        bool culled = false;
+        if (vpNow && job.key.level <= vpNow->activeLevel()
+            && !keepForViewport(job.rect, *vpNow, kCullMargin))
+        {
+            culled = true;
+        }
+
+        if (!culled && !ct.cancelled())
         {
             // 1) Greedy classification of the whole node (sound: uniform only if proven).
             const NodeClass nc = classifyRegion(*job.rel, job.rect, scratch, ct);
@@ -220,15 +255,23 @@ void Engine::workerLoop(int)
 
                     if (!atDetail && !ct.cancelled())
                     {
+                        const int curDetail = vpNow ? vpNow->activeLevel() : job.detailLevel;
                         TileKey ch[4];
                         childKeys(job.key, ch);
                         std::vector<Job> kids;
                         for (const TileKey &c : ch)
                         {
-                            if (store_.ensureQueued(c) == TileState::Missing)
+                            // expand the cascade only into coarse children (needed for
+                            // the tree/fallback) or on-screen detail children; off-screen
+                            // detail children are never enqueued (cull at the source).
+                            const WorldRect cr = tileRect(c, tilePx_);
+                            const bool keep =
+                                !vpNow || c.level > curDetail || keepForViewport(cr, *vpNow, kCullMargin);
+                            if (keep && store_.ensureQueued(c) == TileState::Missing)
                             {
-                                kids.push_back(Job{c, job.rel, job.epoch, job.cancel,
-                                                   tileRect(c, tilePx_), job.detailLevel, false});
+                                Job kid{c, job.rel, job.epoch, job.cancel, cr, job.detailLevel, false};
+                                kid.viewportGen = job.viewportGen; // inherit -> old cascades stay low priority
+                                kids.push_back(std::move(kid));
                             }
                         }
                         pushJobs(kids);

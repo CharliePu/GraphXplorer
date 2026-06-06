@@ -10,10 +10,10 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <queue>
 #include <thread>
 #include <vector>
 
@@ -86,8 +86,23 @@ private:
         uint64_t epoch;
         std::shared_ptr<std::atomic<bool>> cancel;
         WorldRect rect;
-        int detailLevel{0};    // pixel-scale level; Mixed nodes at/below it get the fine raster
+        int detailLevel{0};     // pixel-scale level; Mixed nodes at/below it get the fine raster
         bool baseRaster{false}; // start-level Mixed node: render a coarse placeholder raster
+        uint64_t viewportGen{0}; // viewport generation this job was scheduled for (priority)
+        uint64_t seq{0};         // FIFO tie-break within a priority tier
+    };
+
+    // Priority: newest viewport first, then coarsest level (coarse-first paint),
+    // then oldest seq (FIFO). The main thread never touches this queue, so its
+    // O(log N) cost stays off the responsiveness path.
+    struct JobCmp
+    {
+        bool operator()(const Job &a, const Job &b) const
+        {
+            if (a.viewportGen != b.viewportGen) return a.viewportGen < b.viewportGen;
+            if (a.key.level != b.key.level) return a.key.level < b.key.level;
+            return a.seq > b.seq;
+        }
     };
 
     void schedulerLoop();
@@ -112,10 +127,16 @@ private:
     std::atomic<uint64_t> epoch_{0};
     std::shared_ptr<std::atomic<bool>> liveCancel_;
 
-    // job queue
+    // Latest viewport, published for worker-side culling of off-screen work, and a
+    // generation counter bumped on every viewport change for priority ordering.
+    std::atomic<std::shared_ptr<const Viewport>> currentVp_;
+    std::atomic<uint64_t> viewportGen_{0};
+
+    // job queue (viewport-prioritized)
     std::mutex jobMutex_;
     std::condition_variable jobCv_;
-    std::deque<Job> jobs_;
+    std::priority_queue<Job, std::vector<Job>, JobCmp> jobs_;
+    std::atomic<uint64_t> jobSeq_{0};
     std::atomic<uint64_t> jobsCompleted_{0};
     std::atomic<int> jobsInFlight_{0};
 

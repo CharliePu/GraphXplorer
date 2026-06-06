@@ -33,6 +33,16 @@ struct PresentTile
     bool flat{false};       // greedy uniform tile: draw a solid fill, no texture
     float flatValue{0.0f};  // 0 or 1
     float u0{0.0f}, v0{0.0f}, u1{1.0f}, v1{1.0f}; // texture sub-rect (for ancestor fallback)
+
+    // Coarse-ancestor STAND-IN for a detail tile whose OWN texture may not be
+    // GPU-resident yet. The presenter draws this (one shared, already-resident
+    // ancestor payload -> zero new upload) instead of a hole, then upgrades to `cov`
+    // once it uploads. Exactly one of {own cov, this stand-in} is drawn per frame --
+    // never both (no double-blend). A proven-FALSE ancestor leaves both null/false ->
+    // the presenter draws nothing -> background (correct for a false region).
+    CoverageTilePtr standinCov;                      // ancestor raster; null if none/flat
+    bool standinFlat{false};                         // true => proven-true ancestor: solid fill
+    float su0{0.0f}, sv0{0.0f}, su1{1.0f}, sv1{1.0f}; // stand-in UV sub-rect
 };
 
 // One visible tile's address + solve state, for the debug overlay.
@@ -136,6 +146,12 @@ private:
     // them with a consistent relation/epoch/cancel. Guarded by mailMutex_.
     std::vector<TileKey> resolveReq_;
     bool resolvePending_{false};
+    // Detail level the compositor used when it queued the current resolve requests,
+    // so the scheduler solves them at the RIGHT level: a detail tile (level==detail)
+    // gets its fine raster + Done; an Unknown intermediate node (level>detail) gets
+    // classified and CASCADES its children down to the detail level (this is what
+    // lets a deep zoom continue past nodes a shallower prior view already classified).
+    std::atomic<int> resolveDetail_{0};
 
     // Latest viewport, published for worker-side culling of off-screen work, and a
     // generation counter bumped on every viewport change for priority ordering.

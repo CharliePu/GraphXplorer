@@ -196,13 +196,20 @@ void Engine::serviceResolve(const std::vector<TileKey> &keys, const Viewport &vp
                             const std::shared_ptr<const Relation> &rel, uint64_t epoch,
                             const std::shared_ptr<std::atomic<bool>> &cancel)
 {
-    const int detail = vp.activeLevel();
+    (void)vp; // use the compositor's detail level (resolveDetail_), not the lagging mailViewport
+    const int detail = resolveDetail_.load(std::memory_order_relaxed);
     const uint64_t gen = viewportGen_.load(std::memory_order_acquire);
     std::vector<Job> jobs;
     for (const TileKey &k : keys)
     {
-        if (k.epoch != epoch) continue;        // drop stale-epoch requests
+        if (k.epoch != epoch) continue;          // drop stale-epoch requests
         if (!store_.claimForResolve(k)) continue; // already Done / in flight
+        // Solve at the COMPOSITOR's detail level (the level it was requesting), not
+        // the lagging mailViewport's. A detail tile (k.level <= detail) -> atDetail
+        // true -> fine raster + Done (fixes the persistent black band / blur). An
+        // Unknown INTERMEDIATE node (k.level > detail) -> atDetail false -> it gets
+        // classified and CASCADES its children down toward the detail level, so a
+        // deep zoom continues past nodes a shallower prior view already classified.
         Job j{k, rel, epoch, cancel, tileRect(k, tilePx_), detail, false};
         j.viewportGen = gen;
         jobs.push_back(std::move(j));
@@ -322,6 +329,41 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
     const int detail = vp.activeLevel();
     std::vector<TileKey> stuck; // detail tiles that need a (re)solve (see below)
 
+    // Bake a coarse-ancestor STAND-IN into a detail tile, so the presenter can draw
+    // it (resident, zero new upload) for the few frames the tile's OWN texture takes
+    // to upload -> no hole on a tile swap (immersion). Same world-aligned ancestor
+    // walk as emitFallback. UniformFalse ancestor -> no stand-in (background is right).
+    auto fillStandin = [&](const TileKey &node, PresentTile &p) {
+        TileKey anc = node;
+        for (int up = 1; up <= kMaxAncestorUp; ++up)
+        {
+            anc = parentKey(anc);
+            const NodeClass ac = store_.classOf(anc);
+            if (ac == NodeClass::UniformTrue)
+            {
+                p.standinFlat = true; // proven-true ancestor fills solid
+                store_.touch(anc, frame);
+                return;
+            }
+            if (ac == NodeClass::UniformFalse) return; // proven empty -> background
+            CoverageTilePtr acov = store_.snapshot(anc);
+            if (acov)
+            {
+                const int64_t span = int64_t{1} << up;
+                const int64_t li = node.i - (anc.i << up);
+                const int64_t lj = node.j - (anc.j << up);
+                const float inv = 1.0f / static_cast<float>(span);
+                p.standinCov = std::move(acov);
+                p.su0 = static_cast<float>(li) * inv;
+                p.sv0 = static_cast<float>(lj) * inv;
+                p.su1 = static_cast<float>(li + 1) * inv;
+                p.sv1 = static_cast<float>(lj + 1) * inv;
+                store_.touch(anc, frame);
+                return;
+            }
+        }
+    };
+
     // Fallback for a node with no ready leaf: draw the node's OWN footprint sampling
     // the nearest ready ancestor's content (UV sub-rect) -> exactly one quad per
     // region, no overlap, no holes. A proven-uniform ancestor is exact (final).
@@ -376,6 +418,22 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
         out.push_back(std::move(p));
     };
 
+    // Is there ready content to reuse at `n` or within `depth` finer levels? (A
+    // proven-uniform node or any published raster.) Lets the compositor bridge
+    // MULTIPLE zoom-out levels down to the cached finer tiles instead of giving up
+    // after one level and flashing a hole over a region it actually still has.
+    std::function<bool(const TileKey &, int)> hasReusable = [&](const TileKey &n, int depth) -> bool {
+        const NodeClass c = store_.classOf(n);
+        if (c == NodeClass::UniformTrue || c == NodeClass::UniformFalse) return true;
+        if (store_.snapshot(n)) return true;
+        if (depth <= 0) return false;
+        TileKey ch[4];
+        childKeys(n, ch);
+        for (const TileKey &k : ch)
+            if (hasReusable(k, depth - 1)) return true;
+        return false;
+    };
+
     // `down` bounds how many levels we may descend into FINER cached children when
     // this node has no ready leaf of its own -> reuses the pre-zoom-out detail tiles
     // until the larger greedy tile is ready (immersion: no flash on zoom-out).
@@ -411,16 +469,30 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
         }
         if (nc == NodeClass::Mixed && node.level <= detail)
         {
+            // The node's OWN raster for this exact region. If converged (Done), emit
+            // it final. If it is mid-(re)solve -- Coarse/Queued/Missing after a pan
+            // away-and-back or a coarser-zoom reuse -- its published snapshot is STILL
+            // the last good raster for THIS region (snapshots are immutable and
+            // world-aligned), so emit it as a stand-in and still request the refined
+            // tile. Dropping a non-null snapshot merely because state != Done was the
+            // few-frames-of-emptiness on tile swap (immersion: show the old correct
+            // content, never a hole).
             CoverageTilePtr cov = store_.snapshot(node);
-            if (cov && store_.state(node) == TileState::Done)
+            if (cov)
             {
+                const bool done = store_.state(node) == TileState::Done;
                 PresentTile p{};
                 p.key = node;
                 p.rect = tileRect(node, tilePx_);
                 p.cov = std::move(cov);
                 p.level = node.level;
-                p.state = TileState::Done;
+                p.state = done ? TileState::Done : TileState::Coarse;
+                p.fallback = !done; // keep refining while it is the stale raster
+                // Attach a resident coarse-ancestor stand-in so the presenter never
+                // shows a hole while this tile's own texture is still uploading.
+                fillStandin(node, p);
                 out.push_back(std::move(p));
+                if (!done && store_.state(node) != TileState::Queued) stuck.push_back(node);
                 return;
             }
         }
@@ -431,8 +503,15 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
         // raster) or a culled node back in view (Missing): neither is re-enqueued by
         // discovery or the cascade, so the compositor asks for it directly.
         // Request a (re)solve only for tiles not already queued, so a multi-frame
-        // settle doesn't re-append hundreds of in-flight keys every frame.
-        if (node.level <= detail && store_.state(node) != TileState::Queued)
+        // settle doesn't re-append hundreds of in-flight keys every frame. Request:
+        //  - a detail tile (level <= detail): it needs its own raster; AND
+        //  - an UNKNOWN intermediate node (level > detail): it blocks the descent to
+        //    the detail level. This happens when a shallower prior view classified the
+        //    parent but never cascaded below its own detail, so the deeper children
+        //    were never created -> the descent dead-ends here. Requesting it makes the
+        //    worker classify + CASCADE its children down toward the detail level.
+        if (store_.state(node) != TileState::Queued
+            && (node.level <= detail || nc == NodeClass::Unknown))
             stuck.push_back(node);
 
         // Prefer reusing finer cached children (zoom-out / refinement); else fall
@@ -443,15 +522,11 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
             childKeys(node, ch);
             bool any = false;
             for (const TileKey &c : ch)
-            {
-                const NodeClass cc = store_.classOf(c);
-                if (cc == NodeClass::UniformTrue || cc == NodeClass::UniformFalse
-                    || store_.snapshot(c))
+                if (hasReusable(c, down - 1)) // look deeper, not just direct children
                 {
                     any = true;
                     break;
                 }
-            }
             if (any)
             {
                 for (const TileKey &c : ch) emit(c, down - 1);
@@ -468,6 +543,7 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
     // consistent relation/epoch/cancel. The main thread does no solving itself.
     if (!stuck.empty())
     {
+        resolveDetail_.store(detail, std::memory_order_relaxed); // level to solve them at
         {
             std::scoped_lock lock(mailMutex_);
             resolveReq_.insert(resolveReq_.end(), stuck.begin(), stuck.end());

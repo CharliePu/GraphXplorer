@@ -157,3 +157,33 @@ TEST_CASE("OBJECTIVE 2: changing formula cancels stale work (storm safety)", "[e
     // store stayed bounded despite the churn (greedy quadtree + LRU eviction)
     REQUIRE(engine.storeSize() < 16000);
 }
+
+TEST_CASE("OBJECTIVE 7: after a pan storm the current viewport fully completes, bounded",
+          "[engine][viewport]")
+{
+    Engine engine(64, 4);
+    engine.setRelation(rel("sin(x*y) > 0")); // heavy: lots of detail tiles per viewport
+
+    // Pan rapidly across many far-apart viewports (off-screen backlog piles up).
+    for (int k = 0; k < 12; ++k)
+    {
+        engine.setViewport(Viewport{1500.0 * k, -800.0 * k, 0.05, 256, 256});
+    }
+    // Settle on a final viewport.
+    Viewport finalVp{0.0, 0.0, 0.05, 256, 256};
+    engine.setViewport(finalVp);
+    engine.waitUntilQuiescent();
+
+    // Viewport prioritization + off-screen cull => the CURRENT viewport is fully
+    // generated (no fallback, every leaf Done), not stuck behind the stale backlog.
+    std::vector<PresentTile> present;
+    engine.buildPresent(finalVp, present);
+    REQUIRE_FALSE(present.empty());
+    for (const PresentTile &p : present)
+    {
+        REQUIRE_FALSE(p.fallback);
+        REQUIRE(p.state == TileState::Done);
+    }
+    // off-screen detail work was culled at the source -> store never exploded.
+    REQUIRE(engine.storeSize() < 16000);
+}

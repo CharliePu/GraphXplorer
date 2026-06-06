@@ -307,7 +307,10 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
         out.push_back(std::move(p));
     };
 
-    std::function<void(const TileKey &)> emit = [&](const TileKey &node) {
+    // `down` bounds how many levels we may descend into FINER cached children when
+    // this node has no ready leaf of its own -> reuses the pre-zoom-out detail tiles
+    // until the larger greedy tile is ready (immersion: no flash on zoom-out).
+    std::function<void(const TileKey &, int)> emit = [&](const TileKey &node, int down) {
         store_.touch(node, frame);
         const NodeClass nc = store_.classOf(node);
         if (nc == NodeClass::UniformTrue)
@@ -323,36 +326,59 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
             return;
         }
         if (nc == NodeClass::UniformFalse) return; // background
-        if (nc == NodeClass::Mixed)
+
+        if (nc == NodeClass::Mixed && node.level > detail)
         {
-            if (node.level <= detail)
-            {
-                CoverageTilePtr cov = store_.snapshot(node);
-                if (cov && store_.state(node) == TileState::Done)
-                {
-                    PresentTile p{};
-                    p.key = node;
-                    p.rect = tileRect(node, tilePx_);
-                    p.cov = std::move(cov);
-                    p.level = node.level;
-                    p.state = TileState::Done;
-                    out.push_back(std::move(p));
-                }
-                else
-                {
-                    emitFallback(node);
-                }
-                return;
-            }
             TileKey ch[4];
             childKeys(node, ch);
-            for (const TileKey &c : ch) emit(c);
+            for (const TileKey &c : ch) emit(c, down);
             return;
         }
-        emitFallback(node); // Unknown: not classified yet
+        if (nc == NodeClass::Mixed && node.level <= detail)
+        {
+            CoverageTilePtr cov = store_.snapshot(node);
+            if (cov && store_.state(node) == TileState::Done)
+            {
+                PresentTile p{};
+                p.key = node;
+                p.rect = tileRect(node, tilePx_);
+                p.cov = std::move(cov);
+                p.level = node.level;
+                p.state = TileState::Done;
+                out.push_back(std::move(p));
+                return;
+            }
+        }
+
+        // Not a ready leaf (Unknown, or detail-Mixed still solving). Prefer reusing
+        // finer cached children (zoom-out / refinement); else fall back to a coarser
+        // ancestor (zoom-in / pan). Either way every region is covered exactly once.
+        if (down > 0)
+        {
+            TileKey ch[4];
+            childKeys(node, ch);
+            bool any = false;
+            for (const TileKey &c : ch)
+            {
+                const NodeClass cc = store_.classOf(c);
+                if (cc == NodeClass::UniformTrue || cc == NodeClass::UniformFalse
+                    || store_.snapshot(c))
+                {
+                    any = true;
+                    break;
+                }
+            }
+            if (any)
+            {
+                for (const TileKey &c : ch) emit(c, down - 1);
+                return;
+            }
+        }
+        emitFallback(node);
     };
 
-    for (const TileKey &s : startNodes(vp, epoch)) emit(s);
+    constexpr int kReuseDown = 4; // levels of finer-tile reuse on zoom-out
+    for (const TileKey &s : startNodes(vp, epoch)) emit(s, kReuseDown);
     return out.size();
 }
 

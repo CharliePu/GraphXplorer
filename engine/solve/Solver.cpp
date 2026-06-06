@@ -24,6 +24,7 @@ public:
         : rel_(rel), rect_(rect), s_(s), cancel_(cancel), T_(p.tilePx), K_(p.subBits),
           budget_(p.boxBudget)
     {
+        floorN_ = std::max(1, p.floorSamples);
         pixelSub_ = 1 << K_;
         N_ = T_ * pixelSub_;
         stepX_ = rect_.width() / N_;
@@ -76,6 +77,7 @@ private:
     EvalScratch &s_;
     CancelToken cancel_;
     int T_, K_, pixelSub_, N_;
+    int floorN_{1}; // per-axis sub-samples for an uncertain floor/bailout cell
     long long budget_;
     long long processed_{0};
     double stepX_, stepY_, wpp_;
@@ -171,7 +173,52 @@ private:
         }
     }
 
-    void addHalf(const Box &b) { addUniform(b, 0.5, 1.0); }
+    // Sample one box (M x M stratified, world-aligned) -> its coverage measure, and
+    // distribute via addUniform (correct pixel overlap + area units, no double-count).
+    void sampleBoxInto(const Box &b, int M)
+    {
+        const double x0w = rect_.x0 + b.x0 * stepX_;
+        const double y0w = rect_.y0 + b.y0 * stepY_;
+        const double bw = (b.x1 - b.x0) * stepX_;
+        const double bh = (b.y1 - b.y0) * stepY_;
+        const double inv = 1.0 / M;
+        int hits = 0;
+        for (int sy = 0; sy < M; ++sy)
+            for (int sx = 0; sx < M; ++sx)
+            {
+                const double px = x0w + (sx + 0.5) * inv * bw;
+                const double py = y0w + (sy + 0.5) * inv * bh;
+                if (rel_.pointInside(px, py, s_)) ++hits;
+            }
+        const int total = M * M;
+        const double frac = static_cast<double>(hits) / total;
+        addUniform(b, frac, std::sqrt(frac * (1.0 - frac) / total)); // estimate + stderr
+    }
+
+    // Budget-bailout estimate for an unprocessed box. With sampling on (inequalities),
+    // MEASURE it PER PIXEL (M x M each) instead of a flat 0.5 or one blocky per-box
+    // value -> the oscillation-dominated frontier renders smooth, like the explicit-1D
+    // path, instead of blocky chunks. Equalities keep the flat estimate (their
+    // measure-zero curve can't be point-sampled -> the band model handles them).
+    static constexpr int kBailSamplesPerAxis = 16; // ~256 samples/pixel for bailed cells
+    void addHalf(const Box &b)
+    {
+        if (floorN_ <= 1 || equalityCurve_)
+        {
+            addUniform(b, 0.5, 1.0); // legacy flat estimate
+            return;
+        }
+        const int sz = b.x1 - b.x0;
+        if (sz <= pixelSub_)
+        {
+            sampleBoxInto(b, kBailSamplesPerAxis); // sub-pixel or single-pixel box
+            return;
+        }
+        // Multi-pixel box: split to pixel-sized boxes so it is not a flat blocky chunk.
+        for (int py = b.y0; py < b.y1; py += pixelSub_)
+            for (int px = b.x0; px < b.x1; px += pixelSub_)
+                sampleBoxInto(Box{px, py, px + pixelSub_, py + pixelSub_}, kBailSamplesPerAxis);
+    }
 
     // Floor leaf. For inequalities this is a single sub-pixel cell, resolved by
     // an unbiased center sample. For equalities it is a whole pixel, where the
@@ -183,10 +230,38 @@ private:
 
         if (!equalityCurve_)
         {
-            const double cx = rect_.x0 + (b.x0 + 0.5) * stepX_;
-            const double cy = rect_.y0 + (b.y0 + 0.5) * stepY_;
-            acc_[idx] += rel_.pointInside(cx, cy, s_) ? 1.0 : 0.0;
-            unc_[idx] += 1.0;
+            if (floorN_ <= 1)
+            {
+                // legacy: byte-identical single center sample
+                const double cx = rect_.x0 + (b.x0 + 0.5) * stepX_;
+                const double cy = rect_.y0 + (b.y0 + 0.5) * stepY_;
+                acc_[idx] += rel_.pointInside(cx, cy, s_) ? 1.0 : 0.0;
+                unc_[idx] += 1.0;
+                return;
+            }
+            // N x N stratified samples over the one uncertain sub-cell -> its coverage
+            // MEASURE (true-fraction), so sub-pixel oscillation averages to the analytic
+            // measure instead of binary 0/1 grain. Sub-cell area is 1.0 (sub-cell^2).
+            const double x0w = rect_.x0 + b.x0 * stepX_;
+            const double y0w = rect_.y0 + b.y0 * stepY_;
+            const double inv = 1.0 / floorN_;
+            int hits = 0;
+            for (int sy = 0; sy < floorN_; ++sy)
+                for (int sx = 0; sx < floorN_; ++sx)
+                {
+                    const double px = x0w + (sx + 0.5) * inv * stepX_;
+                    const double py = y0w + (sy + 0.5) * inv * stepY_;
+                    if (rel_.pointInside(px, py, s_)) ++hits;
+                }
+            const int total = floorN_ * floorN_;
+            const double frac = static_cast<double>(hits) / total;
+            acc_[idx] += frac;
+            // Uncertainty = the sampling standard error (small), NOT a full unknown
+            // cell: a floor cell is as resolved as it gets (further subdivision can't
+            // help), so it must read as a low-uncertainty ESTIMATE -- otherwise the
+            // tile reports maximal uncertainty forever and the event-driven loop never
+            // settles past the phase-loss wall. Still nonzero -> flagged as estimate.
+            unc_[idx] += std::sqrt(frac * (1.0 - frac) / total);
             return;
         }
 

@@ -15,6 +15,11 @@ struct SolveParams
     int subBits{4};        // sub-pixel floor depth: floor cell = pixel / 2^subBits
     long long boxBudget{400000}; // max boxes processed before bailing to estimate
     bool analytic{true};   // use analytic accelerators where structure permits
+    int floorSamples{2};   // per-axis sub-samples (N) for an UNCERTAIN floor/bailout
+                           // cell: N*N point evals -> the cell's coverage MEASURE,
+                           // so sub-pixel oscillation in general 2-D relations renders
+                           // smooth (like the explicit-1D path) instead of grainy.
+                           // 1 => legacy single center sample; 2 = smooth & cheap.
 };
 
 // Cooperative cancellation: checked between BFS levels so stale work abandons cheaply.

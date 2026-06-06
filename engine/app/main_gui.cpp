@@ -584,8 +584,11 @@ int runReproGl(const std::string &prefix)
         for (const PresentTile &p : present)
             if (p.fallback) ++fb;
         saveFramebuffer(fbW, fbH, prefix + name + ".png");
-        std::printf("%-11s fb=%4dx%-4d wpp=%-8.4g frames=%-5d FALLBACK=%-3d present=%zu\n",
-                    name.c_str(), fbW, fbH, vp.worldPerPixel, frame, fb, present.size());
+        const bool frozen = (frame >= 1500 && fb > 0);
+        std::printf("%-11s fb=%4dx%-4d wpp=%-8.4g frames=%-5d FALLBACK=%-3d jobs=%llu %s\n",
+                    name.c_str(), fbW, fbH, vp.worldPerPixel, frame, fb,
+                    static_cast<unsigned long long>(engine.jobsCompleted()),
+                    frozen ? "*** FROZEN ***" : "ok");
     };
 
     renderToCompletion("1small");
@@ -601,13 +604,46 @@ int runReproGl(const std::string &prefix)
     vp.pxH = fbH;
     renderToCompletion("2maximize");
 
+    // zoom OUT a long way (revisiting fresh coarse levels)
     vp.worldPerPixel *= 4.0;
     renderToCompletion("3zoomout");
     vp.worldPerPixel *= 4.0;
     renderToCompletion("4zoomout2");
-    vp.worldPerPixel *= 4.0;
+    vp.worldPerPixel *= 8.0;
     renderToCompletion("5zoomout3");
+    vp.worldPerPixel *= 8.0;
+    renderToCompletion("6zoomoutFar");
 
-    std::printf("(FALLBACK must be 0 and each PNG must show the full graph, no holes)\n");
+    // zoom back IN through the levels already visited (the user's freeze case:
+    // the cascade is cached, so detail tiles have no slot and must be resolved).
+    vp.worldPerPixel /= 8.0;
+    renderToCompletion("7zoomin");
+    vp.worldPerPixel /= 8.0;
+    renderToCompletion("8zoomin2");
+    vp.worldPerPixel /= 4.0;
+    renderToCompletion("9zoomin3");
+    vp.worldPerPixel /= 4.0;
+    renderToCompletion("10zoominDeep");
+
+    // Fine non-power-of-2 zooms + pans (mimics scroll/drag): new edge tiles whose
+    // ancestors are already classified -> exercises the create-if-missing resolve.
+    for (int i = 0; i < 6; ++i)
+    {
+        vp.worldPerPixel *= 1.3;
+        renderToCompletion("11zoomscroll" + std::to_string(i));
+    }
+    for (int i = 0; i < 6; ++i)
+    {
+        vp.worldPerPixel /= 1.3;
+        renderToCompletion("12zoominscroll" + std::to_string(i));
+    }
+    for (int i = 0; i < 4; ++i)
+    {
+        vp.centerX += vp.worldPerPixel * 500;
+        vp.centerY += vp.worldPerPixel * 300;
+        renderToCompletion("13pan" + std::to_string(i));
+    }
+
+    std::printf("(FALLBACK must be 0 and no phase may be *** FROZEN ***)\n");
     return 0;
 }

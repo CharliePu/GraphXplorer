@@ -68,15 +68,30 @@ NodeClass TileStore::classOf(const TileKey &key) const
 
 bool TileStore::claimForResolve(const TileKey &key)
 {
-    std::shared_lock lock(mutex_);
-    const auto it = map_.find(key);
-    if (it == map_.end()) return false;
-    auto &st = it->second->state;
-    TileState expected = TileState::Coarse;
-    if (st.compare_exchange_strong(expected, TileState::Queued)) return true;
-    expected = TileState::Missing;
-    if (st.compare_exchange_strong(expected, TileState::Queued)) return true;
-    return false;
+    auto tryClaim = [](Slot &slot) {
+        TileState e = TileState::Coarse;
+        if (slot.state.compare_exchange_strong(e, TileState::Queued)) return true;
+        e = TileState::Missing;
+        if (slot.state.compare_exchange_strong(e, TileState::Queued)) return true;
+        return false;
+    };
+    {
+        std::shared_lock lock(mutex_);
+        const auto it = map_.find(key);
+        if (it != map_.end()) return tryClaim(*it->second);
+    }
+    // No slot yet: this detail tile is needed but the cascade never reached it
+    // (its ancestor was already classified, so nothing enqueued it). Create the
+    // slot, claimed, so the scheduler enqueues a fresh classify+raster job for it.
+    std::unique_lock lock(mutex_);
+    auto [it, inserted] = map_.try_emplace(key, nullptr);
+    if (inserted)
+    {
+        it->second = std::make_unique<Slot>();
+        it->second->state.store(TileState::Queued, std::memory_order_release);
+        return true;
+    }
+    return tryClaim(*it->second);
 }
 
 void TileStore::resetToMissing(const TileKey &key)

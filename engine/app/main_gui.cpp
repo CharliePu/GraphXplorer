@@ -383,10 +383,14 @@ int main(int argc, char **argv)
         // Event-driven: when the visible image is final, block at ~0% CPU until
         // input arrives or a worker wakes us (postEmptyEvent). While tiles are
         // still arriving, wake on each publish, with a short timeout as a backstop.
+        const auto tW0 = std::chrono::steady_clock::now();
         if (finalRender)
             glfw::waitEvents();
         else
             glfw::waitEvents(0.05);
+        const double waitMs = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - tW0)
+                                  .count();
 
         if (viewportDirty)
         {
@@ -431,7 +435,11 @@ int main(int argc, char **argv)
             drawDebug(overlay, vp, fbW, fbH, dbgTiles, engine.storeSize(), engine.jobsCompleted(),
                       fps, frameMs);
         }
+        const auto tSwap0 = std::chrono::steady_clock::now();
         window.swapBuffers();
+        const double swapMs = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - tSwap0)
+                                  .count();
 
         // Diagnostics: log a GL error immediately, a line when the image settles,
         // and a throttled progress line while it is still generating.
@@ -441,18 +449,19 @@ int main(int argc, char **argv)
             if (p.fallback) ++fbCount;
         const bool settled = finalRender && !prevFinal;
         const double sinceDiag = std::chrono::duration<double>(now - lastDiag).count();
-        // Also log any SLOW frame (>5ms in buildPresent or renderFrame) to catch lag.
-        const bool slow = bpMs > 5.0 || rfMs > 5.0;
+        // Log any SLOW frame: high bp/rf = our compute; high wait (when NOT final,
+        // so not idle-block) or high swap = the windowing/OS-resize/present layer.
+        const bool slow = bpMs > 5.0 || rfMs > 5.0 || swapMs > 8.0 || (!finalRender && waitMs > 8.0);
         if (glErr != GL_NO_ERROR || settled || slow || (!finalRender && sinceDiag > 0.15))
         {
-            char b[300];
+            char b[340];
             std::snprintf(b, sizeof b,
                           "[%s] fb=%dx%d wpp=%.5g lvl=%d present=%zu fallback=%d pending=%d store=%zu "
-                          "jobs=%llu frameMs=%.1f bpMs=%.1f rfMs=%.1f glErr=0x%x",
+                          "jobs=%llu frameMs=%.1f bpMs=%.1f rfMs=%.1f waitMs=%.1f swapMs=%.1f glErr=0x%x",
                           finalRender ? "final" : "gen", fbW, fbH, vp.worldPerPixel, vp.activeLevel(),
                           present.size(), fbCount, pendingUploads, engine.storeSize(),
                           static_cast<unsigned long long>(engine.jobsCompleted()), dt * 1000.0, bpMs,
-                          rfMs, static_cast<unsigned>(glErr));
+                          rfMs, waitMs, swapMs, static_cast<unsigned>(glErr));
             logln(b);
             lastDiag = now;
         }
@@ -570,10 +579,13 @@ int runReproGl(const std::string &prefix)
         engine.setViewport(vp);
         int frame = 0;
         bool finalRender = false;
+        double maxBp = 0, maxRf = 0, sumBp = 0;
         for (; frame < 1500; ++frame)
         {
             glfw::pollEvents();
+            const auto t0 = std::chrono::steady_clock::now();
             const size_t visible = engine.buildPresent(vp, present);
+            const auto t1 = std::chrono::steady_clock::now();
             finalRender = (present.size() == visible);
             for (const PresentTile &p : present)
                 if (p.fallback || p.state != TileState::Done)
@@ -582,6 +594,11 @@ int runReproGl(const std::string &prefix)
                     break;
                 }
             const int pending = presenter.renderFrame(vp, present, 128);
+            const auto t2 = std::chrono::steady_clock::now();
+            const double bp = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            maxBp = std::max(maxBp, bp);
+            sumBp += bp;
+            maxRf = std::max(maxRf, std::chrono::duration<double, std::milli>(t2 - t1).count());
             if (pending > 0) finalRender = false;
             window.swapBuffers();
             if (finalRender && frame > 2) break;
@@ -592,65 +609,40 @@ int runReproGl(const std::string &prefix)
             if (p.fallback) ++fb;
         saveFramebuffer(fbW, fbH, prefix + name + ".png");
         const bool frozen = (frame >= 1500 && fb > 0);
-        std::printf("%-11s fb=%4dx%-4d wpp=%-8.4g frames=%-5d FALLBACK=%-3d jobs=%llu %s\n",
+        std::printf("%-12s fb=%4dx%-4d wpp=%-8.4g frames=%-4d FB=%-3d jobs=%-6llu store=%-5zu "
+                    "maxBpMs=%5.1f maxRfMs=%5.1f sumBpMs=%6.0f %s\n",
                     name.c_str(), fbW, fbH, vp.worldPerPixel, frame, fb,
-                    static_cast<unsigned long long>(engine.jobsCompleted()),
-                    frozen ? "*** FROZEN ***" : "ok");
+                    static_cast<unsigned long long>(engine.jobsCompleted()), engine.storeSize(),
+                    maxBp, maxRf, sumBp, frozen ? "*** FROZEN ***" : "ok");
+    };
+
+    auto setWindow = [&](int w, int h) {
+        window.setSize(w, h);
+        glfw::pollEvents();
+        auto s = window.getFramebufferSize();
+        fbW = std::get<0>(s);
+        fbH = std::get<1>(s);
+        presenter.resize(fbW, fbH);
+        vp.pxW = fbW;
+        vp.pxH = fbH;
     };
 
     renderToCompletion("1small");
 
-    // maximize: grow the window / framebuffer
-    window.setSize(1280, 720);
-    glfw::pollEvents();
-    auto sz1 = window.getFramebufferSize();
-    fbW = std::get<0>(sz1);
-    fbH = std::get<1>(sz1);
-    presenter.resize(fbW, fbH);
-    vp.pxW = fbW;
-    vp.pxH = fbH;
-    renderToCompletion("2maximize");
-
-    // zoom OUT a long way (revisiting fresh coarse levels)
-    vp.worldPerPixel *= 4.0;
-    renderToCompletion("3zoomout");
-    vp.worldPerPixel *= 4.0;
-    renderToCompletion("4zoomout2");
-    vp.worldPerPixel *= 8.0;
-    renderToCompletion("5zoomout3");
-    vp.worldPerPixel *= 8.0;
-    renderToCompletion("6zoomoutFar");
-
-    // zoom back IN through the levels already visited (the user's freeze case:
-    // the cascade is cached, so detail tiles have no slot and must be resolved).
-    vp.worldPerPixel /= 8.0;
-    renderToCompletion("7zoomin");
-    vp.worldPerPixel /= 8.0;
-    renderToCompletion("8zoomin2");
-    vp.worldPerPixel /= 4.0;
-    renderToCompletion("9zoomin3");
-    vp.worldPerPixel /= 4.0;
-    renderToCompletion("10zoominDeep");
-
-    // Fine non-power-of-2 zooms + pans (mimics scroll/drag): new edge tiles whose
-    // ancestors are already classified -> exercises the create-if-missing resolve.
-    for (int i = 0; i < 6; ++i)
+    // Repeated maximize cycles at the user's window size (3200x1859), with some
+    // zooming in between to grow the store like real use. Watch MAXIMIZE* maxBpMs
+    // / sumBpMs: if they grow across cycles, that growth IS the accumulating lag.
+    for (int m = 0; m < 6; ++m)
     {
-        vp.worldPerPixel *= 1.3;
-        renderToCompletion("11zoomscroll" + std::to_string(i));
-    }
-    for (int i = 0; i < 6; ++i)
-    {
-        vp.worldPerPixel /= 1.3;
-        renderToCompletion("12zoominscroll" + std::to_string(i));
-    }
-    for (int i = 0; i < 4; ++i)
-    {
-        vp.centerX += vp.worldPerPixel * 500;
-        vp.centerY += vp.worldPerPixel * 300;
-        renderToCompletion("13pan" + std::to_string(i));
+        setWindow(900, 600);
+        vp.worldPerPixel *= 3.0;
+        renderToCompletion("c" + std::to_string(m) + "_zoomout");
+        vp.worldPerPixel /= 3.0;
+        renderToCompletion("c" + std::to_string(m) + "_zoomin");
+        setWindow(3200, 1859);
+        renderToCompletion("MAXIMIZE" + std::to_string(m));
     }
 
-    std::printf("(FALLBACK must be 0 and no phase may be *** FROZEN ***)\n");
+    std::printf("(MAXIMIZE* maxBpMs/sumBpMs growth across cycles = the accumulating lag)\n");
     return 0;
 }

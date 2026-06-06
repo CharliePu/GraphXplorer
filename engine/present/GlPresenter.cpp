@@ -198,10 +198,11 @@ void GlPresenter::evictTextures(uint64_t frame)
     }
 }
 
-void GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> &tiles,
-                              int uploadBudget)
+int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> &tiles,
+                             int uploadBudget)
 {
     ++frame_;
+    int pendingUploads = 0;
     glViewport(0, 0, fbW_, fbH_);
     glClearColor(0.07f, 0.07f, 0.09f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -265,7 +266,13 @@ void GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile>
         else
         {
             texId = ensureTexture(t.cov, budget, frame_);
-            if (texId == 0) continue; // no texture available this frame
+            if (texId == 0)
+            {
+                // a solved tile whose texture didn't fit this frame's upload budget
+                // (vs a null-cov hole placeholder, which has nothing to upload).
+                if (t.cov && !t.cov->alpha.empty()) ++pendingUploads;
+                continue;
+            }
             glUniform1i(uFlatMode_, 0);
             u0 = t.u0;
             v0 = t.v0;
@@ -283,5 +290,6 @@ void GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile>
 
     evictTextures(frame_);
     glBindVertexArray(0);
+    return pendingUploads;
 }
 }

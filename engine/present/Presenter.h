@@ -23,9 +23,12 @@ public:
 
     // Render one frame: clear, composite the given visible tiles for `vp`, draw
     // axes/grid. `uploadBudget` caps how many tile textures may be (re)uploaded
-    // this frame so the main thread never hitches on transfers.
-    virtual void renderFrame(const Viewport &vp, const std::vector<PresentTile> &tiles,
-                             int uploadBudget) = 0;
+    // this frame so the main thread never hitches on transfers. Returns the number
+    // of tiles that still need uploading but were skipped this frame (budget
+    // exhausted) -- the caller must keep rendering until this reaches 0, else the
+    // image is not actually complete on screen even though every tile is solved.
+    [[nodiscard]] virtual int renderFrame(const Viewport &vp, const std::vector<PresentTile> &tiles,
+                                          int uploadBudget) = 0;
 };
 }
 

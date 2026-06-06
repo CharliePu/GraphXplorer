@@ -109,6 +109,9 @@ private:
     void workerLoop(int workerIndex);
     void enqueueVisible(const Viewport &vp, std::shared_ptr<const Relation> rel, uint64_t epoch,
                         const std::shared_ptr<std::atomic<bool>> &cancel);
+    void serviceResolve(const std::vector<TileKey> &keys, const Viewport &vp,
+                        const std::shared_ptr<const Relation> &rel, uint64_t epoch,
+                        const std::shared_ptr<std::atomic<bool>> &cancel);
     void pushJobs(std::vector<Job> &jobs);
     // greedy quadtree: coarsest level whose nodes cover the viewport in a few cells
     [[nodiscard]] int chooseStartLevel(const Viewport &vp) const;
@@ -126,6 +129,13 @@ private:
     bool mailDirty_{false};
     std::atomic<uint64_t> epoch_{0};
     std::shared_ptr<std::atomic<bool>> liveCancel_;
+
+    // Resolve requests: detail-level tiles the compositor needs but that are stuck
+    // (an intermediate Coarse node reused at a coarser zoom, or a culled Missing
+    // node back in view). buildPresent appends keys; the scheduler claims+enqueues
+    // them with a consistent relation/epoch/cancel. Guarded by mailMutex_.
+    std::vector<TileKey> resolveReq_;
+    bool resolvePending_{false};
 
     // Latest viewport, published for worker-side culling of off-screen work, and a
     // generation counter bumped on every viewport change for priority ordering.

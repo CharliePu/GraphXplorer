@@ -10,6 +10,7 @@
 #include "present/GlPresenter.h"
 #include "present/Overlay.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -92,7 +93,7 @@ void drawUi(Overlay &ui, int fbW, int fbH, const std::string &formula, bool edit
 // info panel (fps, level, viewport, tile/store/job counts) and a legend.
 void drawDebug(Overlay &ui, const Viewport &vp, int fbW, int fbH,
               const std::vector<DebugTile> &tiles, size_t storeSize, unsigned long long jobs,
-              double fps, double frameMs)
+              double fps, double frameMs, int holes)
 {
     if (!ui.ok()) return;
     ui.begin();
@@ -118,7 +119,7 @@ void drawDebug(Overlay &ui, const Viewport &vp, int fbW, int fbH,
     }
 
     // info panel (top-right)
-    const float pw = 320, ph = 184, px = fbW - pw - 10, py = 50;
+    const float pw = 320, ph = 206, px = fbW - pw - 10, py = 50;
     ui.fillRect(px, py, pw, ph, {0.04f, 0.04f, 0.06f, 0.88f});
     const std::array<float, 4> tc{0.85f, 0.9f, 1.0f, 1.0f};
     float ty = py + 8;
@@ -137,6 +138,10 @@ void drawDebug(Overlay &ui, const Viewport &vp, int fbW, int fbH,
     line(buf);
     std::snprintf(buf, sizeof buf, "jobs done %llu", jobs);
     line(buf);
+    std::snprintf(buf, sizeof buf, "holes %d", holes); // the "eye": uncovered regions this frame
+    ui.text(px + 12, ty, buf, 0.8f,
+            holes > 0 ? std::array<float, 4>{1.0f, 0.35f, 0.35f, 1.0f} : tc);
+    ty += ui.lineHeight(0.8f) + 2;
     ty += 6;
     auto legend = [&](std::array<float, 4> col, const char *lbl) {
         ui.fillRect(px + 12, ty + 2, 12, 12, col);
@@ -146,6 +151,81 @@ void drawDebug(Overlay &ui, const Viewport &vp, int fbW, int fbH,
     legend({0.25f, 0.9f, 0.45f, 1}, "done (converged)");
     legend({0.98f, 0.82f, 0.2f, 1}, "refining (coarse)");
     legend({1.0f, 0.5f, 0.15f, 1}, "queued");
+}
+
+// Numeric tick labels along the X and Y axes, matching the presenter's adaptive
+// grid spacing. Labels ride the axis but clamp to the screen edge when the axis
+// scrolls off, so coordinates stay readable while panning/zooming.
+void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH)
+{
+    if (!ui.ok()) return;
+    const double cx = vp.centerX, cy = vp.centerY, wpp = vp.worldPerPixel;
+    if (!(wpp > 0.0)) return;
+    const WorldRect wb = vp.worldBounds();
+    // Same 1/2/5 x 10^n choice the presenter uses for the grid lines.
+    const double rawStep = wpp * 90.0;
+    const double mag = std::pow(10.0, std::floor(std::log10(std::max(rawStep, 1e-300))));
+    const double norm = rawStep / mag;
+    const double step = (norm < 2.0 ? 1.0 : norm < 5.0 ? 2.0 : 5.0) * mag;
+    if (!(step > 0.0)) return;
+
+    auto sx = [&](double wx) { return (wx - cx) / wpp + fbW * 0.5; };
+    auto syTop = [&](double wy) { return fbH * 0.5 - (wy - cy) / wpp; };
+
+    const int decimals = std::clamp(static_cast<int>(std::ceil(-std::log10(step))), 0, 8);
+    auto fmt = [&](double v) -> std::string {
+        char buf[32];
+        if (std::abs(v) >= 1e5 || (v != 0.0 && std::abs(v) < 1e-3))
+            std::snprintf(buf, sizeof buf, "%g", v);
+        else
+            std::snprintf(buf, sizeof buf, "%.*f", decimals, v);
+        return std::string(buf);
+    };
+
+    ui.begin();
+    const float sc = 0.82f;
+    const float lh = ui.lineHeight(sc);
+    const std::array<float, 4> fg{0.95f, 0.97f, 1.0f, 1.0f};
+    const std::array<float, 4> bg{0.03f, 0.03f, 0.05f, 0.9f};
+    // Draw each label with a 1px dark outline so it stays legible over both the
+    // bright (true) fill and the dark (false) background it straddles on the axis.
+    auto label = [&](float x, float y, const std::string &s) {
+        ui.text(x - 1.0f, y, s, sc, bg);
+        ui.text(x + 1.0f, y, s, sc, bg);
+        ui.text(x, y - 1.0f, s, sc, bg);
+        ui.text(x, y + 1.0f, s, sc, bg);
+        ui.text(x, y, s, sc, fg);
+    };
+
+    // X labels: just below the x-axis row, clamped clear of the top/bottom UI bars.
+    const float rowY = static_cast<float>(
+        std::clamp(syTop(0.0) + 4.0, 44.0, static_cast<double>(fbH) - 32.0 - lh));
+    int guard = 0;
+    for (double x = std::ceil(wb.x0 / step) * step; x <= wb.x1 && guard < 200; x += step, ++guard)
+    {
+        if (std::abs(x) < step * 0.5) continue; // origin labelled once below
+        const float px = static_cast<float>(sx(x));
+        if (px < 16 || px > fbW - 6) continue;
+        label(px + 3, rowY, fmt(x));
+    }
+
+    // Y labels: right-aligned just left of the y-axis column, clamped to the screen.
+    guard = 0;
+    for (double y = std::ceil(wb.y0 / step) * step; y <= wb.y1 && guard < 200; y += step, ++guard)
+    {
+        if (std::abs(y) < step * 0.5) continue;
+        const float py = static_cast<float>(syTop(y));
+        if (py < 44 || py > fbH - 30) continue;
+        const std::string s = fmt(y);
+        const float w = ui.textWidth(s, sc);
+        const float colX = std::clamp(static_cast<float>(sx(0.0)) - w - 6.0f, 3.0f,
+                                      static_cast<float>(fbW) - w - 3.0f);
+        label(colX, py - lh * 0.5f, s);
+    }
+
+    // origin
+    const float ox = static_cast<float>(sx(0.0)), oy = static_cast<float>(syTop(0.0));
+    if (ox > 10 && ox < fbW - 6 && oy > 44 && oy < fbH - 30) label(ox + 4, oy + 4, "0");
 }
 }
 
@@ -316,14 +396,18 @@ int main(int argc, char **argv)
                 break;
             }
 
-        const int pendingUploads = presenter.renderFrame(vp, present, /*uploadBudget=*/64);
+        const int pendingUploads = presenter.renderFrame(vp, present, /*uploadBudget=*/192);
+        // The "eye": true visual holes this frame -- a region that drew NOTHING (own
+        // texture not ready AND no resident ancestor stand-in). Seamless swap => 0.
+        const int holes = presenter.lastHoleTiles();
         if (pendingUploads > 0) finalRender = false;
+        drawAxisNumbers(overlay, vp, fbW, fbH);
         drawUi(overlay, fbW, fbH, formula, editing, editBuffer, status);
         if (showDebug)
         {
             engine.debugTiles(vp, dbgTiles);
             drawDebug(overlay, vp, fbW, fbH, dbgTiles, engine.storeSize(), engine.jobsCompleted(), fps,
-                      frameMs);
+                      frameMs, holes);
         }
 
         // Resize-guarded present (see guard state above). In the settle window
@@ -390,23 +474,23 @@ int main(int argc, char **argv)
             }
         }
 
-        // Quiet diagnostics: a GL error, the settle line, or a throttled progress
-        // line while still generating tiles.
+        // Quiet diagnostics: a GL error, ANY hole frame (the eye), the settle line,
+        // or a throttled progress line while still generating tiles.
         const GLenum glErr = glGetError();
         const bool settled = finalRender && !prevFinal;
         const double sinceDiag = std::chrono::duration<double>(now - lastDiag).count();
-        if (glErr != GL_NO_ERROR || settled || (!finalRender && sinceDiag > 0.2))
+        if (glErr != GL_NO_ERROR || holes > 0 || settled || (!finalRender && sinceDiag > 0.2))
         {
             int fbCount = 0;
             for (const PresentTile &p : present)
                 if (p.fallback) ++fbCount;
-            char b[220];
-            std::snprintf(b, sizeof b,
-                          "[%s] fb=%dx%d wpp=%.5g present=%zu fallback=%d store=%zu jobs=%llu glErr=0x%x",
-                          finalRender ? "final" : "gen", fbW, fbH, vp.worldPerPixel, present.size(),
-                          fbCount, engine.storeSize(),
-                          static_cast<unsigned long long>(engine.jobsCompleted()),
-                          static_cast<unsigned>(glErr));
+            char b[240];
+            std::snprintf(
+                b, sizeof b,
+                "[%s] fb=%dx%d wpp=%.5g present=%zu HOLES=%d fallback=%d store=%zu jobs=%llu glErr=0x%x",
+                finalRender ? "final" : "gen", fbW, fbH, vp.worldPerPixel, present.size(), holes,
+                fbCount, engine.storeSize(), static_cast<unsigned long long>(engine.jobsCompleted()),
+                static_cast<unsigned>(glErr));
             logln(b);
             lastDiag = now;
         }
@@ -619,7 +703,7 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
         {
             engine.debugTiles(vp, dbgTiles);
             drawDebug(overlay, vp, fbW, fbH, dbgTiles, engine.storeSize(), engine.jobsCompleted(),
-                      120.0, 8.0);
+                      120.0, 8.0, /*holes=*/0);
         }
         window.swapBuffers();
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -681,6 +765,7 @@ int runReproGl(const std::string &prefix)
         int frame = 0;
         bool finalRender = false;
         double maxBp = 0, maxRf = 0, sumBp = 0;
+        int maxHoles = 0, holeFrames = 0;
         for (; frame < 1500; ++frame)
         {
             glfw::pollEvents();
@@ -688,12 +773,14 @@ int runReproGl(const std::string &prefix)
             const size_t visible = engine.buildPresent(vp, present);
             const auto t1 = std::chrono::steady_clock::now();
             finalRender = (present.size() == visible);
+            int holes = 0;
             for (const PresentTile &p : present)
-                if (p.fallback || p.state != TileState::Done)
-                {
-                    finalRender = false;
-                    break;
-                }
+            {
+                if (!p.flat && !p.cov) ++holes;
+                if (p.fallback || p.state != TileState::Done) finalRender = false;
+            }
+            maxHoles = std::max(maxHoles, holes);
+            if (holes > 0) ++holeFrames;
             const int pending = presenter.renderFrame(vp, present, 128);
             const auto t2 = std::chrono::steady_clock::now();
             const double bp = std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -710,11 +797,48 @@ int runReproGl(const std::string &prefix)
             if (p.fallback) ++fb;
         saveFramebuffer(fbW, fbH, prefix + name + ".png");
         const bool frozen = (frame >= 1500 && fb > 0);
-        std::printf("%-12s fb=%4dx%-4d wpp=%-8.4g frames=%-4d FB=%-3d jobs=%-6llu store=%-5zu "
-                    "maxBpMs=%5.1f maxRfMs=%5.1f sumBpMs=%6.0f %s\n",
-                    name.c_str(), fbW, fbH, vp.worldPerPixel, frame, fb,
+        std::printf("%-12s fb=%4dx%-4d wpp=%-8.4g frames=%-4d FB=%-3d HOLES(max=%d,frames=%d) "
+                    "jobs=%-6llu store=%-5zu %s\n",
+                    name.c_str(), fbW, fbH, vp.worldPerPixel, frame, fb, maxHoles, holeFrames,
                     static_cast<unsigned long long>(engine.jobsCompleted()), engine.storeSize(),
-                    maxBp, maxRf, sumBp, frozen ? "*** FROZEN ***" : "ok");
+                    frozen ? "*** FROZEN ***" : "ok");
+    };
+
+    // Scrub like a live user: continuous small zoom/pan steps, a few buildPresents
+    // per step (no full settle) -- this is what produces the transient single-frame
+    // holes. Counts hole frames across the whole scrub.
+    auto scrub = [&](const std::string &name, int steps, double zoomMul, double panPx, int fps = 4) {
+        int maxHoles = 0, holeFrames = 0, total = 0, maxPend = 0, pendFrames = 0;
+        for (int s = 0; s < steps; ++s)
+        {
+            vp.worldPerPixel *= zoomMul;
+            vp.centerX += panPx * vp.worldPerPixel;
+            engine.setViewport(vp);
+            glfw::pollEvents();
+            for (int f = 0; f < fps; ++f, ++total)
+            {
+                const size_t visible = engine.buildPresent(vp, present);
+                (void)visible;
+                int holes = 0;
+                for (const PresentTile &p : present)
+                    if (!p.flat && !p.cov) ++holes;
+                maxHoles = std::max(maxHoles, holes);
+                if (holes > 0) ++holeFrames;
+                // pend = tiles still sharpening in (own texture uploading; a stand-in
+                // is drawn meanwhile -> NOT a hole). trueHoles = regions that drew
+                // NOTHING. The seamless target is trueHoleFrames == 0.
+                const int pend = presenter.renderFrame(vp, present, 192);
+                const int trueHoles = presenter.lastHoleTiles();
+                maxPend = std::max(maxPend, trueHoles);
+                if (trueHoles > 0) ++pendFrames;
+                (void)pend;
+                window.swapBuffers();
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        }
+        saveFramebuffer(fbW, fbH, prefix + name + ".png");
+        std::printf("%-14s frames=%-4d covHoleFrames=%-3d TRUEHOLE(max=%d,frames=%d) store=%zu\n",
+                    name.c_str(), total, holeFrames, maxPend, pendFrames, engine.storeSize());
     };
 
     auto setWindow = [&](int w, int h) {
@@ -728,22 +852,45 @@ int runReproGl(const std::string &prefix)
         vp.pxH = fbH;
     };
 
+    auto probe = [&](const char *name) {
+        int nonDone = 0, mixed = 0;
+        for (const PresentTile &p : present)
+        {
+            if (p.flat) continue;
+            ++mixed;
+            if (p.state != TileState::Done) ++nonDone;
+        }
+        std::printf("%-16s mixedVisible=%-5d nonDone=%-4d store=%zu\n", name, mixed, nonDone,
+                    engine.storeSize());
+    };
+
+    setWindow(3200, 1859);
     renderToCompletion("1small");
 
-    // Repeated maximize cycles at the user's window size (3200x1859), with some
-    // zooming in between to grow the store like real use. Watch MAXIMIZE* maxBpMs
-    // / sumBpMs: if they grow across cycles, that growth IS the accumulating lag.
-    for (int m = 0; m < 6; ++m)
-    {
-        setWindow(900, 600);
-        vp.worldPerPixel *= 3.0;
-        renderToCompletion("c" + std::to_string(m) + "_zoomout");
-        vp.worldPerPixel /= 3.0;
-        renderToCompletion("c" + std::to_string(m) + "_zoomin");
-        setWindow(3200, 1859);
-        renderToCompletion("MAXIMIZE" + std::to_string(m));
-    }
+    // (A) Seamless swap: fast zoom across detail boundaries on cached tiles -> 0 holes.
+    vp.centerX = 50.0;
+    vp.centerY = 0.0;
+    vp.worldPerPixel = 0.06;
+    renderToCompletion("preload");
+    scrub("warmIn", 30, 0.95, 0.0, 8);
+    scrub("fastIn", 30, 0.95, 0.0, 1);
+    scrub("fastOut", 30, 1.0 / 0.95, 0.0, 1);
 
-    std::printf("(MAXIMIZE* maxBpMs/sumBpMs growth across cycles = the accumulating lag)\n");
+    // (B) Cascade continuation: a deep zoom AFTER prior activity must still converge
+    // (all tiles Done) instead of dead-ending at an already-classified intermediate.
+    vp.centerX = 15.0;
+    vp.centerY = 0.3;
+    vp.worldPerPixel = 0.012; // shallow first -> classifies ancestors
+    renderToCompletion("B-medium");
+    vp.worldPerPixel = 0.001; // then deep, SAME center
+    renderToCompletion("B-deepSame");
+    probe("B-deepSame");
+    vp.centerX = -40.0; // deep at a NEW region after activity
+    vp.centerY = 0.7;
+    vp.worldPerPixel = 0.0008;
+    renderToCompletion("B-deepNew");
+    probe("B-deepNew");
+
+    std::printf("(want: no FROZEN, fast* TRUEHOLE frames=0, B-* nonDone=0)\n");
     return 0;
 }

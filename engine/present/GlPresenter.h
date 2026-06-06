@@ -25,6 +25,9 @@ public:
     void resize(int fbWidth, int fbHeight) override;
     [[nodiscard]] int renderFrame(const Viewport &vp, const std::vector<PresentTile> &tiles,
                                   int uploadBudget) override;
+    // True holes drawn last frame (region with no own tile AND no resident stand-in).
+    // The seamless-swap target is 0; an in-flight upload draws a stand-in, not a hole.
+    [[nodiscard]] int lastHoleTiles() const { return holeTiles_; }
 
 private:
     struct TileTex
@@ -43,6 +46,7 @@ private:
     int tilePx_;
     int fbW_{1}, fbH_{1};
     uint64_t frame_{0};
+    int holeTiles_{0}; // true holes drawn last frame (no own tile, no resident stand-in)
 
     unsigned int tileProgram_{0};
     unsigned int lineProgram_{0};

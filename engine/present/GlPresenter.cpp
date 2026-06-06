@@ -179,12 +179,20 @@ unsigned int GlPresenter::ensureTexture(const CoverageTilePtr &cov, int &budget,
 
 void GlPresenter::evictTextures(uint64_t frame)
 {
-    if (textures_.size() <= kMaxResidentTextures) return;
+    // Residency scales with the window: hold ~3 detail levels' worth of tiles so
+    // zooming across a detail boundary reuses RESIDENT textures instead of having to
+    // re-upload them (re-uploads are budget-limited -> tiles draw blank for a frame
+    // = the "swap not atomic" holes). One detail level at a big window is ~1.5k tiles,
+    // far above the old fixed 1024 cap.
+    const size_t visibleTiles = static_cast<size_t>(fbW_ / tilePx_ + 2) *
+                                static_cast<size_t>(fbH_ / tilePx_ + 2);
+    const size_t cap = std::max<size_t>(kMaxResidentTextures, visibleTiles * 3);
+    if (textures_.size() <= cap) return;
     std::vector<std::pair<uint64_t, uint64_t>> refs; // (lastFrame, payloadId)
     refs.reserve(textures_.size());
     for (const auto &[k, t] : textures_) refs.emplace_back(t.lastFrame, k);
     std::sort(refs.begin(), refs.end(), [](auto &a, auto &b) { return a.first < b.first; });
-    size_t toRemove = textures_.size() - kMaxResidentTextures;
+    size_t toRemove = textures_.size() - cap;
     for (size_t i = 0; i < refs.size() && toRemove > 0; ++i)
     {
         if (refs[i].first == frame) break; // don't evict tiles used this frame
@@ -203,6 +211,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
 {
     ++frame_;
     int pendingUploads = 0;
+    holeTiles_ = 0; // true holes this frame (drew nothing where content was expected)
     glViewport(0, 0, fbW_, fbH_);
     glClearColor(0.07f, 0.07f, 0.09f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -266,18 +275,47 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         else
         {
             texId = ensureTexture(t.cov, budget, frame_);
-            if (texId == 0)
+            if (texId != 0)
             {
-                // a solved tile whose texture didn't fit this frame's upload budget
-                // (vs a null-cov hole placeholder, which has nothing to upload).
-                if (t.cov && !t.cov->alpha.empty()) ++pendingUploads;
-                continue;
+                glUniform1i(uFlatMode_, 0);
+                u0 = t.u0;
+                v0 = t.v0;
+                u1 = t.u1;
+                v1 = t.v1;
             }
-            glUniform1i(uFlatMode_, 0);
-            u0 = t.u0;
-            v0 = t.v0;
-            u1 = t.u1;
-            v1 = t.v1;
+            else
+            {
+                // The tile's OWN texture isn't resident yet. Keep it on the upload
+                // backlog (so the loop re-renders until it's crisp), but draw the
+                // baked coarse-ancestor STAND-IN this frame instead of a hole --
+                // "retain the old tile until the new one is ready". The stand-in is
+                // one shared, already-resident ancestor payload (zero new upload), so
+                // the region shows correct coarse content and sharpens in over the
+                // next few frames as the own texture uploads.
+                if (t.cov && !t.cov->alpha.empty()) ++pendingUploads;
+                if (t.standinFlat)
+                {
+                    glUniform1i(uFlatMode_, 1);
+                    glUniform1f(uFlatValue_, 1.0f);
+                    texId = dummyTex_;
+                }
+                else if (t.standinCov && !t.standinCov->alpha.empty() &&
+                         (texId = ensureTexture(t.standinCov, budget, frame_)) != 0)
+                {
+                    glUniform1i(uFlatMode_, 0);
+                    u0 = t.su0;
+                    v0 = t.sv0;
+                    u1 = t.su1;
+                    v1 = t.sv1;
+                }
+                else
+                {
+                    // No resident stand-in either (a genuinely-cold region) -> leave
+                    // background. This is the only real hole, and it is rare.
+                    ++holeTiles_;
+                    continue;
+                }
+            }
         }
         float nx0, ny0, nx1, ny1;
         worldToNdc(vp, fbW_, fbH_, t.rect.x0, t.rect.y0, nx0, ny0);

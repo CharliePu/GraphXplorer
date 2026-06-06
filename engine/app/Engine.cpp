@@ -430,7 +430,10 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
         // what un-sticks an intermediate node reused at a coarser zoom (Coarse, no
         // raster) or a culled node back in view (Missing): neither is re-enqueued by
         // discovery or the cascade, so the compositor asks for it directly.
-        if (node.level <= detail) stuck.push_back(node);
+        // Request a (re)solve only for tiles not already queued, so a multi-frame
+        // settle doesn't re-append hundreds of in-flight keys every frame.
+        if (node.level <= detail && store_.state(node) != TileState::Queued)
+            stuck.push_back(node);
 
         // Prefer reusing finer cached children (zoom-out / refinement); else fall
         // back to a coarser ancestor (zoom-in / pan). Every region is covered once.

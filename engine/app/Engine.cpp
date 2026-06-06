@@ -380,6 +380,12 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
     // this node has no ready leaf of its own -> reuses the pre-zoom-out detail tiles
     // until the larger greedy tile is ready (immersion: no flash on zoom-out).
     std::function<void(const TileKey &, int)> emit = [&](const TileKey &node, int down) {
+        // Skip nodes outside the viewport (+ the same margin the worker culls by).
+        // The start-node region extends past the screen; without this the traversal
+        // would emit fallback for, and request re-solves of, off-screen tiles that
+        // the worker then culls -> an infinite request/cull churn and a frame that
+        // never settles. Keeping the two cull boundaries identical fixes both.
+        if (!keepForViewport(tileRect(node, tilePx_), vp, kCullMargin)) return;
         store_.touch(node, frame);
         const NodeClass nc = store_.classOf(node);
         if (nc == NodeClass::UniformTrue)

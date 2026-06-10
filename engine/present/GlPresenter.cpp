@@ -3,6 +3,7 @@
 #include <glad/glad.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <vector>
@@ -161,6 +162,7 @@ unsigned int GlPresenter::ensureTexture(const CoverageTilePtr &cov, int &budget,
         return it->second.id;
     }
     if (budget <= 0) return 0; // out of upload budget this frame -> caller falls back
+    const auto t0 = std::chrono::steady_clock::now();
     TileTex tex;
     glGenTextures(1, &tex.id);
     glBindTexture(GL_TEXTURE_2D, tex.id);
@@ -174,6 +176,9 @@ unsigned int GlPresenter::ensureTexture(const CoverageTilePtr &cov, int &budget,
     tex.lastFrame = frame;
     textures_.emplace(cov->payloadId, tex);
     --budget;
+    ++uploads_;
+    uploadMs_ +=
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     return tex.id;
 }
 
@@ -212,6 +217,9 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
     ++frame_;
     int pendingUploads = 0;
     holeTiles_ = 0; // true holes this frame (drew nothing where content was expected)
+    uploadMs_ = 0.0;
+    uploads_ = 0;
+    drawnTiles_ = 0;
     glViewport(0, 0, fbW_, fbH_);
     glClearColor(0.07f, 0.07f, 0.09f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -324,6 +332,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         glUniform4f(uUvRect_, u0, v0, u1, v1);
         glBindTexture(GL_TEXTURE_2D, texId);
         glDrawArrays(GL_TRIANGLES, 0, 6);
+        ++drawnTiles_;
     }
 
     evictTextures(frame_);

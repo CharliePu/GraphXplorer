@@ -4,6 +4,8 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace gxr
@@ -273,7 +275,15 @@ private:
     // measure-zero curve can't be point-sampled -> the band model handles them).
     void addHalf(const Box &b)
     {
-        if (floorN_ <= 1 || equalityCurve_)
+        if (equalityCurve_)
+        {
+            // A curve is measure-zero: painting unprocessed cells 0.5 gray was a
+            // terribly wrong prior (gray slabs in drafts of curve-dense tiles).
+            // Estimate EMPTY (full for !=) and let refinement fill the band in.
+            addUniform(b, notEqual_ ? 1.0 : 0.0, 0.25);
+            return;
+        }
+        if (floorN_ <= 1)
         {
             addUniform(b, 0.5, 0.25); // legacy flat estimate (worst-case variance)
             return;
@@ -439,9 +449,152 @@ private:
         return std::clamp(kCurveHalfWidthPx + 0.5 - distPx, 0.0, 1.0);
     }
 
+    // Marching squares at pixel cells emits one tiny segment per boundary cell
+    // -- a curve-dense tile easily carries hundreds, and the presenter pays for
+    // every one each frame. Chain segments into polylines at shared endpoints
+    // (stopping at junctions, so web crossings survive) and simplify each chain
+    // with Douglas-Peucker at a sub-pixel tolerance: smooth runs collapse
+    // 10-30x with no visible change. Deterministic (order- and value-stable).
+    void simplifySegs()
+    {
+        const size_t nSegs = segs_.size() / 4;
+        if (nSegs < 8) return;
+        constexpr double kTol = 0.0008; // tile-local: ~0.05 px at 64 px
+
+        struct Pt
+        {
+            float x, y;
+        };
+        const auto keyOf = [](float x, float y) {
+            const auto qx = static_cast<uint64_t>(static_cast<int64_t>(x * 16384.0f + 0.5f));
+            const auto qy = static_cast<uint64_t>(static_cast<int64_t>(y * 16384.0f + 0.5f));
+            return (qx << 32) ^ qy;
+        };
+        // endpoint -> incident segment indices (degree > 2 = junction)
+        std::unordered_map<uint64_t, std::vector<uint32_t>> ends;
+        ends.reserve(nSegs * 2);
+        for (uint32_t s = 0; s < nSegs; ++s)
+        {
+            ends[keyOf(segs_[4 * s], segs_[4 * s + 1])].push_back(s);
+            ends[keyOf(segs_[4 * s + 2], segs_[4 * s + 3])].push_back(s);
+        }
+        std::vector<char> used(nSegs, 0);
+        std::vector<Pt> chain;
+        std::vector<float> out;
+        out.reserve(segs_.size() / 4);
+
+        const auto emitChain = [&] {
+            // iterative Douglas-Peucker over `chain`
+            if (chain.size() < 2) return;
+            std::vector<char> keep(chain.size(), 0);
+            keep.front() = keep.back() = 1;
+            std::vector<std::pair<size_t, size_t>> stack{{0, chain.size() - 1}};
+            while (!stack.empty())
+            {
+                const auto [a, b] = stack.back();
+                stack.pop_back();
+                if (b <= a + 1) continue;
+                const double ax = chain[a].x, ay = chain[a].y;
+                const double dx = chain[b].x - ax, dy = chain[b].y - ay;
+                const double len2 = dx * dx + dy * dy;
+                double worst = -1.0;
+                size_t wi = a;
+                for (size_t i = a + 1; i < b; ++i)
+                {
+                    const double px = chain[i].x - ax, py = chain[i].y - ay;
+                    double d2;
+                    if (len2 <= 1e-24)
+                        d2 = px * px + py * py;
+                    else
+                    {
+                        const double t = std::clamp((px * dx + py * dy) / len2, 0.0, 1.0);
+                        const double ex = px - t * dx, ey = py - t * dy;
+                        d2 = ex * ex + ey * ey;
+                    }
+                    if (d2 > worst)
+                    {
+                        worst = d2;
+                        wi = i;
+                    }
+                }
+                if (worst > kTol * kTol)
+                {
+                    keep[wi] = 1;
+                    stack.push_back({a, wi});
+                    stack.push_back({wi, b});
+                }
+            }
+            const Pt *prev = nullptr;
+            for (size_t i = 0; i < chain.size(); ++i)
+            {
+                if (!keep[i]) continue;
+                if (prev)
+                    out.insert(out.end(), {prev->x, prev->y, chain[i].x, chain[i].y});
+                prev = &chain[i];
+            }
+        };
+
+        const auto degree = [&](float x, float y) -> size_t {
+            const auto it = ends.find(keyOf(x, y));
+            return it == ends.end() ? 0 : it->second.size();
+        };
+        const auto walk = [&](uint32_t s0, bool fromFirstEnd) {
+            chain.clear();
+            uint32_t s = s0;
+            float cx, cy; // walking toward this endpoint
+            if (fromFirstEnd)
+            {
+                chain.push_back({segs_[4 * s + 2], segs_[4 * s + 3]});
+                cx = segs_[4 * s];
+                cy = segs_[4 * s + 1];
+            }
+            else
+            {
+                chain.push_back({segs_[4 * s], segs_[4 * s + 1]});
+                cx = segs_[4 * s + 2];
+                cy = segs_[4 * s + 3];
+            }
+            chain.push_back({cx, cy});
+            used[s] = 1;
+            for (;;)
+            {
+                const auto it = ends.find(keyOf(cx, cy));
+                if (it == ends.end() || it->second.size() != 2) break; // junction/end
+                uint32_t nxt = it->second[0] == s ? it->second[1] : it->second[0];
+                if (used[nxt]) break;
+                const bool atFirst =
+                    keyOf(segs_[4 * nxt], segs_[4 * nxt + 1]) == keyOf(cx, cy);
+                cx = atFirst ? segs_[4 * nxt + 2] : segs_[4 * nxt];
+                cy = atFirst ? segs_[4 * nxt + 3] : segs_[4 * nxt + 1];
+                chain.push_back({cx, cy});
+                used[nxt] = 1;
+                s = nxt;
+            }
+        };
+
+        // start chains at junctions/loose ends first, then mop up loops
+        for (uint32_t s = 0; s < nSegs; ++s)
+        {
+            if (used[s]) continue;
+            const bool firstOpen = degree(segs_[4 * s], segs_[4 * s + 1]) != 2;
+            const bool secondOpen = degree(segs_[4 * s + 2], segs_[4 * s + 3]) != 2;
+            if (!firstOpen && !secondOpen) continue;
+            walk(s, firstOpen);
+            emitChain();
+        }
+        for (uint32_t s = 0; s < nSegs; ++s)
+        {
+            if (used[s]) continue;
+            walk(s, true); // closed loop: start anywhere
+            emitChain();
+        }
+        segs_ = std::move(out);
+    }
+
     CoverageTile finalize(bool converged)
     {
         flushFloorPending(); // deferred floor cells land before the readout
+        if (equalityCurve_) simplifySegs();
         CoverageTile tile;
         tile.width = T_;
         tile.height = T_;

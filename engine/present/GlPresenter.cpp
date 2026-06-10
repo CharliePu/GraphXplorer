@@ -381,7 +381,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
     for (auto &b : buckets_) b.clear();
     segScratch_.clear();
     // Equality-curve strokes for a tile drawing its OWN raster: transform the
-    // tile-local segments to NDC. (Fallbacks/stand-ins keep the band raster.)
+    // tile-local segments to NDC.
     auto appendSegs = [&](const PresentTile &t) {
         const std::vector<float> &sg = t.cov->segs;
         const double w = t.rect.x1 - t.rect.x0, h = t.rect.y1 - t.rect.y0;
@@ -394,6 +394,49 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
             segScratch_.insert(segScratch_.end(), {ax, ay, bx, by});
         }
     };
+    // A STAND-IN's segments: the ancestor's vector data is resolution-
+    // independent, so a draft can show crisp (coarser-solved) curves instead
+    // of a magnified raster band. Clip each segment to the displayed sub-rect
+    // [su0,su1]x[sv0,sv1] and map it onto the tile's footprint.
+    auto appendSegsMapped = [&](const PresentTile &t) {
+        const std::vector<float> &sg = t.standinCov->segs;
+        const double w = t.rect.x1 - t.rect.x0, h = t.rect.y1 - t.rect.y0;
+        const double iu = 1.0 / (t.su1 - t.su0), iv = 1.0 / (t.sv1 - t.sv0);
+        for (size_t i = 0; i + 3 < sg.size(); i += 4)
+        {
+            double x0 = sg[i], y0 = sg[i + 1], x1 = sg[i + 2], y1 = sg[i + 3];
+            // Liang-Barsky clip to the sub-rect
+            double t0 = 0.0, t1 = 1.0;
+            const double dx = x1 - x0, dy = y1 - y0;
+            const double p[4] = {-dx, dx, -dy, dy};
+            const double q[4] = {x0 - t.su0, t.su1 - x0, y0 - t.sv0, t.sv1 - y0};
+            bool reject = false;
+            for (int e = 0; e < 4 && !reject; ++e)
+            {
+                if (p[e] == 0.0)
+                    reject = q[e] < 0.0;
+                else
+                {
+                    const double r = q[e] / p[e];
+                    if (p[e] < 0.0)
+                        t0 = std::max(t0, r);
+                    else
+                        t1 = std::min(t1, r);
+                    reject = t0 > t1;
+                }
+            }
+            if (reject) continue;
+            const double cx0 = x0 + t0 * dx, cy0 = y0 + t0 * dy;
+            const double cx1 = x0 + t1 * dx, cy1 = y0 + t1 * dy;
+            float ax, ay, bx, by;
+            worldToNdc(vp, fbW_, fbH_, t.rect.x0 + (cx0 - t.su0) * iu * w,
+                       t.rect.y0 + (cy0 - t.sv0) * iv * h, ax, ay);
+            worldToNdc(vp, fbW_, fbH_, t.rect.x0 + (cx1 - t.su0) * iu * w,
+                       t.rect.y0 + (cy1 - t.sv0) * iv * h, bx, by);
+            if (ax == bx && ay == by) continue;
+            segScratch_.insert(segScratch_.end(), {ax, ay, bx, by});
+        }
+    };
 
     for (const PresentTile &t : tiles)
     {
@@ -401,6 +444,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         inst.misc[2] = 1.0f; // fade: steady state
         float u0 = 0, v0 = 0, u1 = 1, v1 = 1;
         int ownArr = 0, fadeArr = -1; // bucket key (flat tiles land in (0,0))
+        bool segsDrawn = false, segSrcConverged = false;
 
         if (t.flat)
         {
@@ -554,10 +598,26 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                 }
 
                 lastShown_[t.key] = Shown{drawnPayload, u0, v0, u1, v1};
-                if (ownTex && !t.cov->segs.empty()) appendSegs(t);
+                if (ownTex && !t.cov->segs.empty())
+                {
+                    appendSegs(t);
+                    segsDrawn = true;
+                    segSrcConverged = t.cov->converged;
+                }
+                else if (!ownTex && haveStandin && drawnPayload == t.standinCov->payloadId &&
+                         !t.standinCov->segs.empty())
+                {
+                    appendSegsMapped(t);
+                    segsDrawn = true;
+                    segSrcConverged = false; // a draft: keep the band underneath
+                }
             }
         }
 
+        // A converged equality tile is fully expressed by its vector strokes --
+        // the band quad underneath would only add raster fuzz. Drafts (partial
+        // or stand-in segs) keep the band: it covers unprocessed cells.
+        if (segsDrawn && segSrcConverged) continue;
         worldToNdc(vp, fbW_, fbH_, t.rect.x0, t.rect.y0, inst.ndc[0], inst.ndc[1]);
         worldToNdc(vp, fbW_, fbH_, t.rect.x1, t.rect.y1, inst.ndc[2], inst.ndc[3]);
         inst.uv[0] = u0;

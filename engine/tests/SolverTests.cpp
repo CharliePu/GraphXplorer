@@ -245,3 +245,36 @@ TEST_CASE("equality curves yield marching-squares segments on the curve", "[solv
     CoverageTile t2 = solveTile(ineq, rect, p, s);
     REQUIRE(t2.segs.empty());
 }
+
+TEST_CASE("a pole is not a curve: y = 1/x emits no asymptote artifacts", "[solver][marching]")
+{
+    Relation r = must("y = 1/x");
+    EvalScratch s;
+    SolveParams p;
+    p.tilePx = 64;
+    const WorldRect rect{-1.0, -8.0, 1.0, 8.0}; // pole column x=0 crosses the tile
+    CoverageTile t = solveTile(r, rect, p, s);
+
+    // both hyperbola branches are present...
+    REQUIRE(t.segs.size() >= 8);
+
+    // ...and every segment endpoint lies ON the curve (x*y == 1), so no
+    // fabricated vertical segments along the asymptote (where x*y ~ 0).
+    for (size_t i = 0; i + 3 < t.segs.size(); i += 4)
+    {
+        for (int e = 0; e < 2; ++e)
+        {
+            const double wx = rect.x0 + t.segs[i + 2 * e] * rect.width();
+            const double wy = rect.y0 + t.segs[i + 2 * e + 1] * rect.height();
+            REQUIRE(std::abs(wx * wy - 1.0) < 0.2);
+        }
+    }
+
+    // the band raster is dark down the pole column too (away from the curve):
+    // at x ~ 0 the real curve needs |y| >= 66, far outside this tile
+    for (int py = 8; py < 56; py += 4)
+    {
+        REQUIRE(t.at(31, py) == Approx(0.0f).margin(5e-2));
+        REQUIRE(t.at(32, py) == Approx(0.0f).margin(5e-2));
+    }
+}

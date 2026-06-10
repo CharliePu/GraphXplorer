@@ -354,12 +354,26 @@ private:
         // equality: one pixel-sized box (band model; variance is a modeling bound)
         const double cx = rect_.x0 + (b.x0 + b.x1) * 0.5 * stepX_;
         const double cy = rect_.y0 + (b.y0 + b.y1) * 0.5 * stepY_;
-        double cov = bandCoverage(ix, iy, cx, cy);
-        if (notEqual_) cov = 1.0 - cov;
         const double area = static_cast<double>(b.x1 - b.x0) * (b.y1 - b.y0);
+        Interval val, gvx, gvy;
+        rel_.valueAndGrad(ix, iy, s_, val, gvx, gvy);
+        if (val.undef)
+        {
+            // undefined everywhere on the cell: neither = nor != renders here
+            unc_[idx] += area * area;
+            return;
+        }
+        // A pole / branch cut touching the cell makes a corner sign change
+        // MEANINGLESS: -inf -> +inf is not a zero crossing (y = 1/x used to
+        // draw a spurious vertical line down the asymptote). The disc flag is
+        // sound, so suppressing band + segments here can never erase a
+        // genuinely continuous crossing.
+        const bool pole = val.disc;
+        double cov = pole ? 0.0 : bandCoverage(val, gvx, gvy, cx, cy);
+        if (notEqual_) cov = 1.0 - cov;
         acc_[idx] += cov * area;
         unc_[idx] += area * area;
-        if (!notEqual_) marchCell(b, cx, cy); // extract the curve's vector segments
+        if (!notEqual_ && !pole) marchCell(b, cx, cy); // extract the curve's segments
     }
 
     // Marching squares over one boundary pixel cell of an EQUALITY curve. The
@@ -434,11 +448,11 @@ private:
         }
     }
 
-    // Coverage of a sub-cell by the ~1px-wide curve band of f=0.
-    double bandCoverage(const Interval &ix, const Interval &iy, double cx, double cy)
+    // Coverage of a sub-cell by the ~1px-wide curve band of f=0 (the caller
+    // already evaluated the cell's value/gradient intervals).
+    double bandCoverage(const Interval &val, const Interval &gx, const Interval &gy, double cx,
+                        double cy)
     {
-        Interval val, gx, gy;
-        rel_.valueAndGrad(ix, iy, s_, val, gx, gy);
         const double fmid = rel_.fValue(cx, cy, s_);
         const double gmag = std::hypot(gx.mid(), gy.mid());
         if (!std::isfinite(fmid) || !std::isfinite(gmag) || gmag <= 0.0)

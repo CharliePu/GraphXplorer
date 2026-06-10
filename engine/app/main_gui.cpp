@@ -39,8 +39,24 @@ std::shared_ptr<const Relation> parseOrNull(const std::string &src)
     return std::make_shared<const Relation>(std::move(*r));
 }
 
+// Showcase presets (keys 1-6): each one leans on a renderer capability at its
+// limit. 1: the signature wall -- smooth curve degrading into the exact
+// analytic-measure gray (explicit 1-D fast path). 2: 2-D oscillation
+// checkerboard; zoom OUT and the moire converges to stable gray, zoom in and
+// greedy proofs carve exact regions. 3: ripple rings densifying to gray with
+// interval-proved cores. 4: an implicit curve WEB -- the marching-squares
+// vector strokes at full stretch. 5: the topologist's sine curve -- infinitely
+// accumulating oscillation at x=0, sound at every zoom forever. 6: the same
+// wall as 1 but with the structure detection DEFEATED (+y*0): the full
+// pathological 2-D path, the formula the responsiveness contract is measured
+// against -- pan and zoom into the gray and it must never lag.
 const char *kPresets[] = {
-    "y > sin(2^x)", "x^2 + y^2 < 1", "y = x^2", "tan(x) > y", "sin(x*y) > 0", "y = x^3 - x",
+    "y > sin(2^x)",
+    "sin(x*y) > 0",
+    "sin(x^2 + y^2) > 0",
+    "sin(x)*sin(y) = sin(x*y)",
+    "y < sin(1/x)",
+    "y > sin(2^x) + y*0",
 };
 
 void saveFramebuffer(int fbW, int fbH, const std::string &path)

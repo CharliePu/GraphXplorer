@@ -85,7 +85,7 @@ private:
     int layersPerArray_{0};
     int slotCount_{0};
 
-    int uFill_{-1}, uTiles_{-1}, uTilesFrom_{-1};
+    int uTiles_{-1}, uTilesFrom_{-1};
     int uLineColor_{-1};
 
     // Per-instance record for the single instanced tile draw.
@@ -95,6 +95,7 @@ private:
         float uv[4];     // u0,v0,u1,v1
         float uvFrom[4]; // crossfade source sub-rect
         float misc[4];   // x=LOCAL layer (<0 => flat), y=local layerFrom, z=fade, w=flatValue
+        float color[4];  // relation-slot fill color (rgb + pad)
     };
     std::vector<std::vector<Inst>> buckets_; // per (ownArray, fadeArray) pair
     std::vector<Inst> instUpload_;           // concatenated for the VBO

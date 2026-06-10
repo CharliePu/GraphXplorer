@@ -8,6 +8,19 @@
 
 namespace gxr
 {
+// Per-slot fill colors, shared by the compositor and the UI's formula-list
+// swatches so they always agree. Indexed by PresentTile.slot (mod 8).
+inline constexpr float kRelationPalette[8][3] = {
+    {0.00f, 0.55f, 0.98f}, // blue
+    {1.00f, 0.62f, 0.18f}, // amber
+    {0.30f, 0.85f, 0.45f}, // green
+    {0.95f, 0.35f, 0.75f}, // magenta
+    {0.25f, 0.85f, 0.90f}, // cyan
+    {0.95f, 0.40f, 0.30f}, // red
+    {0.75f, 0.65f, 1.00f}, // lavender
+    {0.95f, 0.90f, 0.40f}, // yellow
+};
+
 // Abstraction over the GPU presentation backend. This is the Vulkan-ready seam:
 // the engine and app speak only this interface, so a VkPresenter can replace the
 // GlPresenter without touching any compute code. The contract is deliberately

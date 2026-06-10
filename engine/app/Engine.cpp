@@ -80,7 +80,8 @@ bool wantsTile(const TileKey &key, const WorldRect &rect, int refinePass, const 
 Engine::Engine(int tilePx, int numWorkers, std::function<void()> wake)
     : tilePx_(tilePx), wake_(std::move(wake))
 {
-    liveCancel_ = std::make_shared<std::atomic<bool>>(false);
+    currentEpochs_.store(std::make_shared<const std::vector<uint64_t>>(),
+                         std::memory_order_release);
     if (numWorkers <= 0)
     {
         const unsigned hc = std::thread::hardware_concurrency();
@@ -105,15 +106,36 @@ Engine::~Engine()
         if (t.joinable()) t.join();
 }
 
-void Engine::setRelation(std::shared_ptr<const Relation> rel)
+void Engine::setRelations(const std::vector<std::shared_ptr<const Relation>> &rels)
 {
-    auto newCancel = std::make_shared<std::atomic<bool>>(false);
     {
         std::scoped_lock lock(mailMutex_);
-        if (liveCancel_) liveCancel_->store(true); // cancel all in-flight prior-epoch work
-        liveCancel_ = newCancel;
-        mailRelation_ = std::move(rel);
-        epoch_.fetch_add(1);
+        std::vector<Slot> next;
+        next.reserve(rels.size());
+        for (size_t i = 0; i < rels.size(); ++i)
+        {
+            if (i < mailSlots_.size() && mailSlots_[i].rel == rels[i])
+            {
+                next.push_back(mailSlots_[i]); // unchanged: keep epoch + cache
+                continue;
+            }
+            // edited or new slot: fresh epoch, cancel any prior work
+            if (i < mailSlots_.size() && mailSlots_[i].cancel)
+                mailSlots_[i].cancel->store(true);
+            Slot s;
+            s.rel = rels[i];
+            s.epoch = epoch_.fetch_add(1) + 1;
+            s.cancel = std::make_shared<std::atomic<bool>>(false);
+            next.push_back(std::move(s));
+        }
+        for (size_t i = rels.size(); i < mailSlots_.size(); ++i)
+            if (mailSlots_[i].cancel) mailSlots_[i].cancel->store(true); // removed slots
+        mailSlots_ = std::move(next);
+
+        auto eps = std::make_shared<std::vector<uint64_t>>();
+        for (const Slot &s : mailSlots_) eps->push_back(s.epoch);
+        currentEpochs_.store(std::shared_ptr<const std::vector<uint64_t>>(std::move(eps)),
+                             std::memory_order_release);
         mailDirty_ = true;
     }
     mailCv_.notify_all();
@@ -221,12 +243,6 @@ void Engine::enqueueVisible(const Viewport &vp, std::shared_ptr<const Relation> 
         }
     }
     pushJobs(toEnqueue);
-    // Trim history, but never the active working set: everything buildPresent
-    // touched in the last few frames is exempt (a big window / deep level whose
-    // working set exceeds the budget must grow the store, not thrash it --
-    // evict/re-solve cycling showed up as permanently unfilled holes).
-    const uint64_t frameNow = frameCounter_.load(std::memory_order_relaxed);
-    store_.evictToBudget(kResidencyTiles, epoch, frameNow >= 4 ? frameNow - 4 : 0);
 }
 
 void Engine::schedulerLoop()
@@ -234,9 +250,7 @@ void Engine::schedulerLoop()
     while (!stop_.load())
     {
         Viewport vp;
-        std::shared_ptr<const Relation> rel;
-        std::shared_ptr<std::atomic<bool>> cancel;
-        uint64_t epoch;
+        std::vector<Slot> slots;
         bool dirty;
         std::vector<TileKey> resolve;
         {
@@ -244,9 +258,7 @@ void Engine::schedulerLoop()
             mailCv_.wait(lock, [this] { return mailDirty_ || resolvePending_ || stop_.load(); });
             if (stop_.load()) break;
             vp = mailViewport_;
-            rel = mailRelation_;
-            cancel = liveCancel_;
-            epoch = epoch_.load();
+            slots = mailSlots_;
             dirty = mailDirty_;
             mailDirty_ = false;
             resolve.swap(resolveReq_);
@@ -260,24 +272,50 @@ void Engine::schedulerLoop()
             // work to drain or sorting below stale-flagged entries (obj 2).
             abandonStaleInflight();
             requeueForViewport(vp);
-            enqueueVisible(vp, rel, epoch, cancel);
+            uint64_t minEpoch = UINT64_MAX;
+            for (const Slot &s : slots)
+            {
+                enqueueVisible(vp, s.rel, s.epoch, s.cancel);
+                minEpoch = std::min(minEpoch, s.epoch);
+            }
+            // Trim history, but never the active working set: everything
+            // buildPresent touched in the last few frames is exempt (an
+            // oversized working set must grow the store, not thrash it).
+            // Anything older than EVERY live slot's epoch is definitely stale.
+            const uint64_t frameNow = frameCounter_.load(std::memory_order_relaxed);
+            store_.evictToBudget(kResidencyTiles, minEpoch == UINT64_MAX ? 0 : minEpoch,
+                                 frameNow >= 4 ? frameNow - 4 : 0);
         }
-        if (!resolve.empty() && rel) serviceResolve(resolve, vp, rel, epoch, cancel);
+        if (!resolve.empty() && !slots.empty()) serviceResolve(resolve, vp);
     }
 }
 
-void Engine::serviceResolve(const std::vector<TileKey> &keys, const Viewport &vp,
-                            const std::shared_ptr<const Relation> &rel, uint64_t epoch,
-                            const std::shared_ptr<std::atomic<bool>> &cancel)
+void Engine::serviceResolve(const std::vector<TileKey> &keys, const Viewport &vp)
 {
     (void)vp; // use the compositor's detail level (resolveDetail_), not the lagging mailViewport
+    std::vector<Slot> slots;
+    {
+        std::scoped_lock lock(mailMutex_);
+        slots = mailSlots_;
+    }
     const int detail = resolveDetail_.load(std::memory_order_relaxed);
     const uint64_t gen = viewportGen_.load(std::memory_order_acquire);
     const std::shared_ptr<const Viewport> vpNow = currentVp_.load(std::memory_order_acquire);
     std::vector<Job> jobs;
     for (const TileKey &k : keys)
     {
-        if (k.epoch != epoch) continue; // drop stale-epoch requests
+        // map the request to its slot by epoch; stale-epoch requests drop here
+        const Slot *slot = nullptr;
+        for (const Slot &s : slots)
+            if (s.epoch == k.epoch)
+            {
+                slot = &s;
+                break;
+            }
+        if (!slot) continue;
+        const std::shared_ptr<const Relation> &rel = slot->rel;
+        const uint64_t epoch = slot->epoch;
+        const std::shared_ptr<std::atomic<bool>> &cancel = slot->cancel;
         // A request generated for a now-superseded viewport (the user moved
         // between buildPresent and here) would be stamped current-gen and grind
         // off-screen; drop it -- the new viewport's buildPresent re-requests
@@ -311,7 +349,13 @@ void Engine::serviceResolve(const std::vector<TileKey> &keys, const Viewport &vp
 // block on the queue mutex, which is fine -- they are grinding solves.
 void Engine::requeueForViewport(const Viewport &vp)
 {
-    const uint64_t epochNow = epoch_.load();
+    const auto eps = currentEpochs_.load(std::memory_order_acquire);
+    const auto live = [&](uint64_t e) {
+        if (!eps) return false;
+        for (uint64_t v : *eps)
+            if (v == e) return true;
+        return false;
+    };
     std::vector<Job> keep;
     {
         std::scoped_lock lock(jobMutex_);
@@ -320,7 +364,7 @@ void Engine::requeueForViewport(const Viewport &vp)
         {
             Job j = jobs_.top();
             jobs_.pop();
-            if (j.epoch != epochNow) continue; // dead epoch: drop (slot left for eviction)
+            if (!live(j.epoch)) continue; // dead epoch: drop (slot left for eviction)
             if (!wantsTile(j.key, j.rect, j.refinePass, vp))
             {
                 store_.abandonIfUnfinished(j.key); // re-claimable if it returns to view
@@ -545,8 +589,14 @@ void Engine::workerLoop(int)
         // (its previous snapshot, if any, stays drawable -- no downgrade).
         // Epoch-guard: a stale-EPOCH cancel (relation changed) must not touch a
         // slot that is now only display fallback awaiting eviction.
-        if (ct.cancelled() && !published && job.epoch == epoch_.load())
-            store_.abandonIfUnfinished(job.key);
+        if (ct.cancelled() && !published)
+        {
+            const auto eps = currentEpochs_.load(std::memory_order_acquire);
+            bool live = false;
+            if (eps)
+                for (uint64_t e : *eps) live = live || e == job.epoch;
+            if (live) store_.abandonIfUnfinished(job.key);
+        }
 
         jobsCompleted_.fetch_add(1);
         if (jobsInFlight_.fetch_sub(1) == 1)
@@ -560,10 +610,11 @@ void Engine::workerLoop(int)
 size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
 {
     out.clear();
-    const uint64_t epoch = epoch_.load();
+    const auto eps = currentEpochs_.load(std::memory_order_acquire);
     const uint64_t frame = frameCounter_.fetch_add(1);
     const int detail = vp.activeLevel();
     std::vector<TileKey> stuck; // detail tiles that need a (re)solve (see below)
+    int curSlot = 0;            // slot being walked (stamped on emitted tiles)
 
     {
     // ONE shared lock + ONE hash lookup per visited node for the whole walk
@@ -636,6 +687,7 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
         PresentTile p{};
         p.key = node;
         p.rect = tileRect(node, tilePx_);
+        p.slot = curSlot;
         p.level = node.level;
         if (sa.flat)
         {
@@ -681,6 +733,7 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
             PresentTile p{};
             p.key = node;
             p.rect = tileRect(node, tilePx_);
+            p.slot = curSlot;
             p.level = node.level;
             p.state = TileState::Done;
             p.flat = true;
@@ -723,6 +776,7 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
                 p.key = node;
                 p.rect = tileRect(node, tilePx_);
                 p.cov = std::move(cov);
+                p.slot = curSlot;
                 p.level = node.level;
                 p.state = done ? TileState::Done : TileState::Coarse;
                 p.fallback = !done; // keep refining while not final
@@ -779,7 +833,12 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
         if (draw) emitFallback(node, sa);
     };
 
-    for (const TileKey &s : startNodes(vp, epoch)) emit(s, resolveStandin(s));
+    if (eps)
+        for (size_t si = 0; si < eps->size(); ++si)
+        {
+            curSlot = static_cast<int>(si);
+            for (const TileKey &s : startNodes(vp, (*eps)[si])) emit(s, resolveStandin(s));
+        }
     }
 
     // Hand any stuck detail tiles to the scheduler, which re-solves them with a
@@ -800,7 +859,7 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
 void Engine::debugTiles(const Viewport &vp, std::vector<DebugTile> &out)
 {
     out.clear();
-    const uint64_t epoch = epoch_.load();
+    const auto eps = currentEpochs_.load(std::memory_order_acquire);
     const int detail = vp.activeLevel();
     TileStore::ReadAccess ra(store_);
 
@@ -824,7 +883,9 @@ void Engine::debugTiles(const Viewport &vp, std::vector<DebugTile> &out)
         }
         out.push_back(DebugTile{tileRect(node, tilePx_), h.state()}); // leaf (detail/unknown)
     };
-    for (const TileKey &s : startNodes(vp, epoch)) visit(s);
+    if (eps)
+        for (uint64_t epoch : *eps)
+            for (const TileKey &s : startNodes(vp, epoch)) visit(s);
 }
 
 void Engine::waitUntilQuiescent()

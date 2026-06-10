@@ -46,6 +46,11 @@ private:
     };
 
     unsigned int compile(const char *vs, const char *fs);
+    // Grow the recycled-texture pool toward `target` total tile textures, so
+    // steady-state uploads recycle instead of allocating: a LIVE glTexImage2D
+    // under driver backpressure was observed stalling 20-50ms; pre-allocating
+    // while the GPU is quiet (startup / right after a resize) avoids that.
+    void prewarmPool(size_t target);
     // Upload/refresh the texture for a coverage tile, keyed by its payload id so a
     // fallback ancestor's texture is shared by every child quad sampling it.
     // Returns the GL texture id, or 0 if not resident this frame. An already-

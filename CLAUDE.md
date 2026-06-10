@@ -78,7 +78,9 @@ thread-safe store) → `app` (engine: mailbox, scheduler thread, worker pool) �
   for the epoch). Mixed nodes are subdivided; at the detail level (≈ pixel scale) a Mixed node carries
   the coverage raster. The compositor walks top-down from a coarse level: stop at a uniform leaf
   (greedy), descend Mixed until the detail level, fall back to the nearest ready ancestor when a child
-  is not ready yet (no holes).
+  is not ready yet (no holes). A zoom-out's freshly-born coarser root (still unclassified, nothing
+  above it) descends its EXISTING subtree instead of gapping, so previously-painted content keeps
+  drawing through the scale transition (`--reprogl` freshOut GUARDBARE=0).
 - **Async pipeline.** `TileStore`: per-tile `atomic<shared_ptr<const CoverageTile>>` snapshot + state
   + monotone `bestPass`, read under a shared lock (the compositor walk holds it once via
   `ReadAccess`); structural inserts under the unique lock; count-budgeted LRU eviction (stale epochs

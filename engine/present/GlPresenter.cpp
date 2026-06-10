@@ -100,7 +100,7 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
 GlPresenter::~GlPresenter()
 {
     for (auto &[k, t] : textures_) glDeleteTextures(1, &t.id);
-    for (unsigned int id : freeTex_) glDeleteTextures(1, &id);
+    for (auto &[id, f] : freeTex_) glDeleteTextures(1, &id);
     glDeleteTextures(1, &dummyTex_);
     glDeleteProgram(tileProgram_);
     glDeleteProgram(lineProgram_);
@@ -198,13 +198,16 @@ unsigned int GlPresenter::ensureTexture(const CoverageTilePtr &cov, int &budget,
     TileTex tex;
     tex.pooled = (cov->width == tilePx_ && cov->height == tilePx_);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    if (tex.pooled && !freeTex_.empty())
+    // Reuse only textures evicted a few frames ago: the GPU has long drained any
+    // draw that sampled them, so glTexSubImage2D never forces an implicit sync.
+    constexpr uint64_t kPoolAgeFrames = 3;
+    if (tex.pooled && !freeTex_.empty() && frame_ - freeTex_.front().second >= kPoolAgeFrames)
     {
         // Recycle a same-size texture object: glTexSubImage2D into existing
         // storage skips the per-frame allocate/validate churn that made fresh
         // glGenTextures+glTexImage2D cost milliseconds under contention.
-        tex.id = freeTex_.back();
-        freeTex_.pop_back();
+        tex.id = freeTex_.front().first;
+        freeTex_.pop_front();
         glBindTexture(GL_TEXTURE_2D, tex.id);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, cov->width, cov->height, GL_RED, GL_UNSIGNED_BYTE,
                         upload8_.data());
@@ -254,7 +257,7 @@ void GlPresenter::evictTextures(uint64_t frame)
             // Recycle standard-size texture objects through the pool (bounded);
             // odd sizes and pool overflow are deleted outright.
             if (it->second.pooled && freeTex_.size() < cap)
-                freeTex_.push_back(it->second.id);
+                freeTex_.emplace_back(it->second.id, frame);
             else
                 glDeleteTextures(1, &it->second.id);
             textures_.erase(it);

@@ -5,7 +5,9 @@
 #include "tile/TileKey.h"
 
 #include <cstdint>
+#include <deque>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace gxr
@@ -72,7 +74,11 @@ private:
     int uLineColor_{-1};
 
     std::unordered_map<uint64_t, TileTex> textures_;
-    std::vector<unsigned int> freeTex_;  // recycled tilePx-sized texture objects
+    // Recycled tilePx-sized texture objects, stamped with their eviction frame.
+    // A texture is only reused a few frames after eviction: glTexSubImage2D into
+    // an object the GPU may still be reading forces an implicit driver sync
+    // (observed as one-off 20-30ms uploads).
+    std::deque<std::pair<unsigned int, uint64_t>> freeTex_;
     std::vector<unsigned char> upload8_; // R8 quantization scratch (reused)
     // Residency continuity: what each tile key last actually DREW (payload + the
     // uv it was drawn with -- world-aligned, so verbatim-reusable). While a

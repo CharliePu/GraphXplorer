@@ -18,10 +18,12 @@ layout(location=1) in vec4 iNdc;    // x0,y0,x1,y1 on screen
 layout(location=2) in vec4 iUv;     // texture sub-rect (u0,v0,u1,v1)
 layout(location=3) in vec4 iUvFrom; // crossfade-source sub-rect
 layout(location=4) in vec4 iMisc;   // x=layer (<0 => flat), y=layerFrom, z=fade, w=flatValue
+layout(location=5) in vec4 iColor;  // relation-slot fill color (rgb)
 out vec3 vUv;
 out vec3 vUvFrom;
 out float vFade;
 out float vFlat; // >=0: flat coverage value; <0: sample the texture
+out vec3 vColor;
 void main(){
     vec2 p = mix(iNdc.xy, iNdc.zw, corner);
     gl_Position = vec4(p, 0.0, 1.0);
@@ -29,6 +31,7 @@ void main(){
     vUvFrom = vec3(mix(iUvFrom.xy, iUvFrom.zw, corner), max(iMisc.y, 0.0));
     vFade = iMisc.z;
     vFlat = iMisc.x < 0.0 ? iMisc.w : -1.0;
+    vColor = iColor.rgb;
 })";
 
 const char *kTileFs = R"(#version 330 core
@@ -36,17 +39,17 @@ in vec3 vUv;
 in vec3 vUvFrom;
 in float vFade;
 in float vFlat;
+in vec3 vColor;
 out vec4 frag;
 uniform sampler2DArray tiles;     // the bucket's own-content array
 uniform sampler2DArray tilesFrom; // the bucket's crossfade-source array
-uniform vec3 fill;
 void main(){
     float c = (vFlat >= 0.0) ? vFlat : texture(tiles, vUv).r;
     // Linear COVERAGE interpolation for crossfades: blending two stacked
     // translucent quads would dip mid-fade; mixing coverages is exact.
     if (vFade < 1.0) c = mix(texture(tilesFrom, vUvFrom).r, c, vFade);
     if (c <= 0.0015) discard;
-    frag = vec4(fill, c);
+    frag = vec4(vColor, c);
 })";
 
 const char *kLineVs = R"(#version 330 core
@@ -75,7 +78,6 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
 {
     tileProgram_ = compile(kTileVs, kTileFs);
     lineProgram_ = compile(kLineVs, kLineFs);
-    uFill_ = glGetUniformLocation(tileProgram_, "fill");
     uTiles_ = glGetUniformLocation(tileProgram_, "tiles");
     uTilesFrom_ = glGetUniformLocation(tileProgram_, "tilesFrom");
     uLineColor_ = glGetUniformLocation(lineProgram_, "color");
@@ -116,9 +118,9 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
-    // per-instance attributes (locations 1..4), advancing once per instance
+    // per-instance attributes (locations 1..5), advancing once per instance
     glBindBuffer(GL_ARRAY_BUFFER, instVbo_);
-    for (int loc = 1; loc <= 4; ++loc)
+    for (int loc = 1; loc <= 5; ++loc)
     {
         glEnableVertexAttribArray(loc);
         glVertexAttribPointer(loc, 4, GL_FLOAT, GL_FALSE, sizeof(Inst),
@@ -333,6 +335,11 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
     {
         Inst inst{};
         inst.misc[2] = 1.0f; // fade: steady state
+        const float *pal = kRelationPalette[t.slot & 7];
+        inst.color[0] = pal[0];
+        inst.color[1] = pal[1];
+        inst.color[2] = pal[2];
+        inst.color[3] = 1.0f;
         float u0 = 0, v0 = 0, u1 = 1, v1 = 1;
         int ownArr = 0, fadeArr = -1; // bucket key (flat tiles land in (0,0))
 
@@ -533,7 +540,6 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         glUseProgram(tileProgram_);
         glUniform1i(uTiles_, 0);
         glUniform1i(uTilesFrom_, 1);
-        glUniform3f(uFill_, 0.0f, 0.55f, 0.98f);
         glBindVertexArray(quadVao_);
         glBindBuffer(GL_ARRAY_BUFFER, instVbo_);
         const GLsizeiptr bytes = static_cast<GLsizeiptr>(instUpload_.size() * sizeof(Inst));
@@ -550,7 +556,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
             glBindTexture(GL_TEXTURE_2D_ARRAY, tileArrays_[bi % nArr]);
             // GL 3.3 has no baseInstance: re-point the instance attributes at
             // this bucket's byte offset within the shared VBO instead.
-            for (int loc = 1; loc <= 4; ++loc)
+            for (int loc = 1; loc <= 5; ++loc)
                 glVertexAttribPointer(
                     loc, 4, GL_FLOAT, GL_FALSE, sizeof(Inst),
                     reinterpret_cast<const void *>(offset * sizeof(Inst) +

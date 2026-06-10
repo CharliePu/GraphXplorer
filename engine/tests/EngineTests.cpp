@@ -230,3 +230,60 @@ TEST_CASE("eviction never removes the recently-touched working set (soft cap)", 
     REQUIRE(store.size() == 12);
     for (int i = 0; i < 12; ++i) REQUIRE(store.state(TileKey{1, 0, i, 0}) != TileState::Missing);
 }
+
+TEST_CASE("relation slots solve independently and editing one keeps the others' cache",
+          "[engine][slots]")
+{
+    Engine engine(64, 4);
+    auto r1 = rel("x > 1");
+    auto r2 = rel("y > 1");
+    engine.setRelations({r1, r2});
+    Viewport vp{0.0, 0.0, 0.02, 256, 256};
+    engine.setViewport(vp);
+    engine.waitUntilQuiescent();
+
+    std::vector<PresentTile> present;
+    for (int iter = 0; iter < 8; ++iter)
+    {
+        engine.buildPresent(vp, present);
+        bool refining = false;
+        for (const PresentTile &p : present)
+            refining = refining || p.fallback || p.state != TileState::Done;
+        if (!refining) break;
+        engine.waitUntilQuiescent();
+    }
+
+    // both slots present tiles, and slot fills match their own relation:
+    // x>1 fills RIGHT of x=1, y>1 fills ABOVE y=1
+    int n0 = 0, n1 = 0;
+    for (const PresentTile &p : present)
+    {
+        if (p.slot == 0)
+        {
+            ++n0;
+            if (p.flat && p.flatValue > 0.5f) REQUIRE(p.rect.x1 > 1.0);
+        }
+        else
+        {
+            ++n1;
+            REQUIRE(p.slot == 1);
+            if (p.flat && p.flatValue > 0.5f) REQUIRE(p.rect.y1 > 1.0);
+        }
+    }
+    REQUIRE(n0 > 0);
+    REQUIRE(n1 > 0);
+
+    // edit ONLY slot 1: slot 0's tiles must still be Done IMMEDIATELY (cache
+    // kept -- same epoch), no re-solve wait.
+    auto r3 = rel("y > -1");
+    engine.setRelations({r1, r3});
+    engine.buildPresent(vp, present);
+    int doneSlot0 = 0;
+    for (const PresentTile &p : present)
+        if (p.slot == 0)
+        {
+            REQUIRE(p.state == TileState::Done);
+            ++doneSlot0;
+        }
+    REQUIRE(doneSlot0 > 0);
+}

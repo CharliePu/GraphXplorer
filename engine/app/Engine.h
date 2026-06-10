@@ -27,6 +27,7 @@ struct PresentTile
     TileKey key;
     WorldRect rect;     // the SCREEN footprint to draw (always the leaf's own rect)
     CoverageTilePtr cov; // texture to sample (own tile, or an ancestor for fallback); null if flat
+    int slot{0};        // relation slot index (selects the fill color)
     int level{0};
     bool fallback{false};
     TileState state{TileState::Missing};
@@ -70,8 +71,11 @@ public:
     Engine(const Engine &) = delete;
     Engine &operator=(const Engine &) = delete;
 
-    // main thread, non-blocking
-    void setRelation(std::shared_ptr<const Relation> rel);
+    // main thread, non-blocking. Relations live in SLOTS: each slot carries its
+    // own epoch, so editing one formula cancels and re-solves ONLY that slot --
+    // unchanged slots (compared by pointer) keep their epoch and their cache.
+    void setRelations(const std::vector<std::shared_ptr<const Relation>> &rels);
+    void setRelation(std::shared_ptr<const Relation> rel) { setRelations({std::move(rel)}); }
     void setViewport(const Viewport &vp);
 
     // main thread: select visible tiles for vp from cache. O(visible tiles).
@@ -156,14 +160,12 @@ private:
     // (scheduler thread; see the wantsTile draw-model predicate in Engine.cpp).
     void abandonStaleInflight();
     // Rebuild the queue against the latest viewport: drop never-drawn jobs
-    // (abandoning their slots) and refresh survivors' priority flags, which go
-    // stale the moment the user moves (scheduler thread).
+    // (abandoning their store slots) and refresh survivors' priority flags,
+    // which go stale the moment the user moves (scheduler thread).
     void requeueForViewport(const Viewport &vp);
     void enqueueVisible(const Viewport &vp, std::shared_ptr<const Relation> rel, uint64_t epoch,
                         const std::shared_ptr<std::atomic<bool>> &cancel);
-    void serviceResolve(const std::vector<TileKey> &keys, const Viewport &vp,
-                        const std::shared_ptr<const Relation> &rel, uint64_t epoch,
-                        const std::shared_ptr<std::atomic<bool>> &cancel);
+    void serviceResolve(const std::vector<TileKey> &keys, const Viewport &vp);
     void pushJobs(std::vector<Job> &jobs);
     // greedy quadtree: coarsest level whose nodes cover the viewport in a few cells
     [[nodiscard]] int chooseStartLevel(const Viewport &vp) const;
@@ -173,14 +175,27 @@ private:
     std::function<void()> wake_; // set in ctor before threads spawn
     TileStore store_;
 
-    // mailbox (latest-wins): viewport + relation + epoch
+    // One relation slot: the formula, its current epoch (globally unique --
+    // TileKeys of different slots can never alias), and the cancel flag armed
+    // when the slot is edited or removed. Diffed at setRelations time on the
+    // MAIN thread (so currentEpoch() is synchronous); the scheduler adopts the
+    // triples wholesale.
+    struct Slot
+    {
+        std::shared_ptr<const Relation> rel;
+        uint64_t epoch{0};
+        std::shared_ptr<std::atomic<bool>> cancel;
+    };
+
+    // mailbox (latest-wins): viewport + relation slots
     std::mutex mailMutex_;
     std::condition_variable mailCv_;
     Viewport mailViewport_{};
-    std::shared_ptr<const Relation> mailRelation_;
+    std::vector<Slot> mailSlots_;
     bool mailDirty_{false};
     std::atomic<uint64_t> epoch_{0};
-    std::shared_ptr<std::atomic<bool>> liveCancel_;
+    // live slot epochs, published for the main thread's buildPresent walk
+    std::atomic<std::shared_ptr<const std::vector<uint64_t>>> currentEpochs_;
 
     // Resolve requests: detail-level tiles the compositor needs but that are stuck
     // (an intermediate Coarse node reused at a coarser zoom, or a culled Missing

@@ -152,9 +152,10 @@ Targets: `GxEngineTests` (Catch2 — golden oracles, latency invariant, must sta
 `gxrender "<formula>" out.png [cx cy wpp size subBits]`, `gxbench`, `gxrepro_prio` (objective-2
 latency numbers on the degenerate wall — run before/after scheduler changes), `GraphXplorer`
 (live app).
-GUI controls: drag=pan, scroll=zoom, **Enter**=edit formula, **1-6**=presets, **D**=debug overlay,
-**R**=reset, **Esc**=quit. Validate GL headlessly via
-`GraphXplorer --selftest out.png "<formula>" [debug]` (offscreen render-to-PNG).
+GUI controls: drag=pan, scroll=zoom, **Tab**=select formula row, **Enter**=edit, **N**=new row,
+**X**=delete row, **1-6**=presets (replace selected), **D**=debug overlay, **R**=reset, **Esc**=quit. Validate GL headlessly via
+`GraphXplorer --selftest out.png "<formula>[; <formula>...]" [debug]` (offscreen render-to-PNG;
+semicolons fill successive relation slots).
 
 When modifying the tiling/scheduler/compositor: run `GxEngineTests` and an `--selftest` (with `debug`)
 before and after, and check pan/zoom in the live app for holes/flicker.

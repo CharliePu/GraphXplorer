@@ -79,37 +79,50 @@ std::string findFont()
     return "font/FiraCode-Regular.ttf";
 }
 
-// Draw the on-screen UI: a formula bar (editable, with a positionable caret),
+// Draw the on-screen UI: the formula LIST (one row per relation slot, swatch
+// in the slot fill color, selected row highlighted, editable with a caret),
 // a status line, and a help bar.
-void drawUi(Overlay &ui, int fbW, int fbH, const std::string &formula, bool editing,
-           const std::string &edit, size_t editPos, const std::string &status)
+float uiBarH(size_t rows) { return 12.0f + 26.0f * static_cast<float>(rows < 1 ? 1 : rows); }
+
+void drawUi(Overlay &ui, int fbW, int fbH, const std::vector<std::string> &formulas,
+           size_t selected, bool editing, const std::string &edit, size_t editPos,
+           const std::string &status)
 {
     if (!ui.ok()) return;
     ui.begin();
     const float w = static_cast<float>(fbW), h = static_cast<float>(fbH);
+    constexpr float rowH = 26.0f;
+    const float barH = uiBarH(formulas.size());
 
-    // top formula bar
-    ui.fillRect(0, 0, w, 40, {0.05f, 0.05f, 0.08f, 0.86f});
-    const std::string shown = editing ? ("f:  " + edit) : ("f:  " + formula);
-    const std::array<float, 4> fcol = editing ? std::array<float, 4>{1.0f, 0.92f, 0.55f, 1.0f}
-                                              : std::array<float, 4>{0.88f, 0.94f, 1.0f, 1.0f};
-    ui.text(14, 9, shown, 1.0f, fcol);
-    if (editing)
+    ui.fillRect(0, 0, w, barH, {0.05f, 0.05f, 0.08f, 0.86f});
+    for (size_t i = 0; i < formulas.size(); ++i)
     {
-        // caret at the edit position (insertion happens mid-string)
-        const std::string prefix = "f:  " + edit.substr(0, std::min(editPos, edit.size()));
-        const float cx = 14.0f + ui.textWidth(prefix, 1.0f) + 1.0f;
-        ui.fillRect(cx, 8, 2, 24, fcol);
+        const float y = 8.0f + rowH * static_cast<float>(i);
+        const bool sel = i == selected;
+        const bool ed = editing && sel;
+        if (sel) ui.fillRect(6, y - 2, w - 12, rowH - 2, {0.16f, 0.20f, 0.30f, ed ? 0.9f : 0.55f});
+        const float *pal = kRelationPalette[i & 7];
+        ui.fillRect(12, y + 4, 14, 14, {pal[0], pal[1], pal[2], 1.0f});
+        const std::string &shown = ed ? edit : formulas[i];
+        const std::array<float, 4> fcol = ed ? std::array<float, 4>{1.0f, 0.92f, 0.55f, 1.0f}
+                                             : std::array<float, 4>{0.88f, 0.94f, 1.0f, 1.0f};
+        ui.text(36, y, shown, 0.92f, fcol);
+        if (ed)
+        {
+            const std::string prefix = shown.substr(0, std::min(editPos, shown.size()));
+            const float cx = 36.0f + ui.textWidth(prefix, 0.92f) + 1.0f;
+            ui.fillRect(cx, y - 1, 2, 22, fcol);
+        }
     }
 
     // status (e.g. parse error)
     if (!status.empty())
-        ui.text(14, 46, status, 0.82f, {1.0f, 0.5f, 0.5f, 1.0f});
+        ui.text(14, barH + 6, status, 0.82f, {1.0f, 0.5f, 0.5f, 1.0f});
 
     // bottom help bar
     ui.fillRect(0, h - 28, w, 28, {0.05f, 0.05f, 0.08f, 0.82f});
-    const std::string help =
-        "drag pan   scroll zoom   [Enter] edit   [1-6] presets   [D] debug   [R] reset   [Esc] quit";
+    const std::string help = "drag pan   scroll zoom   [Tab] select   [Enter] edit   [N]ew   "
+                             "[X] delete   [1-6] presets   [D] debug   [R] reset   [Esc] quit";
     ui.text(14, h - 23, help, 0.78f, {0.66f, 0.72f, 0.84f, 1.0f});
 }
 
@@ -184,7 +197,7 @@ void drawDebug(Overlay &ui, const Viewport &vp, int fbW, int fbH,
 // Numeric tick labels along the X and Y axes, matching the presenter's adaptive
 // grid spacing. Labels ride the axis but clamp to the screen edge when the axis
 // scrolls off, so coordinates stay readable while panning/zooming.
-void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH)
+void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH, float barH)
 {
     if (!ui.ok()) return;
     const double cx = vp.centerX, cy = vp.centerY, wpp = vp.worldPerPixel;
@@ -248,7 +261,8 @@ void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH)
     // X labels: just below the x-axis row, clamped clear of the top/bottom UI
     // bars. Integer-indexed positions (i * lstep) so no float drift accumulates.
     const float rowY = static_cast<float>(
-        std::clamp(syTop(0.0) + 4.0, 44.0, static_cast<double>(fbH) - 32.0 - lh));
+        std::clamp(syTop(0.0) + 4.0, static_cast<double>(barH) + 4.0,
+                   static_cast<double>(fbH) - 32.0 - lh));
     {
         const long long i0 = static_cast<long long>(std::ceil(wb.x0 / lstep));
         const long long i1 = static_cast<long long>(std::floor(wb.x1 / lstep));
@@ -271,7 +285,7 @@ void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH)
             if (j == 0) continue;
             const double y = static_cast<double>(j) * lstep;
             const float py = static_cast<float>(syTop(y));
-            if (py < 44 || py > fbH - 30) continue;
+            if (py < barH + 4 || py > fbH - 30) continue;
             const std::string s = fmt(y);
             const float w = ui.textWidth(s, sc);
             const float colX = std::clamp(static_cast<float>(sx(0.0)) - w - 6.0f, 3.0f,
@@ -339,13 +353,18 @@ int main(int argc, char **argv)
     overlay.resize(fbW, fbH);
 
     Viewport vp{0.0, 0.0, 16.0 / fbW, fbW, fbH}; // initial span ~[-8,8]
-    std::string formula = argc >= 2 ? argv[1] : kPresets[0];
-
-    auto rel = parseOrNull(formula);
-    if (!rel) rel = parseOrNull(kPresets[0]);
-    engine.setRelation(rel);
+    std::vector<std::string> formulas{argc >= 2 ? argv[1] : kPresets[0]};
+    auto rel0 = parseOrNull(formulas[0]);
+    if (!rel0)
+    {
+        formulas[0] = kPresets[0];
+        rel0 = parseOrNull(formulas[0]);
+    }
+    std::vector<std::shared_ptr<const Relation>> rels{rel0};
+    size_t selected = 0;
+    engine.setRelations(rels);
     engine.setViewport(vp);
-    std::printf("GraphXplorer: %s\n", formula.c_str());
+    std::printf("GraphXplorer: %s\n", formulas[0].c_str());
 
     bool dragging = false;
     double lastX = 0, lastY = 0;
@@ -526,8 +545,8 @@ int main(int argc, char **argv)
         if (pendingUploads > 0) finalRender = false;
         if (presenter.activeFades() > 0) finalRender = false; // crossfades still animating
         const auto tOverlay0 = SClock::now();
-        drawAxisNumbers(overlay, vp, fbW, fbH);
-        drawUi(overlay, fbW, fbH, formula, editing, editBuffer, editPos, status);
+        drawAxisNumbers(overlay, vp, fbW, fbH, uiBarH(formulas.size()));
+        drawUi(overlay, fbW, fbH, formulas, selected, editing, editBuffer, editPos, status);
         if (showDebug)
         {
             engine.debugTiles(vp, dbgTiles);
@@ -763,11 +782,12 @@ int main(int argc, char **argv)
                     auto parsed = Relation::parse(editBuffer, err);
                     if (parsed)
                     {
-                        formula = editBuffer;
-                        engine.setRelation(std::make_shared<const Relation>(std::move(*parsed)));
+                        formulas[selected] = editBuffer;
+                        rels[selected] = std::make_shared<const Relation>(std::move(*parsed));
+                        engine.setRelations(rels);
                         editing = false;
                         status.clear();
-                        std::printf("GraphXplorer: %s\n", formula.c_str());
+                        std::printf("GraphXplorer: %s\n", formulas[selected].c_str());
                     }
                     else
                     {
@@ -791,8 +811,34 @@ int main(int argc, char **argv)
             if (key == K::Enter || key == K::KeyPadEnter)
             {
                 editing = true;
-                editBuffer = formula;
+                editBuffer = formulas[selected];
                 editPos = editBuffer.size();
+                status.clear();
+                return;
+            }
+            if (key == K::Tab)
+            {
+                selected = (selected + 1) % formulas.size();
+                return;
+            }
+            if (key == K::N && formulas.size() < 8)
+            {
+                formulas.push_back("y = x");
+                rels.push_back(parseOrNull(formulas.back()));
+                selected = formulas.size() - 1;
+                engine.setRelations(rels);
+                editing = true; // a new row goes straight into edit
+                editBuffer = formulas[selected];
+                editPos = editBuffer.size();
+                status.clear();
+                return;
+            }
+            if (key == K::X && formulas.size() > 1)
+            {
+                formulas.erase(formulas.begin() + static_cast<ptrdiff_t>(selected));
+                rels.erase(rels.begin() + static_cast<ptrdiff_t>(selected));
+                if (selected >= formulas.size()) selected = formulas.size() - 1;
+                engine.setRelations(rels);
                 status.clear();
                 return;
             }
@@ -818,12 +864,13 @@ int main(int argc, char **argv)
             else if (key == K::Six) idx = 5;
             if (idx >= 0)
             {
-                formula = kPresets[idx];
-                if (auto r = parseOrNull(formula))
+                if (auto r = parseOrNull(kPresets[idx]))
                 {
-                    engine.setRelation(r);
+                    formulas[selected] = kPresets[idx];
+                    rels[selected] = r;
+                    engine.setRelations(rels);
                     status.clear();
-                    std::printf("GraphXplorer: %s\n", formula.c_str());
+                    std::printf("GraphXplorer: %s\n", formulas[selected].c_str());
                 }
             }
         });
@@ -879,9 +926,25 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
     overlay.resize(fbW, fbH);
     Viewport vp{0.0, 0.0, 16.0 / fbW, fbW, fbH};
 
-    auto rel = parseOrNull(formula);
-    if (!rel) return 1;
-    engine.setRelation(rel);
+    // semicolon-separated formulas land in successive relation slots
+    std::vector<std::shared_ptr<const Relation>> rels;
+    size_t pos = 0;
+    while (pos <= formula.size())
+    {
+        const size_t semi = formula.find(';', pos);
+        const std::string part =
+            formula.substr(pos, semi == std::string::npos ? std::string::npos : semi - pos);
+        if (part.find_first_not_of(" \t") != std::string::npos)
+        {
+            auto r = parseOrNull(part);
+            if (!r) return 1;
+            rels.push_back(std::move(r));
+        }
+        if (semi == std::string::npos) break;
+        pos = semi + 1;
+    }
+    if (rels.empty()) return 1;
+    engine.setRelations(rels);
     engine.setViewport(vp);
 
     std::vector<PresentTile> present;
@@ -891,7 +954,7 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
         glfw::pollEvents();
         engine.buildPresent(vp, present);
         (void)presenter.renderFrame(vp, present, /*uploadBudget=*/64);
-        drawUi(overlay, fbW, fbH, formula, /*editing=*/false, "", 0, "");
+        drawUi(overlay, fbW, fbH, {formula}, 0, /*editing=*/false, "", 0, "");
         if (debug)
         {
             engine.debugTiles(vp, dbgTiles);

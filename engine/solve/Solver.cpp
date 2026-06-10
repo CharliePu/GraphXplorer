@@ -4,8 +4,6 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
-#include <unordered_map>
-#include <utility>
 #include <vector>
 
 namespace gxr
@@ -149,11 +147,6 @@ private:
     long long centeredWins_{0};
     std::vector<double> acc_; // covered sub-cell area per pixel
     std::vector<double> unc_; // boundary/estimated sub-cell count per pixel
-    std::vector<float> segs_; // equality: marching-squares segments (tile-local)
-    int marchedCells_{0};     // equality: pixel cells that produced segments
-    int oscCells_{0};         // equality: oscillation-dense cells (band-only)
-    int crowdedCells_{0};     // equality: multi-crossing cells (aliasing tell)
-    float strokeAlpha_{1.0f}; // equality: stroke weight (fades near saturation)
 
     // Naive interval first; escalate to the centered (mean-value) form only while
     // it is still earning its cost. On formulas where it never certifies a box
@@ -378,46 +371,17 @@ private:
         // genuinely continuous crossing.
         const bool pole = val.disc;
         double cov;
-        bool dense = false;
-        int flipsTotal = 0;
         if (!pole && gvx.straddlesZero() && gvy.straddlesZero())
         {
-            // OSCILLATORY REGIME: when both gradient components straddle zero
-            // over the pixel, the band's |f(center)|/|grad mid| distance is
-            // meaningless (the interval midpoints collapse to ~0 and the
-            // estimate explodes -- zoomed-out dense families rendered as
-            // random darkness). Measure instead: count sign flips of f along
-            // the pixel's two mid-lines. >=3 crossings on a line = strands
-            // closer than a third of a pixel: the ~1px band saturates the
-            // cell, and a marching segment would be parity noise. 1-2 flips
-            // (a junction or tangency) keeps the normal path, with a
-            // gradient-free straddle fallback for the coverage.
-            int flipsH = 0, flipsV = 0;
-            const double x0w = rect_.x0 + b.x0 * stepX_;
-            const double y0w = rect_.y0 + b.y0 * stepY_;
-            const double w = (b.x1 - b.x0) * stepX_, h = (b.y1 - b.y0) * stepY_;
-            double prev = std::numeric_limits<double>::quiet_NaN();
-            for (int k = 0; k < 8; ++k)
-            {
-                const double f = rel_.fValue(x0w + (k + 0.5) * 0.125 * w, cy, s_);
-                if (std::isfinite(f) && std::isfinite(prev) && (f < 0.0) != (prev < 0.0))
-                    ++flipsH;
-                prev = f;
-            }
-            if (flipsH < 3) // the H line alone usually decides in dense fields
-            {
-                prev = std::numeric_limits<double>::quiet_NaN();
-                for (int k = 0; k < 8; ++k)
-                {
-                    const double f = rel_.fValue(cx, y0w + (k + 0.5) * 0.125 * h, s_);
-                    if (std::isfinite(f) && std::isfinite(prev) && (f < 0.0) != (prev < 0.0))
-                        ++flipsV;
-                    prev = f;
-                }
-            }
-            dense = std::max(flipsH, flipsV) >= 3;
-            flipsTotal = flipsH + flipsV;
-            cov = dense ? 1.0 : (val.straddlesZero() ? 1.0 : 0.0);
+            // OSCILLATORY/CRITICAL REGIME: when both gradient components
+            // straddle zero over the cell, the band's |f(center)|/|grad mid|
+            // distance is meaningless (the interval midpoints collapse toward
+            // 0 and the estimate explodes -- dense families rendered as random
+            // darkness). Fall back to the interval itself: light the cell iff
+            // the enclosure cannot exclude the curve. Dense families saturate
+            // to the honest wash; isolated junction/extremum cells light their
+            // single pixel.
+            cov = val.straddlesZero() ? 1.0 : 0.0;
         }
         else
         {
@@ -426,97 +390,6 @@ private:
         if (notEqual_) cov = 1.0 - cov;
         acc_[idx] += cov * area;
         unc_[idx] += area * area;
-        if (dense)
-        {
-            ++oscCells_; // counts toward saturation; no segments from parity noise
-        }
-        else if (!notEqual_ && !pole)
-        {
-            // CROWDED but not dense (total flips >= 3): more crossings than a
-            // single resolvable strand makes. Isolated, that is a junction or
-            // tangency (march normally); if such cells DOMINATE the tile, the
-            // family runs at ~1 strand/pixel -- the corner grid's strobe blind
-            // spot at |x| or |y| ~ 2pi/wpp, where marching extracts a smooth
-            // but FALSE aliased family (rendered as "light patches" on the
-            // saturated wash). finalize() clears strokes on that count.
-            if (flipsTotal >= 3) ++crowdedCells_;
-            marchCell(b, cx, cy); // extract the curve's segments
-        }
-    }
-
-    // Marching squares over one boundary pixel cell of an EQUALITY curve. The
-    // interval subdivision already PROVED a sign change may cross this cell, so
-    // segment detection inherits that soundness; corner signs + linear
-    // interpolation place the crossing sub-pixel-accurately, and the center
-    // sample disambiguates the two saddle cases. Segments are stored in
-    // tile-local [0,1] coordinates (vector data: crisp at any zoom).
-    void marchCell(const Box &b, double cx, double cy)
-    {
-        const double x0w = rect_.x0 + b.x0 * stepX_;
-        const double x1w = rect_.x0 + b.x1 * stepX_;
-        const double y0w = rect_.y0 + b.y0 * stepY_;
-        const double y1w = rect_.y0 + b.y1 * stepY_;
-        const double f0 = rel_.fValue(x0w, y0w, s_); // corner order: BL, BR, TR, TL
-        const double f1 = rel_.fValue(x1w, y0w, s_);
-        const double f2 = rel_.fValue(x1w, y1w, s_);
-        const double f3 = rel_.fValue(x0w, y1w, s_);
-        if (!std::isfinite(f0) || !std::isfinite(f1) || !std::isfinite(f2) || !std::isfinite(f3))
-            return; // undefined corner: the band raster covers this cell
-
-        const int code = (f0 < 0.0) | ((f1 < 0.0) << 1) | ((f2 < 0.0) << 2) | ((f3 < 0.0) << 3);
-        if (code == 0 || code == 15) return; // no corner sign change in this cell
-        ++marchedCells_;
-
-        // crossing parameter on an edge from value a to value b
-        const auto cross = [](double a, double bb) {
-            const double d = a - bb;
-            return d == 0.0 ? 0.5 : std::clamp(a / d, 0.0, 1.0);
-        };
-        // edge points in CELL-local [0,1]^2: e0 bottom, e1 right, e2 top, e3 left
-        const double e0x = cross(f0, f1), e1y = cross(f1, f2);
-        const double e2x = 1.0 - cross(f2, f3), e3y = 1.0 - cross(f3, f0);
-        const double ex[4] = {e0x, 1.0, e2x, 0.0};
-        const double ey[4] = {0.0, e1y, 1.0, e3y};
-
-        const double invT = 1.0 / T_;
-        // cell origin/size in PIXEL units (cells may be half-pixel)
-        const double px = b.x0 / static_cast<double>(pixelSub_);
-        const double py = b.y0 / static_cast<double>(pixelSub_);
-        const double cw = (b.x1 - b.x0) / static_cast<double>(pixelSub_);
-        const auto emitSeg = [&](int ea, int eb) {
-            segs_.push_back(static_cast<float>((px + ex[ea] * cw) * invT));
-            segs_.push_back(static_cast<float>((py + ey[ea] * cw) * invT));
-            segs_.push_back(static_cast<float>((px + ex[eb] * cw) * invT));
-            segs_.push_back(static_cast<float>((py + ey[eb] * cw) * invT));
-        };
-
-        switch (code)
-        {
-        case 1: case 14: emitSeg(3, 0); break;
-        case 2: case 13: emitSeg(0, 1); break;
-        case 3: case 12: emitSeg(3, 1); break;
-        case 4: case 11: emitSeg(1, 2); break;
-        case 6: case 9: emitSeg(0, 2); break;
-        case 7: case 8: emitSeg(2, 3); break;
-        case 5: case 10: // saddle: the center sample picks the pairing
-        {
-            const double fc = rel_.fValue(cx, cy, s_);
-            const bool cNeg = std::isfinite(fc) && fc < 0.0;
-            const bool sameAsBL = (code == 5) == cNeg;
-            if (sameAsBL)
-            {
-                emitSeg(0, 1);
-                emitSeg(2, 3);
-            }
-            else
-            {
-                emitSeg(3, 0);
-                emitSeg(1, 2);
-            }
-            break;
-        }
-        default: break;
-        }
     }
 
     // Coverage of a sub-cell by the ~1px-wide curve band of f=0 (the caller
@@ -534,198 +407,9 @@ private:
         return std::clamp(kCurveHalfWidthPx + 0.5 - distPx, 0.0, 1.0);
     }
 
-    // Marching squares at pixel cells emits one tiny segment per boundary cell
-    // -- a curve-dense tile easily carries hundreds, and the presenter pays for
-    // every one each frame. Chain segments into polylines at shared endpoints
-    // (stopping at junctions, so web crossings survive) and simplify each chain
-    // with Douglas-Peucker at a sub-pixel tolerance: smooth runs collapse
-    // 10-30x with no visible change. Deterministic (order- and value-stable).
-    void simplifySegs()
-    {
-        const size_t nSegs = segs_.size() / 4;
-        if (nSegs < 8) return;
-        constexpr double kTol = 0.0008; // tile-local: ~0.05 px at 64 px
-
-        struct Pt
-        {
-            float x, y;
-        };
-        const auto keyOf = [](float x, float y) {
-            const auto qx = static_cast<uint64_t>(static_cast<int64_t>(x * 16384.0f + 0.5f));
-            const auto qy = static_cast<uint64_t>(static_cast<int64_t>(y * 16384.0f + 0.5f));
-            return (qx << 32) ^ qy;
-        };
-        // endpoint -> incident segment indices (degree > 2 = junction)
-        std::unordered_map<uint64_t, std::vector<uint32_t>> ends;
-        ends.reserve(nSegs * 2);
-        for (uint32_t s = 0; s < nSegs; ++s)
-        {
-            ends[keyOf(segs_[4 * s], segs_[4 * s + 1])].push_back(s);
-            ends[keyOf(segs_[4 * s + 2], segs_[4 * s + 3])].push_back(s);
-        }
-        std::vector<char> used(nSegs, 0);
-        std::vector<Pt> chain;
-        std::vector<float> out;
-        out.reserve(segs_.size() / 4);
-
-        const auto emitChain = [&] {
-            // iterative Douglas-Peucker over `chain`
-            if (chain.size() < 2) return;
-            std::vector<char> keep(chain.size(), 0);
-            keep.front() = keep.back() = 1;
-            std::vector<std::pair<size_t, size_t>> stack{{0, chain.size() - 1}};
-            while (!stack.empty())
-            {
-                const auto [a, b] = stack.back();
-                stack.pop_back();
-                if (b <= a + 1) continue;
-                const double ax = chain[a].x, ay = chain[a].y;
-                const double dx = chain[b].x - ax, dy = chain[b].y - ay;
-                const double len2 = dx * dx + dy * dy;
-                double worst = -1.0;
-                size_t wi = a;
-                for (size_t i = a + 1; i < b; ++i)
-                {
-                    const double px = chain[i].x - ax, py = chain[i].y - ay;
-                    double d2;
-                    if (len2 <= 1e-24)
-                        d2 = px * px + py * py;
-                    else
-                    {
-                        const double t = std::clamp((px * dx + py * dy) / len2, 0.0, 1.0);
-                        const double ex = px - t * dx, ey = py - t * dy;
-                        d2 = ex * ex + ey * ey;
-                    }
-                    if (d2 > worst)
-                    {
-                        worst = d2;
-                        wi = i;
-                    }
-                }
-                if (worst > kTol * kTol)
-                {
-                    keep[wi] = 1;
-                    stack.push_back({a, wi});
-                    stack.push_back({wi, b});
-                }
-            }
-            const Pt *prev = nullptr;
-            for (size_t i = 0; i < chain.size(); ++i)
-            {
-                if (!keep[i]) continue;
-                if (prev)
-                    out.insert(out.end(), {prev->x, prev->y, chain[i].x, chain[i].y});
-                prev = &chain[i];
-            }
-        };
-
-        const auto degree = [&](float x, float y) -> size_t {
-            const auto it = ends.find(keyOf(x, y));
-            return it == ends.end() ? 0 : it->second.size();
-        };
-        const auto walk = [&](uint32_t s0, bool fromFirstEnd) {
-            chain.clear();
-            uint32_t s = s0;
-            float cx, cy; // walking toward this endpoint
-            if (fromFirstEnd)
-            {
-                chain.push_back({segs_[4 * s + 2], segs_[4 * s + 3]});
-                cx = segs_[4 * s];
-                cy = segs_[4 * s + 1];
-            }
-            else
-            {
-                chain.push_back({segs_[4 * s], segs_[4 * s + 1]});
-                cx = segs_[4 * s + 2];
-                cy = segs_[4 * s + 3];
-            }
-            chain.push_back({cx, cy});
-            used[s] = 1;
-            for (;;)
-            {
-                const auto it = ends.find(keyOf(cx, cy));
-                if (it == ends.end() || it->second.size() != 2) break; // junction/end
-                uint32_t nxt = it->second[0] == s ? it->second[1] : it->second[0];
-                if (used[nxt]) break;
-                const bool atFirst =
-                    keyOf(segs_[4 * nxt], segs_[4 * nxt + 1]) == keyOf(cx, cy);
-                cx = atFirst ? segs_[4 * nxt + 2] : segs_[4 * nxt];
-                cy = atFirst ? segs_[4 * nxt + 3] : segs_[4 * nxt + 1];
-                chain.push_back({cx, cy});
-                used[nxt] = 1;
-                s = nxt;
-            }
-        };
-
-        // start chains at junctions/loose ends first, then mop up loops
-        for (uint32_t s = 0; s < nSegs; ++s)
-        {
-            if (used[s]) continue;
-            const bool firstOpen = degree(segs_[4 * s], segs_[4 * s + 1]) != 2;
-            const bool secondOpen = degree(segs_[4 * s + 2], segs_[4 * s + 3]) != 2;
-            if (!firstOpen && !secondOpen) continue;
-            walk(s, firstOpen);
-            emitChain();
-        }
-        for (uint32_t s = 0; s < nSegs; ++s)
-        {
-            if (used[s]) continue;
-            walk(s, true); // closed loop: start anywhere
-            emitChain();
-        }
-        segs_ = std::move(out);
-    }
-
     CoverageTile finalize(bool converged)
     {
         flushFloorPending(); // deferred floor cells land before the readout
-        if (equalityCurve_)
-        {
-            // STROKE SATURATION: when most pixel cells contain curve, the
-            // strokes stop adding information over the band raster -- they
-            // collectively paint a solid fill at enormous cost (a sub-pixel-
-            // dense family is ~a million 1px segments screen-wide; that was
-            // the "too many lines" input lag). The BAND raster is the primary,
-            // always-drawn representation (the inequality measure applied to
-            // the ~1px tube around the curve: zoom-consistent, nests across
-            // scales like a contour plot melting into a wash). Strokes are a
-            // pure ENHANCEMENT overlay, kept only when the tile is deep in
-            // the sparse regime where extraction is unimpeachable -- no ramp
-            // zone, no contested densities: every regime/level/draft boundary
-            // that distinguished "strokes vs band" used to be a visible seam.
-            constexpr size_t kTileSegCap = 2048;
-            // extraction runs on half-pixel cells: thresholds scale with the
-            // actual cell count, not the pixel count
-            const double cellsPerAxis =
-                static_cast<double>(T_) * pixelSub_ / std::max(1, pixelSub_ / 2);
-            const double totalCells = cellsPerAxis * cellsPerAxis;
-            const double sat =
-                static_cast<double>(marchedCells_ + oscCells_) / (totalCells / 4.0);
-            // Strokes survive only if: comfortably sparse (sat < 0.6 -- strand
-            // spacing >~ 5px, stable across +-1 level), NO dense pockets, and
-            // only isolated multi-crossing cells (junctions/tangencies; if
-            // they spread, the extraction is strobe-aliased fiction).
-            const bool sparseEnough = sat < 0.6 && oscCells_ == 0 &&
-                                      crowdedCells_ <= totalCells / 64.0;
-            if (!sparseEnough)
-            {
-                segs_.clear();
-                strokeAlpha_ = 0.0f;
-            }
-            else
-            {
-                simplifySegs();
-                if (segs_.size() / 4 > kTileSegCap)
-                {
-                    segs_.clear();
-                    strokeAlpha_ = 0.0f;
-                }
-                else
-                {
-                    strokeAlpha_ = 1.0f;
-                }
-            }
-        }
         CoverageTile tile;
         tile.width = T_;
         tile.height = T_;
@@ -741,8 +425,6 @@ private:
             worst = std::max(worst, static_cast<float>(std::sqrt(unc_[i]) / perPixel));
         }
         tile.worstUncertainty = worst;
-        tile.segs = std::move(segs_);
-        tile.strokeAlpha = strokeAlpha_;
         return tile;
     }
 };

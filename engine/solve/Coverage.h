@@ -33,19 +33,6 @@ struct CoverageTile
     float worstUncertainty{0}; // max per-pixel uncertain area fraction (0 = exact)
     uint64_t payloadId{0};     // monotonic id for "is this newer" comparisons
 
-    // Equality relations only: marching-squares line segments extracted from
-    // the soundly-isolated boundary cells, as (x0,y0,x1,y1) quadruples in
-    // TILE-LOCAL [0,1] coordinates (origin at the tile rect's min corner).
-    // Vector data: the presenter strokes these at constant screen width, so
-    // curves stay crisp through zoom while re-solves are pending. The band
-    // raster in `alpha` stays as the fallback (stand-ins, bailed cells).
-    std::vector<float> segs;
-    // Stroke weight in [0,1]: 1 = sparse tile, strokes fully replace the band;
-    // ramping to 0 as the curve family approaches the saturation density where
-    // strokes hand off to the raster. The presenter blends band + faded
-    // strokes in the ramp, so the regime switch has no tile-blocky seam.
-    float strokeAlpha{1.0f};
-
     [[nodiscard]] float at(int x, int y) const { return alpha[static_cast<size_t>(y) * width + x]; }
 };
 

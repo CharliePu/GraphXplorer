@@ -63,9 +63,10 @@ std::string findFont()
     return "font/FiraCode-Regular.ttf";
 }
 
-// Draw the on-screen UI: a formula bar (editable), a status line, and a help bar.
+// Draw the on-screen UI: a formula bar (editable, with a positionable caret),
+// a status line, and a help bar.
 void drawUi(Overlay &ui, int fbW, int fbH, const std::string &formula, bool editing,
-           const std::string &edit, const std::string &status)
+           const std::string &edit, size_t editPos, const std::string &status)
 {
     if (!ui.ok()) return;
     ui.begin();
@@ -73,10 +74,17 @@ void drawUi(Overlay &ui, int fbW, int fbH, const std::string &formula, bool edit
 
     // top formula bar
     ui.fillRect(0, 0, w, 40, {0.05f, 0.05f, 0.08f, 0.86f});
-    const std::string shown = editing ? ("f:  " + edit + "_") : ("f:  " + formula);
+    const std::string shown = editing ? ("f:  " + edit) : ("f:  " + formula);
     const std::array<float, 4> fcol = editing ? std::array<float, 4>{1.0f, 0.92f, 0.55f, 1.0f}
                                               : std::array<float, 4>{0.88f, 0.94f, 1.0f, 1.0f};
     ui.text(14, 9, shown, 1.0f, fcol);
+    if (editing)
+    {
+        // caret at the edit position (insertion happens mid-string)
+        const std::string prefix = "f:  " + edit.substr(0, std::min(editPos, edit.size()));
+        const float cx = 14.0f + ui.textWidth(prefix, 1.0f) + 1.0f;
+        ui.fillRect(cx, 8, 2, 24, fcol);
+    }
 
     // status (e.g. parse error)
     if (!status.empty())
@@ -176,8 +184,11 @@ void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH)
     auto sx = [&](double wx) { return (wx - cx) / wpp + fbW * 0.5; };
     auto syTop = [&](double wy) { return fbH * 0.5 - (wy - cy) / wpp; };
 
-    const int decimals = std::clamp(static_cast<int>(std::ceil(-std::log10(step))), 0, 8);
-    auto fmt = [&](double v) -> std::string {
+    ui.begin();
+    const float sc = 0.82f;
+    const float lh = ui.lineHeight(sc);
+
+    auto fmtStep = [&](double v, int decimals) -> std::string {
         char buf[32];
         if (std::abs(v) >= 1e5 || (v != 0.0 && std::abs(v) < 1e-3))
             std::snprintf(buf, sizeof buf, "%g", v);
@@ -185,10 +196,27 @@ void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH)
             std::snprintf(buf, sizeof buf, "%.*f", decimals, v);
         return std::string(buf);
     };
+    auto decimalsFor = [](double s) {
+        return std::clamp(static_cast<int>(std::ceil(-std::log10(s))), 0, 8);
+    };
 
-    ui.begin();
-    const float sc = 0.82f;
-    const float lh = ui.lineHeight(sc);
+    // LABEL step: the grid step widened along the 1/2/5 ladder until the widest
+    // label on screen fits its spacing with margin -- labels can never collide,
+    // however dense the grid is. (The grid itself stays at `step`.)
+    const double maxAbsX = std::max(std::abs(wb.x0), std::abs(wb.x1));
+    double lstep = step;
+    for (int guard = 0; guard < 24; ++guard)
+    {
+        const int d = decimalsFor(lstep);
+        const float widest =
+            std::max(ui.textWidth(fmtStep(-maxAbsX, d), sc), ui.textWidth(fmtStep(maxAbsX, d), sc));
+        if (lstep / wpp >= widest + 18.0f) break;
+        const double m = std::pow(10.0, std::floor(std::log10(lstep * 1.0000001)));
+        const double n = lstep / m;
+        lstep = (n < 1.5 ? 2.0 : n < 3.0 ? 5.0 : 10.0) * m;
+    }
+    const int decimals = decimalsFor(lstep);
+    auto fmt = [&](double v) { return fmtStep(v, decimals); };
     const std::array<float, 4> fg{0.95f, 0.97f, 1.0f, 1.0f};
     const std::array<float, 4> bg{0.03f, 0.03f, 0.05f, 0.9f};
     // Draw each label with a 1px dark outline so it stays legible over both the
@@ -201,30 +229,39 @@ void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH)
         ui.text(x, y, s, sc, fg);
     };
 
-    // X labels: just below the x-axis row, clamped clear of the top/bottom UI bars.
+    // X labels: just below the x-axis row, clamped clear of the top/bottom UI
+    // bars. Integer-indexed positions (i * lstep) so no float drift accumulates.
     const float rowY = static_cast<float>(
         std::clamp(syTop(0.0) + 4.0, 44.0, static_cast<double>(fbH) - 32.0 - lh));
-    int guard = 0;
-    for (double x = std::ceil(wb.x0 / step) * step; x <= wb.x1 && guard < 200; x += step, ++guard)
     {
-        if (std::abs(x) < step * 0.5) continue; // origin labelled once below
-        const float px = static_cast<float>(sx(x));
-        if (px < 16 || px > fbW - 6) continue;
-        label(px + 3, rowY, fmt(x));
+        const long long i0 = static_cast<long long>(std::ceil(wb.x0 / lstep));
+        const long long i1 = static_cast<long long>(std::floor(wb.x1 / lstep));
+        for (long long i = i0; i <= i1 && i - i0 < 200; ++i)
+        {
+            if (i == 0) continue; // origin labelled once below
+            const double x = static_cast<double>(i) * lstep;
+            const float px = static_cast<float>(sx(x));
+            if (px < 16 || px > fbW - 6) continue;
+            label(px + 3, rowY, fmt(x));
+        }
     }
 
     // Y labels: right-aligned just left of the y-axis column, clamped to the screen.
-    guard = 0;
-    for (double y = std::ceil(wb.y0 / step) * step; y <= wb.y1 && guard < 200; y += step, ++guard)
     {
-        if (std::abs(y) < step * 0.5) continue;
-        const float py = static_cast<float>(syTop(y));
-        if (py < 44 || py > fbH - 30) continue;
-        const std::string s = fmt(y);
-        const float w = ui.textWidth(s, sc);
-        const float colX = std::clamp(static_cast<float>(sx(0.0)) - w - 6.0f, 3.0f,
-                                      static_cast<float>(fbW) - w - 3.0f);
-        label(colX, py - lh * 0.5f, s);
+        const long long j0 = static_cast<long long>(std::ceil(wb.y0 / lstep));
+        const long long j1 = static_cast<long long>(std::floor(wb.y1 / lstep));
+        for (long long j = j0; j <= j1 && j - j0 < 200; ++j)
+        {
+            if (j == 0) continue;
+            const double y = static_cast<double>(j) * lstep;
+            const float py = static_cast<float>(syTop(y));
+            if (py < 44 || py > fbH - 30) continue;
+            const std::string s = fmt(y);
+            const float w = ui.textWidth(s, sc);
+            const float colX = std::clamp(static_cast<float>(sx(0.0)) - w - 6.0f, 3.0f,
+                                          static_cast<float>(fbW) - w - 3.0f);
+            label(colX, py - lh * 0.5f, s);
+        }
     }
 
     // origin
@@ -301,6 +338,7 @@ int main(int argc, char **argv)
     // formula editing state
     bool editing = false;
     std::string editBuffer;
+    size_t editPos = 0; // caret index into editBuffer
     std::string status;
     bool showDebug = false;
 
@@ -473,7 +511,7 @@ int main(int argc, char **argv)
         if (presenter.activeFades() > 0) finalRender = false; // crossfades still animating
         const auto tOverlay0 = SClock::now();
         drawAxisNumbers(overlay, vp, fbW, fbH);
-        drawUi(overlay, fbW, fbH, formula, editing, editBuffer, status);
+        drawUi(overlay, fbW, fbH, formula, editing, editBuffer, editPos, status);
         if (showDebug)
         {
             engine.debugTiles(vp, dbgTiles);
@@ -637,11 +675,14 @@ int main(int argc, char **argv)
     // the main thread. Documented under glfwPollEvents.
     window.refreshEvent.setCallback([&](glfw::Window &) { renderOnce(); });
 
-    // typed characters feed the formula editor
+    // typed characters feed the formula editor (inserted at the caret)
     window.charEvent.setCallback([&](glfw::Window &, unsigned int codepoint) {
         if (editing && codepoint >= 32 && codepoint < 127)
         {
-            editBuffer.push_back(static_cast<char>(codepoint));
+            editPos = std::min(editPos, editBuffer.size());
+            editBuffer.insert(editBuffer.begin() + static_cast<ptrdiff_t>(editPos),
+                              static_cast<char>(codepoint));
+            ++editPos;
         }
     });
 
@@ -687,7 +728,18 @@ int main(int argc, char **argv)
 
             if (editing)
             {
-                if ((key == K::Backspace) && held && !editBuffer.empty()) editBuffer.pop_back();
+                editPos = std::min(editPos, editBuffer.size());
+                if (key == K::Backspace && held && editPos > 0)
+                {
+                    editBuffer.erase(editPos - 1, 1);
+                    --editPos;
+                }
+                if (key == K::Delete && held && editPos < editBuffer.size())
+                    editBuffer.erase(editPos, 1);
+                if (key == K::Left && held && editPos > 0) --editPos;
+                if (key == K::Right && held && editPos < editBuffer.size()) ++editPos;
+                if (key == K::Home && held) editPos = 0;
+                if (key == K::End && held) editPos = editBuffer.size();
                 if (!press) return;
                 if (key == K::Enter || key == K::KeyPadEnter)
                 {
@@ -724,6 +776,7 @@ int main(int argc, char **argv)
             {
                 editing = true;
                 editBuffer = formula;
+                editPos = editBuffer.size();
                 status.clear();
                 return;
             }
@@ -822,7 +875,7 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
         glfw::pollEvents();
         engine.buildPresent(vp, present);
         (void)presenter.renderFrame(vp, present, /*uploadBudget=*/64);
-        drawUi(overlay, fbW, fbH, formula, /*editing=*/false, "", "");
+        drawUi(overlay, fbW, fbH, formula, /*editing=*/false, "", 0, "");
         if (debug)
         {
             engine.debugTiles(vp, dbgTiles);

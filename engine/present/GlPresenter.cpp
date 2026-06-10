@@ -37,13 +37,14 @@ in vec3 vUvFrom;
 in float vFade;
 in float vFlat;
 out vec4 frag;
-uniform sampler2DArray tiles;
+uniform sampler2DArray tiles;     // the bucket's own-content array
+uniform sampler2DArray tilesFrom; // the bucket's crossfade-source array
 uniform vec3 fill;
 void main(){
     float c = (vFlat >= 0.0) ? vFlat : texture(tiles, vUv).r;
     // Linear COVERAGE interpolation for crossfades: blending two stacked
     // translucent quads would dip mid-fade; mixing coverages is exact.
-    if (vFade < 1.0) c = mix(texture(tiles, vUvFrom).r, c, vFade);
+    if (vFade < 1.0) c = mix(texture(tilesFrom, vUvFrom).r, c, vFade);
     if (c <= 0.0015) discard;
     frag = vec4(fill, c);
 })";
@@ -89,7 +90,7 @@ void main(){
     frag = vec4(segColor.rgb, segColor.a * a);
 })";
 
-constexpr int kWantLayers = 4096;     // 4096 x 64x64 R8 = 16 MB, allocated once
+constexpr int kWantLayers = 8192;     // 8192 x 64x64 R8 = 32 MB, allocated once
 constexpr double kUploadMsBudget = 3.0; // per-frame time budget for normal uploads
 constexpr double kFadeMs = 120.0;       // refinement crossfade duration
 
@@ -109,26 +110,38 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     segProgram_ = compile(kSegVs, kSegFs);
     uFill_ = glGetUniformLocation(tileProgram_, "fill");
     uTiles_ = glGetUniformLocation(tileProgram_, "tiles");
+    uTilesFrom_ = glGetUniformLocation(tileProgram_, "tilesFrom");
     uLineColor_ = glGetUniformLocation(lineProgram_, "color");
     uSegPx_ = glGetUniformLocation(segProgram_, "pxOfNdc");
     uSegHalfW_ = glGetUniformLocation(segProgram_, "halfW");
     uSegColor_ = glGetUniformLocation(segProgram_, "segColor");
 
-    // The tile atlas: one R8 2D array; every upload from here on is a
-    // glTexSubImage3D into this preallocated storage (no allocation churn).
+    // The tile atlas: enough R8 2D arrays for kWantLayers total slots (drivers
+    // commonly clamp layers per array to 2048, below a dense 4K view's working
+    // set). Storage is allocated once; every upload from here on is a
+    // glTexSubImage3D into existing memory (no allocation churn).
     GLint maxLayers = 256;
     glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &maxLayers);
-    layerCount_ = std::min<int>(kWantLayers, maxLayers);
-    glGenTextures(1, &tileArray_);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, tileArray_);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    layersPerArray_ = std::min<int>(kWantLayers, maxLayers);
+    const int numArrays =
+        std::min(8, (kWantLayers + layersPerArray_ - 1) / layersPerArray_);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_R8, tilePx_, tilePx_, layerCount_, 0, GL_RED,
-                 GL_UNSIGNED_BYTE, nullptr);
-    for (int i = 0; i < layerCount_; ++i) freeLayers_.emplace_back(i, 0);
+    for (int a = 0; a < numArrays; ++a)
+    {
+        unsigned int tex = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, tex);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_R8, tilePx_, tilePx_, layersPerArray_, 0, GL_RED,
+                     GL_UNSIGNED_BYTE, nullptr);
+        tileArrays_.push_back(tex);
+    }
+    slotCount_ = static_cast<int>(tileArrays_.size()) * layersPerArray_;
+    for (int i = 0; i < slotCount_; ++i) freeLayers_.emplace_back(i, 0);
+    buckets_.resize(tileArrays_.size() * tileArrays_.size());
 
     constexpr float quad[] = {0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1};
     glGenVertexArrays(1, &quadVao_);
@@ -172,7 +185,7 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
 
 GlPresenter::~GlPresenter()
 {
-    glDeleteTextures(1, &tileArray_);
+    for (unsigned int tex : tileArrays_) glDeleteTextures(1, &tex);
     glDeleteProgram(tileProgram_);
     glDeleteProgram(lineProgram_);
     glDeleteProgram(segProgram_);
@@ -226,8 +239,8 @@ void GlPresenter::resize(int fbWidth, int fbHeight)
     fbH_ = std::max(1, fbHeight);
 }
 
-int GlPresenter::ensureLayer(const CoverageTilePtr &cov, int &budget, int &criticalLeft,
-                             uint64_t frame, bool critical)
+int GlPresenter::ensureSlot(const CoverageTilePtr &cov, int &budget, int &criticalLeft,
+                            uint64_t frame, bool critical)
 {
     if (!cov || cov->alpha.empty()) return -1;
     if (cov->width != tilePx_ || cov->height != tilePx_) return -1; // atlas is tilePx-only
@@ -235,7 +248,7 @@ int GlPresenter::ensureLayer(const CoverageTilePtr &cov, int &budget, int &criti
     if (it != layers_.end())
     {
         it->second.lastFrame = frame; // residency is never rationed
-        return it->second.layer;
+        return it->second.slot;
     }
     if (critical)
     {
@@ -246,13 +259,13 @@ int GlPresenter::ensureLayer(const CoverageTilePtr &cov, int &budget, int &criti
     {
         return -1;
     }
-    // Reuse only layers released a few frames ago (no implicit driver sync).
+    // Reuse only slots released a few frames ago (no implicit driver sync).
     constexpr uint64_t kPoolAgeFrames = 3;
     if (freeLayers_.empty()) return -1; // atlas full this frame; eviction frees soon
     if (frame - freeLayers_.front().second < kPoolAgeFrames && !critical) return -1;
 
     const auto t0 = std::chrono::steady_clock::now();
-    const int layer = freeLayers_.front().first;
+    const int slot = freeLayers_.front().first;
     freeLayers_.pop_front();
     const size_t count = cov->alpha.size();
     upload8_.resize(count);
@@ -262,26 +275,29 @@ int GlPresenter::ensureLayer(const CoverageTilePtr &cov, int &budget, int &criti
         upload8_[i] = static_cast<unsigned char>(
             a <= 0.0f ? 0 : a >= 1.0f ? 255 : static_cast<int>(a * 255.0f + 0.5f));
     }
-    glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer, tilePx_, tilePx_, 1, GL_RED,
-                    GL_UNSIGNED_BYTE, upload8_.data());
-    layers_.emplace(cov->payloadId, TileTex{layer, frame});
+    glBindTexture(GL_TEXTURE_2D_ARRAY, tileArrays_[static_cast<size_t>(slot / layersPerArray_)]);
+    glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, slot % layersPerArray_, tilePx_, tilePx_, 1,
+                    GL_RED, GL_UNSIGNED_BYTE, upload8_.data());
+    layers_.emplace(cov->payloadId, TileTex{slot, frame});
     --budget;
     ++uploads_;
     uploadMs_ +=
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    return layer;
+    return slot;
 }
 
-void GlPresenter::evictLayers(uint64_t frame)
+void GlPresenter::evictSlots(uint64_t frame)
 {
     // Residency scales with the window: hold ~3 detail levels' worth of tiles so
-    // zooming across a detail boundary reuses RESIDENT layers instead of having
-    // to re-upload them. Bounded by the atlas size.
+    // zooming across a detail boundary reuses RESIDENT slots instead of having
+    // to re-upload them. Bounded by the atlas size minus headroom for the aged
+    // free pool -- a cap below the live demand (own + stand-in + fade payloads
+    // of a huge dense view) starved finality with permanent pending uploads.
     const size_t visibleTiles = static_cast<size_t>(fbW_ / tilePx_ + 2) *
                                 static_cast<size_t>(fbH_ / tilePx_ + 2);
-    const size_t cap =
-        std::min<size_t>(static_cast<size_t>(layerCount_) * 3 / 4,
-                         std::max<size_t>(1024, visibleTiles * 3));
+    const size_t headroom = std::max<size_t>(256, static_cast<size_t>(slotCount_) / 16);
+    const size_t cap = std::min<size_t>(static_cast<size_t>(slotCount_) - headroom,
+                                        std::max<size_t>(1024, visibleTiles * 3));
     if (layers_.size() <= cap) return;
     std::vector<std::pair<uint64_t, uint64_t>> refs; // (lastFrame, payloadId)
     refs.reserve(layers_.size());
@@ -290,11 +306,14 @@ void GlPresenter::evictLayers(uint64_t frame)
     size_t toRemove = layers_.size() - cap;
     for (size_t i = 0; i < refs.size() && toRemove > 0; ++i)
     {
-        if (refs[i].first == frame) break; // don't evict layers used this frame
+        // Never evict recently-used layers (incl. freshly-uploaded ones not yet
+        // drawn): under atlas pressure that cycled upload->evict->re-upload
+        // forever and finality never latched. Soft cap, like the tile store.
+        if (refs[i].first + 4 >= frame) break;
         auto it = layers_.find(refs[i].second);
         if (it != layers_.end())
         {
-            freeLayers_.emplace_back(it->second.layer, frame);
+            freeLayers_.emplace_back(it->second.slot, frame);
             layers_.erase(it);
             --toRemove;
         }
@@ -354,12 +373,12 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         glDrawArrays(GL_LINES, static_cast<GLsizei>(gridCount), 4);
     }
 
-    // ---- coverage tiles: build the instance list, then ONE instanced draw ----
-    glBindTexture(GL_TEXTURE_2D_ARRAY, tileArray_);
+    // ---- coverage tiles: build per-(array,fadeArray) instance buckets, then
+    // one instanced draw per bucket (usually a single bucket) ----------------
     int budget = uploadBudget;
     int criticalLeft = 64;
-    insts_.clear();
-    insts_.reserve(tiles.size());
+    const int nArr = static_cast<int>(tileArrays_.size());
+    for (auto &b : buckets_) b.clear();
     segScratch_.clear();
     // Equality-curve strokes for a tile drawing its OWN raster: transform the
     // tile-local segments to NDC. (Fallbacks/stand-ins keep the band raster.)
@@ -381,6 +400,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         Inst inst{};
         inst.misc[2] = 1.0f; // fade: steady state
         float u0 = 0, v0 = 0, u1 = 1, v1 = 1;
+        int ownArr = 0, fadeArr = -1; // bucket key (flat tiles land in (0,0))
 
         if (t.flat)
         {
@@ -407,20 +427,20 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
             if (const auto ls = lastShown_.find(t.key); ls != lastShown_.end())
                 prior = &ls->second;
 
-            int layer = ensureLayer(t.cov, budget, criticalLeft, frame_, /*critical=*/false);
-            if (layer >= 0)
+            int slot = ensureSlot(t.cov, budget, criticalLeft, frame_, /*critical=*/false);
+            if (slot >= 0)
             {
                 ownTex = true;
                 drawnPayload = t.cov->payloadId;
                 u0 = t.u0; v0 = t.v0; u1 = t.u1; v1 = t.v1;
             }
-            if (layer < 0 && prior)
+            if (slot < 0 && prior)
             {
                 const auto tex = layers_.find(prior->payload);
                 if (tex != layers_.end())
                 {
                     tex->second.lastFrame = frame_;
-                    layer = tex->second.layer;
+                    slot = tex->second.slot;
                     drawnPayload = prior->payload;
                     u0 = prior->u0; v0 = prior->v0;
                     u1 = prior->u1; v1 = prior->v1;
@@ -431,11 +451,11 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                     prior = nullptr;
                 }
             }
-            if (layer < 0 && t.standinFlat) flatStandin = true;
-            if (layer < 0 && !flatStandin && haveStandin)
+            if (slot < 0 && t.standinFlat) flatStandin = true;
+            if (slot < 0 && !flatStandin && haveStandin)
             {
-                layer = ensureLayer(t.standinCov, budget, criticalLeft, frame_, /*critical=*/false);
-                if (layer >= 0)
+                slot = ensureSlot(t.standinCov, budget, criticalLeft, frame_, /*critical=*/false);
+                if (slot >= 0)
                 {
                     drawnPayload = t.standinCov->payloadId;
                     u0 = t.su0; v0 = t.sv0; u1 = t.su1; v1 = t.sv1;
@@ -451,7 +471,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                             // Compose this tile's sub-rect within whatever the
                             // ancestor key last showed (world-aligned -> exact).
                             tex->second.lastFrame = frame_;
-                            layer = tex->second.layer;
+                            slot = tex->second.slot;
                             drawnPayload = ls->second.payload;
                             const float aw = ls->second.u1 - ls->second.u0;
                             const float ah = ls->second.v1 - ls->second.v0;
@@ -467,20 +487,20 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                     }
                 }
             }
-            if (layer < 0 && !flatStandin && haveCov)
+            if (slot < 0 && !flatStandin && haveCov)
             {
-                layer = ensureLayer(t.cov, budget, criticalLeft, frame_, /*critical=*/true);
-                if (layer >= 0)
+                slot = ensureSlot(t.cov, budget, criticalLeft, frame_, /*critical=*/true);
+                if (slot >= 0)
                 {
                     ownTex = true;
                     drawnPayload = t.cov->payloadId;
                     u0 = t.u0; v0 = t.v0; u1 = t.u1; v1 = t.v1;
                 }
             }
-            if (layer < 0 && !flatStandin && haveStandin)
+            if (slot < 0 && !flatStandin && haveStandin)
             {
-                layer = ensureLayer(t.standinCov, budget, criticalLeft, frame_, /*critical=*/true);
-                if (layer >= 0)
+                slot = ensureSlot(t.standinCov, budget, criticalLeft, frame_, /*critical=*/true);
+                if (slot >= 0)
                 {
                     drawnPayload = t.standinCov->payloadId;
                     u0 = t.su0; v0 = t.sv0; u1 = t.su1; v1 = t.sv1;
@@ -493,7 +513,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                 inst.misc[0] = -1.0f;
                 inst.misc[3] = 1.0f;
             }
-            else if (layer < 0)
+            else if (slot < 0)
             {
                 // Nothing drawable: a never-drawn region (or the critical budget
                 // ran dry in a cold storm) -> background, which is what this
@@ -504,7 +524,8 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
             else
             {
                 if (!ownTex && haveCov) ++pendingUploads; // own texture still owed
-                inst.misc[0] = static_cast<float>(layer);
+                ownArr = slot / layersPerArray_;
+                inst.misc[0] = static_cast<float>(slot % layersPerArray_);
 
                 // ---- refinement crossfade: melt, don't pop -------------------
                 if (prior && prior->payload != drawnPayload && !fades_.count(t.key))
@@ -521,7 +542,8 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                     else
                     {
                         ftex->second.lastFrame = frame_; // keep the source resident
-                        inst.misc[1] = static_cast<float>(ftex->second.layer);
+                        fadeArr = ftex->second.slot / layersPerArray_;
+                        inst.misc[1] = static_cast<float>(ftex->second.slot % layersPerArray_);
                         inst.misc[2] = static_cast<float>(tt);
                         inst.uvFrom[0] = f->second.u0;
                         inst.uvFrom[1] = f->second.v0;
@@ -542,23 +564,48 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         inst.uv[1] = v0;
         inst.uv[2] = u1;
         inst.uv[3] = v1;
-        insts_.push_back(inst);
+        if (fadeArr < 0) fadeArr = ownArr; // no fade: source sampler irrelevant
+        buckets_[static_cast<size_t>(ownArr) * nArr + fadeArr].push_back(inst);
     }
 
-    if (!insts_.empty())
+    // one instanced draw per non-empty (ownArray, fadeArray) bucket -- almost
+    // always a single bucket; never more than nArr^2
+    instUpload_.clear();
+    drawnTiles_ = 0;
+    for (const auto &b : buckets_) drawnTiles_ += static_cast<int>(b.size());
+    if (drawnTiles_ > 0)
     {
+        instUpload_.reserve(static_cast<size_t>(drawnTiles_));
+        for (const auto &b : buckets_) instUpload_.insert(instUpload_.end(), b.begin(), b.end());
         glUseProgram(tileProgram_);
         glUniform1i(uTiles_, 0);
+        glUniform1i(uTilesFrom_, 1);
         glUniform3f(uFill_, 0.0f, 0.55f, 0.98f);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D_ARRAY, tileArray_);
         glBindVertexArray(quadVao_);
         glBindBuffer(GL_ARRAY_BUFFER, instVbo_);
-        const GLsizeiptr bytes = static_cast<GLsizeiptr>(insts_.size() * sizeof(Inst));
+        const GLsizeiptr bytes = static_cast<GLsizeiptr>(instUpload_.size() * sizeof(Inst));
         glBufferData(GL_ARRAY_BUFFER, bytes, nullptr, GL_STREAM_DRAW); // orphan
-        glBufferSubData(GL_ARRAY_BUFFER, 0, bytes, insts_.data());
-        glDrawArraysInstanced(GL_TRIANGLES, 0, 6, static_cast<GLsizei>(insts_.size()));
-        drawnTiles_ = static_cast<int>(insts_.size());
+        glBufferSubData(GL_ARRAY_BUFFER, 0, bytes, instUpload_.data());
+        size_t offset = 0;
+        for (size_t bi = 0; bi < buckets_.size(); ++bi)
+        {
+            const size_t n = buckets_[bi].size();
+            if (n == 0) continue;
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D_ARRAY, tileArrays_[bi / nArr]);
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D_ARRAY, tileArrays_[bi % nArr]);
+            // GL 3.3 has no baseInstance: re-point the instance attributes at
+            // this bucket's byte offset within the shared VBO instead.
+            for (int loc = 1; loc <= 4; ++loc)
+                glVertexAttribPointer(
+                    loc, 4, GL_FLOAT, GL_FALSE, sizeof(Inst),
+                    reinterpret_cast<const void *>(offset * sizeof(Inst) +
+                                                   static_cast<size_t>(loc - 1) * 16));
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 6, static_cast<GLsizei>(n));
+            offset += n;
+        }
+        glActiveTexture(GL_TEXTURE0);
     }
 
     // ---- equality-curve strokes (constant screen width, on top of the band) --
@@ -576,7 +623,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         glDrawArraysInstanced(GL_TRIANGLES, 0, 6, static_cast<GLsizei>(segScratch_.size() / 4));
     }
 
-    evictLayers(frame_);
+    evictSlots(frame_);
     if (lastShown_.size() > 16384) lastShown_.clear();
     if (fades_.size() > 4096) fades_.clear();
     glBindVertexArray(0);

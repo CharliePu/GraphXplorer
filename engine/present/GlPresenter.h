@@ -41,11 +41,14 @@ public:
     // Crossfades animating last frame: while >0 the caller must keep rendering
     // (~8ms cadence) so refinement upgrades melt in instead of popping.
     [[nodiscard]] int activeFades() const { return fadesActive_; }
+    // atlas occupancy diagnostics
+    [[nodiscard]] size_t residentLayers() const { return layers_.size(); }
+    [[nodiscard]] size_t freeLayers() const { return freeLayers_.size(); }
 
 private:
     struct TileTex
     {
-        int layer{-1};
+        int slot{-1}; // global: array index * layersPerArray_ + layer
         uint64_t lastFrame{0};
     };
 
@@ -56,9 +59,9 @@ private:
     // ALWAYS hits regardless of budgets; an upload is rationed by the count
     // budget + the per-frame time budget, except `critical` uploads (the
     // alternative is a hole), which spend their own bounded budget.
-    int ensureLayer(const CoverageTilePtr &cov, int &budget, int &criticalLeft, uint64_t frame,
-                    bool critical);
-    void evictLayers(uint64_t frame);
+    int ensureSlot(const CoverageTilePtr &cov, int &budget, int &criticalLeft, uint64_t frame,
+                   bool critical);
+    void evictSlots(uint64_t frame);
 
     int tilePx_;
     int fbW_{1}, fbH_{1};
@@ -74,10 +77,17 @@ private:
     unsigned int quadVao_{0}, quadVbo_{0}, instVbo_{0};
     unsigned int lineVao_{0}, lineVbo_{0};
     unsigned int segVao_{0}, segVbo_{0};
-    unsigned int tileArray_{0}; // GL_TEXTURE_2D_ARRAY, R8, tilePx^2 x layers
-    int layerCount_{0};
+    // The tile atlas: SEVERAL R8 2D arrays (drivers commonly clamp
+    // GL_MAX_ARRAY_TEXTURE_LAYERS to 2048, below a dense 4K view's working
+    // set). Instances are bucketed by their (own array, fade-source array)
+    // pair and drawn with one instanced call per bucket -- GL 3.3 forbids
+    // non-uniform sampler indexing, buckets sidestep it. A resident slot is
+    // global: array = slot / layersPerArray_, layer = slot % layersPerArray_.
+    std::vector<unsigned int> tileArrays_;
+    int layersPerArray_{0};
+    int slotCount_{0};
 
-    int uFill_{-1}, uTiles_{-1};
+    int uFill_{-1}, uTiles_{-1}, uTilesFrom_{-1};
     int uLineColor_{-1};
     int uSegPx_{-1}, uSegHalfW_{-1}, uSegColor_{-1};
     std::vector<float> segScratch_; // NDC endpoints of this frame's strokes
@@ -88,9 +98,10 @@ private:
         float ndc[4];    // x0,y0,x1,y1
         float uv[4];     // u0,v0,u1,v1
         float uvFrom[4]; // crossfade source sub-rect
-        float misc[4];   // x=layer (<0 => flat), y=layerFrom, z=fade, w=flatValue
+        float misc[4];   // x=LOCAL layer (<0 => flat), y=local layerFrom, z=fade, w=flatValue
     };
-    std::vector<Inst> insts_;
+    std::vector<std::vector<Inst>> buckets_; // per (ownArray, fadeArray) pair
+    std::vector<Inst> instUpload_;           // concatenated for the VBO
 
     std::unordered_map<uint64_t, TileTex> layers_; // payloadId -> resident layer
     // Free layers, stamped with their release frame: a layer is only reused a

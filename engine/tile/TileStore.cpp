@@ -153,7 +153,7 @@ void TileStore::touch(const TileKey &key, uint64_t frame)
     if (it != map_.end()) it->second->lastTouched.store(frame, std::memory_order_relaxed);
 }
 
-void TileStore::evictToBudget(size_t maxTiles, uint64_t keepEpoch)
+void TileStore::evictToBudget(size_t maxTiles, uint64_t keepEpoch, uint64_t protectAfterFrame)
 {
     struct Ref
     {
@@ -168,14 +168,22 @@ void TileStore::evictToBudget(size_t maxTiles, uint64_t keepEpoch)
         if (map_.size() <= maxTiles) return;
         refs.reserve(map_.size());
         for (const auto &[k, slot] : map_)
-            refs.push_back({k, slot->lastTouched.load(std::memory_order_relaxed), k.epoch < keepEpoch});
+        {
+            const uint64_t touched = slot->lastTouched.load(std::memory_order_relaxed);
+            if (touched >= protectAfterFrame) continue; // active working set: untouchable
+            refs.push_back({k, touched, k.epoch < keepEpoch});
+        }
     }
 
     // Low watermark: evict in batches (to maxTiles - maxTiles/8) so a store
-    // hovering at the budget does not pay this path on every insert.
+    // hovering at the budget does not pay this path on every insert. Only the
+    // UNPROTECTED candidates count as removable; if the protected working set
+    // alone exceeds the budget, the store simply stays larger (soft cap).
     const size_t target = maxTiles - maxTiles / 8;
-    if (refs.size() <= target) return;
-    const size_t toRemove = refs.size() - target;
+    const size_t total = size();
+    if (total <= target) return;
+    const size_t toRemove = std::min(refs.size(), total - target);
+    if (toRemove == 0) return;
 
     // Order OUTSIDE any lock: stale epochs first, then least-recently-touched.
     const auto victimFirst = [](const Ref &a, const Ref &b) {

@@ -943,6 +943,7 @@ int runReproGl(const std::string &prefix)
         bool finalRender = false;
         double maxBp = 0, maxRf = 0, sumBp = 0;
         int maxHoles = 0, holeFrames = 0;
+        int lastPending = 0;
         for (; frame < 1500; ++frame)
         {
             glfw::pollEvents();
@@ -959,6 +960,12 @@ int runReproGl(const std::string &prefix)
             maxHoles = std::max(maxHoles, holes);
             if (holes > 0) ++holeFrames;
             const int pending = presenter.renderFrame(vp, present, 128);
+            lastPending = pending;
+            if (frame % 300 == 299)
+                std::printf("    [f%d] pend=%d up=%d(%.1fms) resident=%zu free=%zu fades=%d\n",
+                            frame, pending, presenter.lastUploads(), presenter.lastUploadMs(),
+                            presenter.residentLayers(), presenter.freeLayers(),
+                            presenter.activeFades());
             const auto t2 = std::chrono::steady_clock::now();
             const double bp = std::chrono::duration<double, std::milli>(t1 - t0).count();
             maxBp = std::max(maxBp, bp);
@@ -975,10 +982,10 @@ int runReproGl(const std::string &prefix)
         saveFramebuffer(fbW, fbH, prefix + name + ".png");
         const bool frozen = (frame >= 1500 && fb > 0);
         std::printf("%-12s fb=%4dx%-4d wpp=%-8.4g frames=%-4d FB=%-3d HOLES(max=%d,frames=%d) "
-                    "jobs=%-6llu store=%-5zu %s\n",
+                    "pend=%-4d jobs=%-6llu store=%-5zu %s\n",
                     name.c_str(), fbW, fbH, vp.worldPerPixel, frame, fb, maxHoles, holeFrames,
-                    static_cast<unsigned long long>(engine.jobsCompleted()), engine.storeSize(),
-                    frozen ? "*** FROZEN ***" : "ok");
+                    lastPending, static_cast<unsigned long long>(engine.jobsCompleted()),
+                    engine.storeSize(), frozen ? "*** FROZEN ***" : "ok");
     };
 
     // Scrub like a live user: continuous small zoom/pan steps, a few buildPresents
@@ -1099,6 +1106,18 @@ int runReproGl(const std::string &prefix)
     vp.worldPerPixel = 0.0008;
     renderToCompletion("B-deepNew");
     probe("B-deepNew");
+
+    // (C) Working set > store budget: back on the oscillating band (everything
+    // Mixed) at a depth where the draw set + pan-ahead ring + tree + history
+    // exceed kResidencyTiles. The SOFT eviction cap must let the store grow
+    // past the budget instead of evicting the active view (which thrashed
+    // forever: permanently unfilled holes, observed live after frequent
+    // resizing). Convergence == regression-free.
+    vp.centerX = 15.0;
+    vp.centerY = 0.3;
+    vp.worldPerPixel = 0.0003;
+    renderToCompletion("C-thrash");
+    probe("C-thrash");
 
     std::printf(
         "(want: no FROZEN, fast* TRUEHOLE frames=0, freshOut GUARDBARE frames=0, B-* nonDone=0)\n");

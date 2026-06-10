@@ -316,14 +316,17 @@ int main(int argc, char **argv)
     std::filesystem::create_directories(outDir, outDirEc);
 
     // Lightweight status log: resize/zoom, settle, store/job counts, GL errors.
+    // NEVER write to the console or flush synchronously from the frame path: a
+    // Windows console write can block the calling thread for hundreds of ms
+    // (measured: two ~280ms mid-zoom freezes traced to the throttled [gen]
+    // line's puts). File-only, OS-buffered; flush only on rare/final events.
     std::ofstream logf(outDir + "/gx.log", std::ios::trunc);
-    auto logln = [&](const std::string &s) {
+    auto logln = [&](const std::string &s, bool flush = false) {
         if (logf)
         {
             logf << s << "\n";
-            logf.flush();
+            if (flush) logf.flush();
         }
-        std::puts(s.c_str());
     };
     {
         char b[200];
@@ -602,7 +605,9 @@ int main(int argc, char **argv)
                 finalRender ? "final" : "gen", fbW, fbH, vp.worldPerPixel, present.size(), holes,
                 fbCount, engine.storeSize(), static_cast<unsigned long long>(engine.jobsCompleted()),
                 static_cast<unsigned>(glErr));
-            logln(b);
+            // flush only on rare, diagnosis-critical lines; the throttled [gen]
+            // progress lines stay buffered (they were the mid-zoom stall).
+            logln(b, /*flush=*/glErr != GL_NO_ERROR || settled || holes > 0);
             lastDiag = now;
         }
         prevFinal = finalRender;

@@ -206,3 +206,42 @@ TEST_CASE("equality renders a thin, non-vanishing curve", "[solver]")
     // a pixel far from the diagonal is dark
     REQUIRE(t.at(56, 4) == Approx(0.0f).margin(1e-3));
 }
+
+TEST_CASE("equality curves yield marching-squares segments on the curve", "[solver][marching]")
+{
+    Relation r = must("y = x^2");
+    EvalScratch s;
+    SolveParams p;
+    p.tilePx = 64;
+    const WorldRect rect{-1.0, -0.5, 1.0, 1.5};
+    CoverageTile t = solveTile(r, rect, p, s);
+
+    // the curve crosses this tile: segments must exist, in tile-local [0,1]
+    REQUIRE(t.segs.size() >= 8);
+    REQUIRE(t.segs.size() % 4 == 0);
+
+    const double pixel = rect.width() / t.width;
+    double worst = 0.0;
+    for (size_t i = 0; i + 3 < t.segs.size(); i += 4)
+    {
+        for (int e = 0; e < 2; ++e)
+        {
+            const double lx = t.segs[i + 2 * e], ly = t.segs[i + 2 * e + 1];
+            REQUIRE(lx >= 0.0);
+            REQUIRE(lx <= 1.0);
+            REQUIRE(ly >= 0.0);
+            REQUIRE(ly <= 1.0);
+            const double wx = rect.x0 + lx * rect.width();
+            const double wy = rect.y0 + ly * rect.height();
+            worst = std::max(worst, std::abs(wy - wx * wx));
+        }
+    }
+    // endpoints sit on the analytic curve to sub-pixel accuracy (linear
+    // interpolation within a boundary pixel cell)
+    REQUIRE(worst < 2.5 * pixel);
+
+    // inequalities carry no segments
+    Relation ineq = must("y > x^2");
+    CoverageTile t2 = solveTile(ineq, rect, p, s);
+    REQUIRE(t2.segs.empty());
+}

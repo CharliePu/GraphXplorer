@@ -57,6 +57,38 @@ out vec4 frag;
 uniform vec4 color;
 void main(){ frag = color; })";
 
+// Equality-curve strokes: each segment instance expands into a screen-space
+// quad of constant pixel width with square feathered caps.
+const char *kSegVs = R"(#version 330 core
+layout(location=0) in vec2 corner; // (0..1)^2
+layout(location=1) in vec4 iSeg;   // endpoint NDC: x0,y0,x1,y1
+uniform vec2 pxOfNdc; // pixels per NDC unit (fbW/2, fbH/2)
+uniform float halfW;  // half stroke width in pixels
+out float vEdge;
+void main(){
+    vec2 aPx = iSeg.xy * pxOfNdc;
+    vec2 bPx = iSeg.zw * pxOfNdc;
+    vec2 d = bPx - aPx;
+    float len = max(length(d), 1e-6);
+    vec2 t = d / len;
+    vec2 n = vec2(-t.y, t.x);
+    float along = corner.x * (len + 2.0 * halfW) - halfW;
+    float across = (corner.y * 2.0 - 1.0) * halfW;
+    vec2 p = aPx + t * along + n * across;
+    gl_Position = vec4(p / pxOfNdc, 0.0, 1.0);
+    vEdge = corner.y * 2.0 - 1.0;
+})";
+
+const char *kSegFs = R"(#version 330 core
+in float vEdge;
+out vec4 frag;
+uniform vec4 segColor;
+uniform float halfW;
+void main(){
+    float a = clamp((1.0 - abs(vEdge)) * halfW, 0.0, 1.0); // ~1px rim feather
+    frag = vec4(segColor.rgb, segColor.a * a);
+})";
+
 constexpr int kWantLayers = 4096;     // 4096 x 64x64 R8 = 16 MB, allocated once
 constexpr double kUploadMsBudget = 3.0; // per-frame time budget for normal uploads
 constexpr double kFadeMs = 120.0;       // refinement crossfade duration
@@ -74,9 +106,13 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
 {
     tileProgram_ = compile(kTileVs, kTileFs);
     lineProgram_ = compile(kLineVs, kLineFs);
+    segProgram_ = compile(kSegVs, kSegFs);
     uFill_ = glGetUniformLocation(tileProgram_, "fill");
     uTiles_ = glGetUniformLocation(tileProgram_, "tiles");
     uLineColor_ = glGetUniformLocation(lineProgram_, "color");
+    uSegPx_ = glGetUniformLocation(segProgram_, "pxOfNdc");
+    uSegHalfW_ = glGetUniformLocation(segProgram_, "halfW");
+    uSegColor_ = glGetUniformLocation(segProgram_, "segColor");
 
     // The tile atlas: one R8 2D array; every upload from here on is a
     // glTexSubImage3D into this preallocated storage (no allocation churn).
@@ -119,6 +155,18 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     glBindBuffer(GL_ARRAY_BUFFER, lineVbo_);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
+
+    // stroke VAO: shared unit-quad corners + per-instance segment endpoints
+    glGenVertexArrays(1, &segVao_);
+    glGenBuffers(1, &segVbo_);
+    glBindVertexArray(segVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, quadVbo_);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
+    glBindBuffer(GL_ARRAY_BUFFER, segVbo_);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), nullptr);
+    glVertexAttribDivisor(1, 1);
     glBindVertexArray(0);
 }
 
@@ -127,11 +175,14 @@ GlPresenter::~GlPresenter()
     glDeleteTextures(1, &tileArray_);
     glDeleteProgram(tileProgram_);
     glDeleteProgram(lineProgram_);
+    glDeleteProgram(segProgram_);
     glDeleteVertexArrays(1, &quadVao_);
     glDeleteBuffers(1, &quadVbo_);
     glDeleteBuffers(1, &instVbo_);
     glDeleteVertexArrays(1, &lineVao_);
     glDeleteBuffers(1, &lineVbo_);
+    glDeleteVertexArrays(1, &segVao_);
+    glDeleteBuffers(1, &segVbo_);
 }
 
 unsigned int GlPresenter::compile(const char *vs, const char *fs)
@@ -309,6 +360,21 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
     int criticalLeft = 64;
     insts_.clear();
     insts_.reserve(tiles.size());
+    segScratch_.clear();
+    // Equality-curve strokes for a tile drawing its OWN raster: transform the
+    // tile-local segments to NDC. (Fallbacks/stand-ins keep the band raster.)
+    auto appendSegs = [&](const PresentTile &t) {
+        const std::vector<float> &sg = t.cov->segs;
+        const double w = t.rect.x1 - t.rect.x0, h = t.rect.y1 - t.rect.y0;
+        for (size_t i = 0; i + 3 < sg.size(); i += 4)
+        {
+            float ax, ay, bx, by;
+            worldToNdc(vp, fbW_, fbH_, t.rect.x0 + sg[i] * w, t.rect.y0 + sg[i + 1] * h, ax, ay);
+            worldToNdc(vp, fbW_, fbH_, t.rect.x0 + sg[i + 2] * w, t.rect.y0 + sg[i + 3] * h, bx, by);
+            if (ax == bx && ay == by) continue;
+            segScratch_.insert(segScratch_.end(), {ax, ay, bx, by});
+        }
+    };
 
     for (const PresentTile &t : tiles)
     {
@@ -466,6 +532,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                 }
 
                 lastShown_[t.key] = Shown{drawnPayload, u0, v0, u1, v1};
+                if (ownTex && !t.cov->segs.empty()) appendSegs(t);
             }
         }
 
@@ -492,6 +559,21 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         glBufferSubData(GL_ARRAY_BUFFER, 0, bytes, insts_.data());
         glDrawArraysInstanced(GL_TRIANGLES, 0, 6, static_cast<GLsizei>(insts_.size()));
         drawnTiles_ = static_cast<int>(insts_.size());
+    }
+
+    // ---- equality-curve strokes (constant screen width, on top of the band) --
+    if (!segScratch_.empty())
+    {
+        glUseProgram(segProgram_);
+        glUniform2f(uSegPx_, fbW_ * 0.5f, fbH_ * 0.5f);
+        glUniform1f(uSegHalfW_, 1.4f);
+        glUniform4f(uSegColor_, 0.30f, 0.70f, 1.0f, 1.0f);
+        glBindVertexArray(segVao_);
+        glBindBuffer(GL_ARRAY_BUFFER, segVbo_);
+        const GLsizeiptr sBytes = static_cast<GLsizeiptr>(segScratch_.size() * sizeof(float));
+        glBufferData(GL_ARRAY_BUFFER, sBytes, nullptr, GL_STREAM_DRAW); // orphan
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sBytes, segScratch_.data());
+        glDrawArraysInstanced(GL_TRIANGLES, 0, 6, static_cast<GLsizei>(segScratch_.size() / 4));
     }
 
     evictLayers(frame_);

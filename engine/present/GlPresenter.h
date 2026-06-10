@@ -70,13 +70,17 @@ private:
 
     unsigned int tileProgram_{0};
     unsigned int lineProgram_{0};
+    unsigned int segProgram_{0}; // equality-curve strokes (instanced AA segments)
     unsigned int quadVao_{0}, quadVbo_{0}, instVbo_{0};
     unsigned int lineVao_{0}, lineVbo_{0};
+    unsigned int segVao_{0}, segVbo_{0};
     unsigned int tileArray_{0}; // GL_TEXTURE_2D_ARRAY, R8, tilePx^2 x layers
     int layerCount_{0};
 
     int uFill_{-1}, uTiles_{-1};
     int uLineColor_{-1};
+    int uSegPx_{-1}, uSegHalfW_{-1}, uSegColor_{-1};
+    std::vector<float> segScratch_; // NDC endpoints of this frame's strokes
 
     // Per-instance record for the single instanced tile draw.
     struct Inst

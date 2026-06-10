@@ -1,7 +1,7 @@
 # GraphXplorer rewrite engine (`gxr`)
 
 A self-contained CPU renderer for implicit relations (inequalities and equalities). Full design in
-[`docs/ARCHITECTURE_REWRITE.md`](../docs/ARCHITECTURE_REWRITE.md); the project contract lives in
+[`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md); the project contract lives in
 [`CLAUDE.md`](../CLAUDE.md).
 
 ## What it does (the three objectives)
@@ -37,13 +37,13 @@ cmd /c _build_release.bat <target>   # Release -> build-release/engine/
 
 Targets: `GxEngineTests` (Catch2), `gxrender` (headless PNG), `gxbench` (throughput),
 `gxrepro` (resize/settle), `gxrepro_prio` (objective-2 harness: first-paint / all-sharp latency and
-main-thread walk cost on the degenerate `y > sin(2^x) + y*0`), `GraphXplorer2` (live GL app).
+main-thread walk cost on the degenerate `y > sin(2^x) + y*0`), `GraphXplorer` (live GL app).
 **Use the Release build for any performance impression** — Debug is ~10× slower (no inlining,
 checked iterators).
 
 ## Run
 
-- **Live app:** `build-release/engine/GraphXplorer2.exe ["<formula>"]`
+- **Live app:** `build-release/engine/GraphXplorer.exe ["<formula>"]`
   Pan = drag, zoom = scroll, keys **1–6** = preset formulas, **R** = reset view, **Esc** = quit.
 - **Headless image:** `gxrender "<formula>" out.png [cx cy worldPerPixel size subBits]`
   e.g. `gxrender "y > sin(2^x)" sin.png 0 0 0.0156 512 4`
@@ -53,14 +53,12 @@ checked iterators).
 Formula syntax: `+ - * / ^`, `sin cos tan log exp sqrt abs`, comparisons `< <= > >= = !=`, `&& ||`,
 variables `x y`, constants `pi e`. A relation needs a comparison (e.g. `x^2+y^2<1`, `y=x^2`).
 
-## What to validate on a real display
-The GL window (`GraphXplorer2`) compiles and links but could not be run in the headless build
-environment. Please confirm: window opens, tiles fill in coarse-then-fine, pan/zoom stay smooth under
-heavy formulas (try preset 5 = `sin(x*y)>0` and zoom out), and the axes/grid track the view. The CPU
-engine itself is fully validated headlessly (golden PNGs, closed-form oracles, latency invariant).
+Headless GL validation (no display needed): `GraphXplorer --selftest out.png "<formula>" [debug]`
+renders offscreen to a PNG; `GraphXplorer --reprogl <prefix>` drives the real render loop through
+resize/zoom scrubs and deep-zoom cascades, checking for holes and convergence.
 
 ## Layout
 `math/` sound interval + ULP rounding · `expr/` parser, bytecode, 3 eval modes, relation+structure ·
-`solve/` coverage solver + 1-D accelerator · `tile/` geometry, keys, thread-safe store · `sched`/`app/`
-engine (mailbox, scheduler, workers) · `present/` Presenter seam + GL compositor · `image/` PNG ·
-`tools/` headless CLIs · `tests/` Catch2.
+`solve/` coverage solver + 1-D accelerator · `tile/` geometry, keys, thread-safe store · `app/`
+engine (mailbox, scheduler, workers) + GUI main · `present/` Presenter seam + GL compositor ·
+`image/` PNG · `tools/` headless CLIs · `tests/` Catch2.

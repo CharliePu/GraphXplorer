@@ -40,10 +40,10 @@ target_link_libraries(gxrepro_prio PRIVATE GxEngine)
 # Live GUI app (OpenGL). Reuses the project's glfw/glad/glfwpp; Vulkan-ready seam
 # is the Presenter interface.
 find_package(Freetype REQUIRED)
-add_executable(GraphXplorer2
+add_executable(GraphXplorer
         ${CMAKE_CURRENT_SOURCE_DIR}/app/main_gui.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/present/GlPresenter.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/present/Overlay.cpp)
-target_include_directories(GraphXplorer2 PRIVATE ${CMAKE_SOURCE_DIR}/include)
-target_compile_definitions(GraphXplorer2 PRIVATE GXR_ASSET_DIR="${CMAKE_SOURCE_DIR}")
-target_link_libraries(GraphXplorer2 PRIVATE GxEngine glfw glad::glad Freetype::Freetype)
+target_include_directories(GraphXplorer PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(GraphXplorer PRIVATE GXR_ASSET_DIR="${CMAKE_SOURCE_DIR}")
+target_link_libraries(GraphXplorer PRIVATE GxEngine glfw glad::glad Freetype::Freetype)

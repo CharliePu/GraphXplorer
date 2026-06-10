@@ -11,5 +11,5 @@ find_package(Freetype REQUIRED)
 enable_testing()
 
 # The CPU rendering engine and GL app (namespace gxr). Contract in CLAUDE.md,
-# module map in engine/README.md, design in docs/ARCHITECTURE_REWRITE.md.
+# module map in engine/README.md, design in docs/ARCHITECTURE.md.
 add_subdirectory(engine)

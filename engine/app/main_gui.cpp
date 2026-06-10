@@ -1,4 +1,4 @@
-// GraphXplorer2 - live CPU renderer. Pan = drag, zoom = scroll, 1-6 = preset
+// GraphXplorer - live CPU renderer. Pan = drag, zoom = scroll, 1-6 = preset
 // formulas, R = reset view, Esc = quit. All GL on the main thread; all math async.
 
 #define GLFW_INCLUDE_NONE
@@ -261,7 +261,7 @@ int main(int argc, char **argv)
     }
         .apply();
 
-    glfw::Window window(1000, 800, "GraphXplorer2");
+    glfw::Window window(1000, 800, "GraphXplorer");
     glfw::makeContextCurrent(window);
     glfw::swapInterval(1); // vsync
 
@@ -288,7 +288,7 @@ int main(int argc, char **argv)
     if (!rel) rel = parseOrNull(kPresets[0]);
     engine.setRelation(rel);
     engine.setViewport(vp);
-    std::printf("GraphXplorer2: %s\n", formula.c_str());
+    std::printf("GraphXplorer: %s\n", formula.c_str());
 
     bool dragging = false;
     double lastX = 0, lastY = 0;
@@ -301,7 +301,7 @@ int main(int argc, char **argv)
     bool showDebug = false;
 
     // Lightweight status log: resize/zoom, settle, store/job counts, GL errors.
-    std::ofstream logf("out/gx2.log", std::ios::trunc);
+    std::ofstream logf("out/gx.log", std::ios::trunc);
     auto logln = [&](const std::string &s) {
         if (logf)
         {
@@ -580,7 +580,7 @@ int main(int argc, char **argv)
                         engine.setRelation(std::make_shared<const Relation>(std::move(*parsed)));
                         editing = false;
                         status.clear();
-                        std::printf("GraphXplorer2: %s\n", formula.c_str());
+                        std::printf("GraphXplorer: %s\n", formula.c_str());
                     }
                     else
                     {
@@ -634,7 +634,7 @@ int main(int argc, char **argv)
                 {
                     engine.setRelation(r);
                     status.clear();
-                    std::printf("GraphXplorer2: %s\n", formula.c_str());
+                    std::printf("GraphXplorer: %s\n", formula.c_str());
                 }
             }
         });

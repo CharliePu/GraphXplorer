@@ -28,6 +28,11 @@ public:
     // True holes drawn last frame (region with no own tile AND no resident stand-in).
     // The seamless-swap target is 0; an in-flight upload draws a stand-in, not a hole.
     [[nodiscard]] int lastHoleTiles() const { return holeTiles_; }
+    // Per-frame latency attribution: time spent inside glTexImage2D uploads, how
+    // many tiles were uploaded, and how many quads were drawn last frame.
+    [[nodiscard]] double lastUploadMs() const { return uploadMs_; }
+    [[nodiscard]] int lastUploads() const { return uploads_; }
+    [[nodiscard]] int lastDrawnTiles() const { return drawnTiles_; }
 
 private:
     struct TileTex
@@ -47,6 +52,9 @@ private:
     int fbW_{1}, fbH_{1};
     uint64_t frame_{0};
     int holeTiles_{0}; // true holes drawn last frame (no own tile, no resident stand-in)
+    double uploadMs_{0.0}; // time inside texture uploads last frame
+    int uploads_{0};       // textures uploaded last frame
+    int drawnTiles_{0};    // quads drawn last frame
 
     unsigned int tileProgram_{0};
     unsigned int lineProgram_{0};

@@ -90,10 +90,12 @@ void drawUi(Overlay &ui, int fbW, int fbH, const std::string &formula, bool edit
 }
 
 // Debug overlay: visible tiles outlined and coloured by solve state, plus an
-// info panel (fps, level, viewport, tile/store/job counts) and a legend.
+// info panel (fps, level, viewport, tile/store/job counts, frame-latency
+// attribution) and a legend.
 void drawDebug(Overlay &ui, const Viewport &vp, int fbW, int fbH,
               const std::vector<DebugTile> &tiles, size_t storeSize, unsigned long long jobs,
-              double fps, double frameMs, int holes)
+              double fps, double frameMs, int holes, const char *perf1 = nullptr,
+              const char *perf2 = nullptr)
 {
     if (!ui.ok()) return;
     ui.begin();
@@ -119,7 +121,7 @@ void drawDebug(Overlay &ui, const Viewport &vp, int fbW, int fbH,
     }
 
     // info panel (top-right)
-    const float pw = 320, ph = 206, px = fbW - pw - 10, py = 50;
+    const float pw = 430, ph = perf1 ? 296 : 206, px = fbW - pw - 10, py = 50;
     ui.fillRect(px, py, pw, ph, {0.04f, 0.04f, 0.06f, 0.88f});
     const std::array<float, 4> tc{0.85f, 0.9f, 1.0f, 1.0f};
     float ty = py + 8;
@@ -142,6 +144,8 @@ void drawDebug(Overlay &ui, const Viewport &vp, int fbW, int fbH,
     ui.text(px + 12, ty, buf, 0.8f,
             holes > 0 ? std::array<float, 4>{1.0f, 0.35f, 0.35f, 1.0f} : tc);
     ty += ui.lineHeight(0.8f) + 2;
+    if (perf1) line(perf1); // worst frame in the ring: phase breakdown
+    if (perf2) line(perf2); // freshest input->present age
     ty += 6;
     auto legend = [&](std::array<float, 4> col, const char *lbl) {
         ui.fillRect(px + 12, ty + 2, 12, 12, col);
@@ -334,6 +338,39 @@ int main(int argc, char **argv)
     bool prevFinal = false;
     bool rendering = false; // re-entry guard: a callback must not recurse into render
 
+    // ---- Per-iteration latency attribution (out/gx_frames.csv + debug HUD) ------
+    // Every frame logs where its time went, so a laggy session can be analyzed
+    // after the fact: wait = blocked in waitEvents (idle/vsync pacing, NOT lag;
+    // -1 = frame driven by a window callback), build = engine.buildPresent walk,
+    // render = presenter total (upMs/upN = the glTexImage2D share), overlay =
+    // text/axes, swap = fence+swapBuffers (vsync + driver), total = work without
+    // wait. inAge = freshest-input-to-present age on frames that consumed a
+    // viewport change (the latency the user feels while dragging/zooming).
+    using SClock = std::chrono::steady_clock;
+    const auto appT0 = SClock::now();
+    auto msSince = [](SClock::time_point a) {
+        return std::chrono::duration<double, std::milli>(SClock::now() - a).count();
+    };
+    struct FrameStat
+    {
+        double t{0}, wait{0}, build{0}, render{0}, up{0}, overlay{0}, swap{0}, total{0}, inAge{-1};
+        int upN{0}, drawn{0}, holes{0}, inflight{0};
+    };
+    std::array<FrameStat, 240> perfRing{};
+    size_t perfIdx = 0, perfCount = 0;
+    double pendingWaitMs = -1.0; // set by the event loop, consumed by renderOnce
+    SClock::time_point lastInputT{};
+    bool haveInput = false;
+    auto markInput = [&] {
+        lastInputT = SClock::now();
+        haveInput = true;
+    };
+    std::ofstream perfCsv("out/gx_frames.csv", std::ios::trunc);
+    if (perfCsv)
+        perfCsv << "t_ms,wait_ms,build_ms,render_ms,upload_ms,upload_n,overlay_ms,swap_ms,total_ms,"
+                   "inAge_ms,present,drawn,holes,inflight,store\n";
+    int perfFlush = 0;
+
     // ---- Resize present guard (ported from the legacy app's complete fix) -------
     // The first present(s) at a new (larger) framebuffer size can trigger a driver
     // swapchain reallocation costing hundreds of ms to ~2s. An unconditional
@@ -371,6 +408,13 @@ int main(int argc, char **argv)
         if (rendering) return; // a refresh fired while already rendering -> ignore
         rendering = true;
 
+        FrameStat st;
+        const auto fT0 = SClock::now();
+        st.t = std::chrono::duration<double, std::milli>(fT0 - appT0).count();
+        st.wait = pendingWaitMs;
+        pendingWaitMs = -1.0; // callback-driven frames log wait = -1
+        const bool vpChangedThisFrame = viewportDirty;
+
         if (viewportDirty)
         {
             engine.setViewport(vp);
@@ -387,7 +431,9 @@ int main(int argc, char **argv)
             frameMs = frameMs * 0.9 + dt * 1000.0 * 0.1;
         }
 
+        const auto tBuild0 = SClock::now();
         const size_t visible = engine.buildPresent(vp, present);
+        st.build = msSince(tBuild0);
         finalRender = (present.size() == visible);
         for (const PresentTile &p : present)
             if (p.fallback || p.state != TileState::Done)
@@ -396,19 +442,46 @@ int main(int argc, char **argv)
                 break;
             }
 
+        const auto tRender0 = SClock::now();
         const int pendingUploads = presenter.renderFrame(vp, present, /*uploadBudget=*/192);
+        st.render = msSince(tRender0);
+        st.up = presenter.lastUploadMs();
+        st.upN = presenter.lastUploads();
+        st.drawn = presenter.lastDrawnTiles();
         // The "eye": true visual holes this frame -- a region that drew NOTHING (own
         // texture not ready AND no resident ancestor stand-in). Seamless swap => 0.
         const int holes = presenter.lastHoleTiles();
+        st.holes = holes;
         if (pendingUploads > 0) finalRender = false;
+        const auto tOverlay0 = SClock::now();
         drawAxisNumbers(overlay, vp, fbW, fbH);
         drawUi(overlay, fbW, fbH, formula, editing, editBuffer, status);
         if (showDebug)
         {
             engine.debugTiles(vp, dbgTiles);
+            // HUD shows the worst frame of the ring (~2s) and the latest input age,
+            // from COMPLETED frames (this frame's stats aren't final yet).
+            const FrameStat *worst = nullptr;
+            double inLast = -1;
+            for (size_t i = 0; i < perfCount; ++i)
+            {
+                const FrameStat &f = perfRing[i];
+                if (!worst || f.total > worst->total) worst = &f;
+                if (f.inAge >= 0) inLast = f.inAge;
+            }
+            char p1[160], p2[160];
+            if (worst)
+                std::snprintf(p1, sizeof p1,
+                              "worst2s %.1fms: bp %.1f rf %.1f (up %.1f/%d) sw %.1f wt %.1f",
+                              worst->total, worst->build, worst->render, worst->up, worst->upN,
+                              worst->swap, std::max(0.0, worst->wait));
+            else
+                std::snprintf(p1, sizeof p1, "worst2s: n/a");
+            std::snprintf(p2, sizeof p2, "input->present %.1f ms", inLast);
             drawDebug(overlay, vp, fbW, fbH, dbgTiles, engine.storeSize(), engine.jobsCompleted(), fps,
-                      frameMs, holes);
+                      frameMs, holes, p1, p2);
         }
+        st.overlay = msSince(tOverlay0);
 
         // Resize-guarded present (see guard state above). In the settle window
         // after a resize, wait on a GPU fence with a bounded timeout for the draw
@@ -416,6 +489,7 @@ int main(int argc, char **argv)
         // and retry next frame, so the UI stays live through the driver's swapchain
         // realloc. glFinish is only a last-resort fallback. Outside the guard the
         // fence is skipped entirely (zero steady-state cost).
+        const auto tSwapPhase0 = SClock::now();
         bool doSwap = true;
         if (guardActive(now))
         {
@@ -471,6 +545,29 @@ int main(int argc, char **argv)
                     ++guardPresents;
                     if (!guardActive(std::chrono::steady_clock::now())) guardOn = false;
                 }
+            }
+        }
+        st.swap = msSince(tSwapPhase0); // fence wait + swapBuffers (vsync + driver)
+        st.total = msSince(fT0);
+        st.inflight = engine.jobsInFlight();
+        if (vpChangedThisFrame && haveInput)
+            st.inAge = std::chrono::duration<double, std::milli>(SClock::now() - lastInputT).count();
+        perfRing[perfIdx] = st;
+        perfIdx = (perfIdx + 1) % perfRing.size();
+        perfCount = std::min(perfCount + 1, perfRing.size());
+        if (perfCsv)
+        {
+            char row[280];
+            std::snprintf(row, sizeof row,
+                          "%.1f,%.2f,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.2f,%.2f,%zu,%d,%d,%d,%zu\n", st.t,
+                          st.wait, st.build, st.render, st.up, st.upN, st.overlay, st.swap, st.total,
+                          st.inAge, present.size(), st.drawn, st.holes, st.inflight,
+                          engine.storeSize());
+            perfCsv << row;
+            if (++perfFlush >= 120)
+            {
+                perfCsv.flush();
+                perfFlush = 0;
             }
         }
 
@@ -547,6 +644,7 @@ int main(int argc, char **argv)
         vp.centerX -= dx * vp.worldPerPixel;
         vp.centerY += dy * vp.worldPerPixel; // cursor y is down, world y is up
         viewportDirty = true;
+        markInput();
     });
 
     window.scrollEvent.setCallback([&](glfw::Window &w, double, double yoff) {
@@ -558,6 +656,7 @@ int main(int argc, char **argv)
         vp.centerX = worldX - (cx - fbW * 0.5) * vp.worldPerPixel;
         vp.centerY = worldY + (cy - fbH * 0.5) * vp.worldPerPixel;
         viewportDirty = true;
+        markInput();
     });
 
     window.keyEvent.setCallback(
@@ -613,6 +712,7 @@ int main(int argc, char **argv)
                 vp.centerX = vp.centerY = 0.0;
                 vp.worldPerPixel = 16.0 / fbW;
                 viewportDirty = true;
+                markInput();
                 return;
             }
             if (key == K::D)
@@ -644,12 +744,14 @@ int main(int argc, char **argv)
         // Event-driven: when the visible image is final, block at ~0% CPU until
         // input arrives or a worker wakes us (postEmptyEvent). While tiles are
         // still arriving, wake on each publish, with a short timeout as a backstop.
+        const auto w0 = SClock::now();
         if (guardActive(std::chrono::steady_clock::now()))
             glfw::waitEvents(0.004); // settle window: keep re-checking the fence/realloc
         else if (finalRender)
             glfw::waitEvents();
         else
             glfw::waitEvents(0.05);
+        pendingWaitMs = msSince(w0); // includes event-callback dispatch time
         renderOnce();
     }
     return 0;

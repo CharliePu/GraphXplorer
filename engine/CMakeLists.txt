@@ -19,11 +19,24 @@ target_compile_features(GxEngine PUBLIC cxx_std_23)
 find_package(Threads REQUIRED)
 target_link_libraries(GxEngine PUBLIC Threads::Threads)
 
+# AVX2+FMA codegen for the engine (and the tests, which compile the same SIMD
+# header inline). The sampling kernels in math/Simd.h need real fused
+# multiply-add for their argument reductions; without this flag they fall back
+# to the CRT per lane (correct, slower). /fp:precise still never contracts the
+# certified interval arithmetic.
+option(GXR_AVX2 "Compile the engine with AVX2+FMA codegen" ON)
+if(GXR_AVX2 AND MSVC)
+    target_compile_options(GxEngine PRIVATE /arch:AVX2)
+endif()
+
 # Unit tests + headless proofs
 file(GLOB GXR_TEST_SRC CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp)
 if(GXR_TEST_SRC)
     add_executable(GxEngineTests ${GXR_TEST_SRC})
     target_link_libraries(GxEngineTests PRIVATE GxEngine Catch2::Catch2WithMain)
+    if(GXR_AVX2 AND MSVC)
+        target_compile_options(GxEngineTests PRIVATE /arch:AVX2)
+    endif()
     add_test(NAME GxEngineTests COMMAND GxEngineTests)
 endif()
 

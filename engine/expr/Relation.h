@@ -29,12 +29,13 @@ enum class CmpOp
     NotEqual,
 };
 
-// Per-thread reusable scratch for the three evaluation modes (no per-call alloc).
+// Per-thread reusable scratch for the evaluation modes (no per-call alloc).
 struct EvalScratch
 {
     std::vector<double> sd;
     std::vector<Interval> si;
     std::vector<Jet> sj;
+    std::vector<double> sb; // batch-evaluation slab (evalPointBatch)
 };
 
 // A compiled implicit relation over (x, y). Two strategies:
@@ -68,6 +69,15 @@ public:
 
     // Point membership (used for unbiased sub-pixel sampling at the floor).
     [[nodiscard]] bool pointInside(double x, double y, EvalScratch &s) const;
+
+    // Batched membership for the sampling paths: how many of the n points
+    // satisfy the relation (pointInside semantics, SIMD-evaluated).
+    [[nodiscard]] int pointInsideCount(const double *xs, const double *ys, int n,
+                                       EvalScratch &s) const;
+    // Per-point membership flags, for batches whose samples belong to
+    // different cells (the solver's deferred floor-cell buffer).
+    void pointInsideMask(const double *xs, const double *ys, int n, unsigned char *inside,
+                         EvalScratch &s) const;
 
     // Value range and gradient of f over a box (for the equality band model).
     void valueAndGrad(const Interval &x, const Interval &y, EvalScratch &s, Interval &val,

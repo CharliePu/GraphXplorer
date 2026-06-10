@@ -36,6 +36,9 @@ public:
     [[nodiscard]] double lastUploadMs() const { return uploadMs_; }
     [[nodiscard]] int lastUploads() const { return uploads_; }
     [[nodiscard]] int lastDrawnTiles() const { return drawnTiles_; }
+    // Crossfades animating last frame: while >0 the caller must keep rendering
+    // (~8ms cadence) so refinement upgrades melt in instead of popping.
+    [[nodiscard]] int activeFades() const { return fadesActive_; }
 
 private:
     struct TileTex
@@ -77,6 +80,7 @@ private:
 
     int uNdcRect_{-1}, uUvRect_{-1}, uTex_{-1}, uFill_{-1}, uFlatMode_{-1}, uFlatValue_{-1};
     int uLineColor_{-1};
+    int uTexFrom_{-1}, uUvRectFrom_{-1}, uFade_{-1};
 
     std::unordered_map<uint64_t, TileTex> textures_;
     // Recycled tilePx-sized texture objects, stamped with their eviction frame.
@@ -96,6 +100,19 @@ private:
         float u0{0}, v0{0}, u1{1}, v1{1};
     };
     std::unordered_map<TileKey, Shown> lastShown_;
+
+    // Active crossfades: when a key's shown payload changes (a finer ladder
+    // pass, or stand-in -> own raster), the previous content fades out over
+    // kFadeMs. Mid-fade retargets keep the original source and start time, so
+    // a fade always completes on schedule even under publish churn.
+    struct Fade
+    {
+        uint64_t payload{0}; // fade FROM this payload
+        float u0{0}, v0{0}, u1{1}, v1{1};
+        double t0{0}; // ms timestamp of the fade start
+    };
+    std::unordered_map<TileKey, Fade> fades_;
+    int fadesActive_{0};
 };
 }
 

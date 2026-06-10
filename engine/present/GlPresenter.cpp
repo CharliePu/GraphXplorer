@@ -14,24 +14,33 @@ namespace
 {
 const char *kTileVs = R"(#version 330 core
 layout(location=0) in vec2 uv;
-uniform vec4 ndcRect; // x0,y0,x1,y1 on screen
-uniform vec4 uvRect;  // texture sub-rect to sample (u0,v0,u1,v1)
+uniform vec4 ndcRect;    // x0,y0,x1,y1 on screen
+uniform vec4 uvRect;     // texture sub-rect to sample (u0,v0,u1,v1)
+uniform vec4 uvRectFrom; // sub-rect into the crossfade FROM texture
 out vec2 vUv;
+out vec2 vUvFrom;
 void main(){
     vec2 p = mix(ndcRect.xy, ndcRect.zw, uv);
     gl_Position = vec4(p, 0.0, 1.0);
     vUv = mix(uvRect.xy, uvRect.zw, uv);
+    vUvFrom = mix(uvRectFrom.xy, uvRectFrom.zw, uv);
 })";
 
 const char *kTileFs = R"(#version 330 core
 in vec2 vUv;
+in vec2 vUvFrom;
 out vec4 frag;
 uniform sampler2D tex;
+uniform sampler2D texFrom; // what this region showed before (crossfade source)
 uniform vec3 fill;
 uniform int flatMode;     // 1 = greedy uniform tile (no texture sample)
 uniform float flatValue;  // coverage for a flat tile (0 or 1)
+uniform float fade;       // 1 = steady state; <1 = crossfading from texFrom
 void main(){
     float c = (flatMode == 1) ? flatValue : texture(tex, vUv).r;
+    // Linear COVERAGE interpolation: blending two stacked translucent quads
+    // would dip mid-fade (1-(1-a)(1-b) != lerp); mixing coverages is exact.
+    if (fade < 1.0) c = mix(texture(texFrom, vUvFrom).r, c, fade);
     if (c <= 0.0015) discard;
     frag = vec4(fill, c);
 })";
@@ -67,6 +76,9 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     uFlatMode_ = glGetUniformLocation(tileProgram_, "flatMode");
     uFlatValue_ = glGetUniformLocation(tileProgram_, "flatValue");
     uLineColor_ = glGetUniformLocation(lineProgram_, "color");
+    uTexFrom_ = glGetUniformLocation(tileProgram_, "texFrom");
+    uUvRectFrom_ = glGetUniformLocation(tileProgram_, "uvRectFrom");
+    uFade_ = glGetUniformLocation(tileProgram_, "fade");
 
     // 1x1 white texture, bound for flat (textureless) draws so the sampler is valid.
     glGenTextures(1, &dummyTex_);
@@ -302,6 +314,11 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
     uploadMs_ = 0.0;
     uploads_ = 0;
     drawnTiles_ = 0;
+    fadesActive_ = 0;
+    const double nowMs = std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now().time_since_epoch())
+                             .count();
+    constexpr double kFadeMs = 120.0; // refinement crossfade duration
     glViewport(0, 0, fbW_, fbH_);
     glClearColor(0.07f, 0.07f, 0.09f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -347,7 +364,10 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
     glUseProgram(tileProgram_);
     glBindVertexArray(quadVao_);
     glUniform1i(uTex_, 0);
+    glUniform1i(uTexFrom_, 1);
     glUniform3f(uFill_, 0.0f, 0.55f, 0.98f);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, dummyTex_);
     glActiveTexture(GL_TEXTURE0);
 
     int budget = uploadBudget;
@@ -364,6 +384,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
             if (t.flatValue <= 0.0f) continue; // proven-empty: draw nothing
             glUniform1i(uFlatMode_, 1);
             glUniform1f(uFlatValue_, t.flatValue);
+            glUniform1f(uFade_, 1.0f);
             texId = dummyTex_;
         }
         else
@@ -382,6 +403,10 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
             uint64_t drawnPayload = 0;
             bool ownTex = false;
             bool flatStandin = false;
+            // what this key showed last (continuity + the crossfade source)
+            const Shown *prior = nullptr;
+            if (const auto ls = lastShown_.find(t.key); ls != lastShown_.end())
+                prior = &ls->second;
 
             texId = ensureTexture(t.cov, budget, criticalLeft, frame_, /*critical=*/false);
             if (texId)
@@ -390,24 +415,21 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                 drawnPayload = t.cov->payloadId;
                 u0 = t.u0; v0 = t.v0; u1 = t.u1; v1 = t.v1;
             }
-            if (!texId)
+            if (!texId && prior)
             {
-                const auto ls = lastShown_.find(t.key);
-                if (ls != lastShown_.end())
+                const auto tex = textures_.find(prior->payload);
+                if (tex != textures_.end())
                 {
-                    const auto tex = textures_.find(ls->second.payload);
-                    if (tex != textures_.end())
-                    {
-                        tex->second.lastFrame = frame_;
-                        texId = tex->second.id;
-                        drawnPayload = ls->second.payload;
-                        u0 = ls->second.u0; v0 = ls->second.v0;
-                        u1 = ls->second.u1; v1 = ls->second.v1;
-                    }
-                    else
-                    {
-                        lastShown_.erase(ls);
-                    }
+                    tex->second.lastFrame = frame_;
+                    texId = tex->second.id;
+                    drawnPayload = prior->payload;
+                    u0 = prior->u0; v0 = prior->v0;
+                    u1 = prior->u1; v1 = prior->v1;
+                }
+                else
+                {
+                    lastShown_.erase(t.key);
+                    prior = nullptr;
                 }
             }
             if (!texId && t.standinFlat) flatStandin = true;
@@ -472,6 +494,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                 if (haveCov) ++pendingUploads; // own texture still owed
                 glUniform1i(uFlatMode_, 1);
                 glUniform1f(uFlatValue_, 1.0f);
+                glUniform1f(uFade_, 1.0f);
                 texId = dummyTex_;
             }
             else if (!texId)
@@ -486,6 +509,39 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
             {
                 glUniform1i(uFlatMode_, 0);
                 if (!ownTex && haveCov) ++pendingUploads; // own texture still owed
+
+                // ---- refinement crossfade ----------------------------------
+                // The region's shown payload changed (finer ladder pass, or
+                // stand-in -> own raster): melt from what was on screen instead
+                // of popping. The fade keeps its ORIGINAL source and start time
+                // through mid-fade retargets, so it completes on schedule.
+                if (prior && prior->payload != drawnPayload && !fades_.count(t.key))
+                    fades_.emplace(t.key, Fade{prior->payload, prior->u0, prior->v0, prior->u1,
+                                               prior->v1, nowMs});
+                float fade = 1.0f;
+                if (const auto f = fades_.find(t.key); f != fades_.end())
+                {
+                    const double tt = (nowMs - f->second.t0) / kFadeMs;
+                    const auto ftex = textures_.find(f->second.payload);
+                    if (tt >= 1.0 || ftex == textures_.end() ||
+                        f->second.payload == drawnPayload)
+                    {
+                        fades_.erase(f);
+                    }
+                    else
+                    {
+                        ftex->second.lastFrame = frame_; // keep the source resident
+                        fade = static_cast<float>(tt);
+                        glUniform4f(uUvRectFrom_, f->second.u0, f->second.v0, f->second.u1,
+                                    f->second.v1);
+                        glActiveTexture(GL_TEXTURE1);
+                        glBindTexture(GL_TEXTURE_2D, ftex->second.id);
+                        glActiveTexture(GL_TEXTURE0);
+                        ++fadesActive_;
+                    }
+                }
+                glUniform1f(uFade_, fade);
+
                 lastShown_[t.key] = Shown{drawnPayload, u0, v0, u1, v1};
             }
         }
@@ -500,9 +556,10 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
     }
 
     evictTextures(frame_);
-    // continuity map hygiene: entries pointing at long-evicted payloads are
-    // pruned lazily on lookup; bound the map against pathological key churn.
+    // continuity/fade map hygiene: entries pointing at long-evicted payloads are
+    // pruned lazily on lookup; bound the maps against pathological key churn.
     if (lastShown_.size() > 16384) lastShown_.clear();
+    if (fades_.size() > 4096) fades_.clear();
     glBindVertexArray(0);
     return pendingUploads;
 }

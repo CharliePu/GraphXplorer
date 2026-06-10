@@ -470,6 +470,7 @@ int main(int argc, char **argv)
         const int holes = presenter.lastHoleTiles();
         st.holes = holes;
         if (pendingUploads > 0) finalRender = false;
+        if (presenter.activeFades() > 0) finalRender = false; // crossfades still animating
         const auto tOverlay0 = SClock::now();
         drawAxisNumbers(overlay, vp, fbW, fbH);
         drawUi(overlay, fbW, fbH, formula, editing, editBuffer, status);
@@ -768,6 +769,8 @@ int main(int argc, char **argv)
             glfw::waitEvents(0.004); // settle window: keep re-checking the fence/realloc
         else if (finalRender)
             glfw::waitEvents();
+        else if (presenter.activeFades() > 0)
+            glfw::waitEvents(0.008); // crossfades animate at display cadence
         else
             glfw::waitEvents(0.05);
         pendingWaitMs = msSince(w0); // includes event-callback dispatch time

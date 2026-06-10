@@ -3,7 +3,7 @@
 A CPU renderer for implicit relations (`y>sin(2^x)`, `x^2+y^2<1`, `tan(x)>y`, …). The engine lives
 under `engine/` (namespace `gxr`); it is a from-scratch rewrite — the legacy `src/` app it replaced
 was removed 2026-06-10. Design detail in
-[`docs/ARCHITECTURE_REWRITE.md`](docs/ARCHITECTURE_REWRITE.md); module map in [`engine/README.md`](engine/README.md).
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); module map in [`engine/README.md`](engine/README.md).
 
 ## Objectives (the contract — do not regress these)
 
@@ -37,7 +37,7 @@ check that holds it. (Commits and reports before 2026-06-10 used a 7-objective n
    downgrade, through any pan/zoom. Where nothing covering a region exists yet (cold start, formula
    change, or a first visit at a scale beyond every cached ancestor), the guarantee begins with the
    first primitive published for it.
-   *Held by:* `GraphXplorer2 --reprogl` (TRUEHOLE=0 across scrubs, deep-zoom cascade continuation)
+   *Held by:* `GraphXplorer --reprogl` (TRUEHOLE=0 across scrubs, deep-zoom cascade continuation)
    and `--selftest … debug` (holes=0).
 
 ### Ground rules (settled constraints — not up for trade, not goals)
@@ -133,11 +133,11 @@ cmd /c _build_release.bat <target>   # Release -> build-release/engine/
 
 Targets: `GxEngineTests` (Catch2 — golden oracles, latency invariant, must stay green),
 `gxrender "<formula>" out.png [cx cy wpp size subBits]`, `gxbench`, `gxrepro_prio` (objective-2
-latency numbers on the degenerate wall — run before/after scheduler changes), `GraphXplorer2`
+latency numbers on the degenerate wall — run before/after scheduler changes), `GraphXplorer`
 (live app).
 GUI controls: drag=pan, scroll=zoom, **Enter**=edit formula, **1-6**=presets, **D**=debug overlay,
 **R**=reset, **Esc**=quit. Validate GL headlessly via
-`GraphXplorer2 --selftest out.png "<formula>" [debug]` (offscreen render-to-PNG).
+`GraphXplorer --selftest out.png "<formula>" [debug]` (offscreen render-to-PNG).
 
 When modifying the tiling/scheduler/compositor: run `GxEngineTests` and an `--selftest` (with `debug`)
 before and after, and check pan/zoom in the live app for holes/flicker.

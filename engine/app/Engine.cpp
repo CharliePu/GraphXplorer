@@ -5,6 +5,12 @@
 #include <cmath>
 #include <functional>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
+
 namespace gxr
 {
 namespace
@@ -364,6 +370,14 @@ void Engine::selfEnqueueRefine(const Job &done)
 
 void Engine::workerLoop(int)
 {
+#ifdef _WIN32
+    // Workers below normal priority: with hardware_concurrency-1 of them plus
+    // the scheduler, every logical core is busy; at equal priority the OS
+    // occasionally parks the render thread for a quantum (observed as 100-200ms
+    // inter-frame gaps). Below-normal workers still consume all idle cores but
+    // always yield the next slice to the UI. Throughput cost is a few percent.
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#endif
     EvalScratch scratch;
     while (!stop_.load())
     {

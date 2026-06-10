@@ -95,6 +95,7 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     glBindVertexArray(0);
 
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    prewarmPool(kMaxResidentTextures); // allocate while the GPU is quiet
 }
 
 GlPresenter::~GlPresenter()
@@ -145,10 +146,36 @@ unsigned int GlPresenter::compile(const char *vs, const char *fs)
     return p;
 }
 
+void GlPresenter::prewarmPool(size_t target)
+{
+    size_t have = freeTex_.size() + textures_.size();
+    std::vector<unsigned char> zero(static_cast<size_t>(tilePx_) * tilePx_, 0);
+    while (have < target)
+    {
+        unsigned int id = 0;
+        glGenTextures(1, &id);
+        glBindTexture(GL_TEXTURE_2D, id);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, tilePx_, tilePx_, 0, GL_RED, GL_UNSIGNED_BYTE,
+                     zero.data());
+        freeTex_.emplace_front(id, 0); // age 0: usable after the first few frames
+        ++have;
+    }
+}
+
 void GlPresenter::resize(int fbWidth, int fbHeight)
 {
     fbW_ = std::max(1, fbWidth);
     fbH_ = std::max(1, fbHeight);
+    // Top the pool up for the new window size while the GPU pipeline is being
+    // rebuilt anyway (a resize already stalls); capped to keep VRAM bounded.
+    const size_t visibleTiles = static_cast<size_t>(fbW_ / tilePx_ + 2) *
+                                static_cast<size_t>(fbH_ / tilePx_ + 2);
+    prewarmPool(std::min<size_t>(visibleTiles * 3, 4096));
 }
 
 // Per-frame TIME budget for non-critical uploads. Under full worker load the

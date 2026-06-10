@@ -28,7 +28,16 @@ TileState TileStore::ensureQueued(const TileKey &key)
         const auto it = map_.find(key);
         if (it != map_.end())
         {
-            return it->second->state.load(std::memory_order_acquire);
+            // An existing slot that fell back to Missing (abandoned / culled) is
+            // re-claimable here: CAS it to Queued and report Missing so the
+            // caller enqueues a fresh job. Without this, a once-abandoned slot
+            // was requeue-resistant (the cascade saw "not Missing" and skipped it
+            // forever; only the compositor's stuck path could revive it).
+            TileState expect = TileState::Missing;
+            if (it->second->state.compare_exchange_strong(expect, TileState::Queued,
+                                                          std::memory_order_acq_rel))
+                return TileState::Missing;
+            return expect; // the (non-Missing) state we lost the race to
         }
     }
     std::unique_lock lock(mutex_);
@@ -39,7 +48,11 @@ TileState TileStore::ensureQueued(const TileKey &key)
         it->second->state.store(TileState::Queued, std::memory_order_release);
         return TileState::Missing;
     }
-    return it->second->state.load(std::memory_order_acquire);
+    TileState expect = TileState::Missing;
+    if (it->second->state.compare_exchange_strong(expect, TileState::Queued,
+                                                  std::memory_order_acq_rel))
+        return TileState::Missing;
+    return expect;
 }
 
 void TileStore::publish(const TileKey &key, CoverageTilePtr cov, bool done)
@@ -49,6 +62,32 @@ void TileStore::publish(const TileKey &key, CoverageTilePtr cov, bool done)
     if (it == map_.end()) return; // slot evicted underneath us; drop
     it->second->snap.store(std::move(cov), std::memory_order_release);
     it->second->state.store(done ? TileState::Done : TileState::Coarse, std::memory_order_release);
+}
+
+bool TileStore::publishRefine(const TileKey &key, CoverageTilePtr cov, int pass, bool done)
+{
+    std::shared_lock lock(mutex_);
+    const auto it = map_.find(key);
+    if (it == map_.end()) return false; // slot evicted underneath us; drop
+    Slot &slot = *it->second;
+    // monotone bestPass: only a strictly finer pass may replace the raster
+    int cur = slot.bestPass.load(std::memory_order_acquire);
+    for (;;)
+    {
+        if (pass <= cur) return false; // stale/duplicate publish: no downgrade
+        if (slot.bestPass.compare_exchange_weak(cur, pass, std::memory_order_acq_rel)) break;
+    }
+    slot.snap.store(std::move(cov), std::memory_order_release);
+    slot.state.store(done ? TileState::Done : TileState::Coarse, std::memory_order_release);
+    return true;
+}
+
+int TileStore::bestPass(const TileKey &key) const
+{
+    std::shared_lock lock(mutex_);
+    const auto it = map_.find(key);
+    if (it == map_.end()) return -1;
+    return it->second->bestPass.load(std::memory_order_acquire);
 }
 
 void TileStore::setClass(const TileKey &key, NodeClass c)
@@ -94,11 +133,17 @@ bool TileStore::claimForResolve(const TileKey &key)
     return tryClaim(*it->second);
 }
 
-void TileStore::resetToMissing(const TileKey &key)
+void TileStore::abandonIfUnfinished(const TileKey &key)
 {
     std::shared_lock lock(mutex_);
     const auto it = map_.find(key);
-    if (it != map_.end()) it->second->state.store(TileState::Missing, std::memory_order_release);
+    if (it == map_.end()) return;
+    Slot &slot = *it->second;
+    TileState e = TileState::Queued;
+    if (slot.state.compare_exchange_strong(e, TileState::Missing)) return;
+    e = TileState::Coarse;
+    slot.state.compare_exchange_strong(e, TileState::Missing);
+    // Done is never demoted; the snapshot (if any) is never cleared.
 }
 
 void TileStore::touch(const TileKey &key, uint64_t frame)
@@ -110,9 +155,6 @@ void TileStore::touch(const TileKey &key, uint64_t frame)
 
 void TileStore::evictToBudget(size_t maxTiles, uint64_t keepEpoch)
 {
-    std::unique_lock lock(mutex_);
-    if (map_.size() <= maxTiles) return;
-
     struct Ref
     {
         TileKey key;
@@ -120,22 +162,31 @@ void TileStore::evictToBudget(size_t maxTiles, uint64_t keepEpoch)
         bool stale;
     };
     std::vector<Ref> refs;
-    refs.reserve(map_.size());
-    for (const auto &[k, slot] : map_)
     {
-        refs.push_back({k, slot->lastTouched.load(std::memory_order_relaxed), k.epoch < keepEpoch});
+        // Scan under the SHARED lock: readers (the compositor walk) are not stalled.
+        std::shared_lock lock(mutex_);
+        if (map_.size() <= maxTiles) return;
+        refs.reserve(map_.size());
+        for (const auto &[k, slot] : map_)
+            refs.push_back({k, slot->lastTouched.load(std::memory_order_relaxed), k.epoch < keepEpoch});
     }
-    // evict stale epochs first, then least-recently-touched
-    std::sort(refs.begin(), refs.end(), [](const Ref &a, const Ref &b) {
-        if (a.stale != b.stale) return a.stale > b.stale; // stale first
-        return a.touched < b.touched;                     // older first
-    });
-    size_t toRemove = map_.size() - maxTiles;
-    for (size_t i = 0; i < refs.size() && toRemove > 0; ++i)
-    {
-        map_.erase(refs[i].key);
-        --toRemove;
-    }
+
+    // Low watermark: evict in batches (to maxTiles - maxTiles/8) so a store
+    // hovering at the budget does not pay this path on every insert.
+    const size_t target = maxTiles - maxTiles / 8;
+    if (refs.size() <= target) return;
+    const size_t toRemove = refs.size() - target;
+
+    // Order OUTSIDE any lock: stale epochs first, then least-recently-touched.
+    const auto victimFirst = [](const Ref &a, const Ref &b) {
+        if (a.stale != b.stale) return a.stale > b.stale;
+        return a.touched < b.touched;
+    };
+    std::nth_element(refs.begin(), refs.begin() + static_cast<ptrdiff_t>(toRemove - 1), refs.end(),
+                     victimFirst);
+
+    std::unique_lock lock(mutex_);
+    for (size_t i = 0; i < toRemove; ++i) map_.erase(refs[i].key);
 }
 
 size_t TileStore::size() const

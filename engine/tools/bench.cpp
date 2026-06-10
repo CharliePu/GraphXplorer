@@ -1,4 +1,4 @@
-// Throughput benchmark (objective 3). CPU-only.
+// Throughput benchmark (the efficiency ground rule). CPU-only.
 //  - single-thread: solve a screenful of fine tiles, report tiles/s and Mpix/s
 //  - multi-thread: drive the Engine over a viewport, report wall time & speedup
 

@@ -33,6 +33,8 @@ add_executable(gxbench ${CMAKE_CURRENT_SOURCE_DIR}/tools/bench.cpp)
 target_link_libraries(gxbench PRIVATE GxEngine)
 add_executable(gxrepro ${CMAKE_CURRENT_SOURCE_DIR}/tools/repro_resize.cpp)
 target_link_libraries(gxrepro PRIVATE GxEngine)
+add_executable(gxrepro_prio ${CMAKE_CURRENT_SOURCE_DIR}/tools/repro_prio.cpp)
+target_link_libraries(gxrepro_prio PRIVATE GxEngine)
 
 # Live GUI app (OpenGL). Reuses the project's glfw/glad/glfwpp; Vulkan-ready seam
 # is the Presenter interface.

@@ -76,8 +76,25 @@ TEST_CASE("engine pipeline solves visible tiles and matches the direct solver", 
     engine.setViewport(vp);
     engine.waitUntilQuiescent();
 
+    // The compositor may discover tiles still needing a (re)solve on its first
+    // pass (e.g. an intermediate classified for a transient viewport before
+    // this one landed) -- it REQUESTS them; settle like a real frame loop until
+    // stable, as the pan-storm test does. This MUST converge in a few cycles.
     std::vector<PresentTile> present;
-    const size_t visible = engine.buildPresent(vp, present);
+    size_t visible = 0;
+    for (int iter = 0; iter < 8; ++iter)
+    {
+        visible = engine.buildPresent(vp, present);
+        bool refining = false;
+        for (const PresentTile &p : present)
+            if (p.fallback || p.state != TileState::Done)
+            {
+                refining = true;
+                break;
+            }
+        if (!refining) break;
+        engine.waitUntilQuiescent();
+    }
     REQUIRE(visible > 0);
     REQUIRE_FALSE(present.empty());
 
@@ -89,7 +106,9 @@ TEST_CASE("engine pipeline solves visible tiles and matches the direct solver", 
         REQUIRE((p.flat || p.cov != nullptr));
     }
 
-    // a Mixed detail tile's raster matches a direct fine solve of the same rect.
+    // a Mixed detail tile's raster matches a direct fine solve of the same rect
+    // (the FINAL refine-ladder pass uses exactly these params -- see
+    // refinePassParams -- so a converged engine tile is byte-identical).
     const PresentTile *detail = nullptr;
     for (const PresentTile &p : present)
         if (!p.flat && p.cov)
@@ -98,13 +117,13 @@ TEST_CASE("engine pipeline solves visible tiles and matches the direct solver", 
             break;
         }
     REQUIRE(detail != nullptr);
-    SolveParams fine{64, 4, 200'000, true}; // == engine fine params
+    SolveParams fine{64, 4, 200'000, true}; // == engine final-pass params
     EvalScratch s;
     CoverageTile direct = solveTile(*r, detail->rect, fine, s);
     REQUIRE(direct.alpha == detail->cov->alpha);
 }
 
-TEST_CASE("OBJECTIVE 2: main-thread present is bounded (O visible) and never blocks",
+TEST_CASE("OBJECTIVE 2 (input): main-thread present is bounded (O visible) and never blocks",
           "[engine][latency]")
 {
     Engine engine(/*tilePx=*/64, /*numWorkers=*/4);
@@ -136,7 +155,8 @@ TEST_CASE("OBJECTIVE 2: main-thread present is bounded (O visible) and never blo
     REQUIRE(engine2.buildPresent(deep, p2) < 4000);
 }
 
-TEST_CASE("OBJECTIVE 2: changing formula cancels stale work (storm safety)", "[engine][latency]")
+TEST_CASE("OBJECTIVE 2 (generation): changing formula cancels stale work (storm safety)",
+          "[engine][latency]")
 {
     Engine engine(64, 4);
     Viewport vp{30.0, 0.0, 0.02, 256, 256};
@@ -158,7 +178,7 @@ TEST_CASE("OBJECTIVE 2: changing formula cancels stale work (storm safety)", "[e
     REQUIRE(engine.storeSize() < 16000);
 }
 
-TEST_CASE("OBJECTIVE 7: after a pan storm the current viewport fully completes, bounded",
+TEST_CASE("OBJECTIVE 2 (generation): after a pan storm the current viewport fully completes, bounded",
           "[engine][viewport]")
 {
     Engine engine(64, 4);

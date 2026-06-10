@@ -626,6 +626,16 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
             p.fallback = true; // a coarse stand-in until this node's own tile is ready
             p.state = TileState::Coarse;
             uvFor(node, sa.ancKey, p.u0, p.v0, p.u1, p.v1);
+            // Mirror the ancestor into the stand-in fields so the presenter's
+            // residency-continuity chain can fall back to whatever this ancestor
+            // KEY last drew (an older payload of the same region) when this exact
+            // payload is not resident and uploads are rationed -- no hole.
+            p.standinCov = sa.cov;
+            p.standinKey = sa.ancKey;
+            p.su0 = p.u0;
+            p.sv0 = p.v0;
+            p.su1 = p.u1;
+            p.sv1 = p.v1;
         }
         else
         {
@@ -699,6 +709,7 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
                 else if (sa.cov)
                 {
                     p.standinCov = sa.cov;
+                    p.standinKey = sa.ancKey;
                     uvFor(node, sa.ancKey, p.su0, p.sv0, p.su1, p.sv1);
                 }
                 out.push_back(std::move(p));

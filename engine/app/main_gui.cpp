@@ -304,8 +304,19 @@ int main(int argc, char **argv)
     std::string status;
     bool showDebug = false;
 
+    // Diagnostics live under <source root>/out regardless of the working
+    // directory the exe was launched from (a relative path silently wrote
+    // nothing when started from build-release/engine or Explorer).
+#ifdef GXR_ASSET_DIR
+    const std::string outDir = std::string(GXR_ASSET_DIR) + "/out";
+#else
+    const std::string outDir = "out";
+#endif
+    std::error_code outDirEc;
+    std::filesystem::create_directories(outDir, outDirEc);
+
     // Lightweight status log: resize/zoom, settle, store/job counts, GL errors.
-    std::ofstream logf("out/gx.log", std::ios::trunc);
+    std::ofstream logf(outDir + "/gx.log", std::ios::trunc);
     auto logln = [&](const std::string &s) {
         if (logf)
         {
@@ -365,11 +376,14 @@ int main(int argc, char **argv)
         lastInputT = SClock::now();
         haveInput = true;
     };
-    std::ofstream perfCsv("out/gx_frames.csv", std::ios::trunc);
+    std::ofstream perfCsv(outDir + "/gx_frames.csv", std::ios::trunc);
     if (perfCsv)
         perfCsv << "t_ms,wait_ms,build_ms,render_ms,upload_ms,upload_n,overlay_ms,swap_ms,total_ms,"
                    "inAge_ms,present,drawn,holes,inflight,store\n";
+    else
+        std::fprintf(stderr, "perf csv: failed to open %s/gx_frames.csv\n", outDir.c_str());
     int perfFlush = 0;
+    std::printf("perf log: %s/gx_frames.csv\n", outDir.c_str());
 
     // ---- Resize present guard (ported from the legacy app's complete fix) -------
     // The first present(s) at a new (larger) framebuffer size can trigger a driver

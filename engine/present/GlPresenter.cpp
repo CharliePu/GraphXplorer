@@ -100,6 +100,7 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
 GlPresenter::~GlPresenter()
 {
     for (auto &[k, t] : textures_) glDeleteTextures(1, &t.id);
+    for (unsigned int id : freeTex_) glDeleteTextures(1, &id);
     glDeleteTextures(1, &dummyTex_);
     glDeleteProgram(tileProgram_);
     glDeleteProgram(lineProgram_);
@@ -150,29 +151,75 @@ void GlPresenter::resize(int fbWidth, int fbHeight)
     fbH_ = std::max(1, fbHeight);
 }
 
-unsigned int GlPresenter::ensureTexture(const CoverageTilePtr &cov, int &budget, uint64_t frame)
+// Per-frame TIME budget for non-critical uploads. Under full worker load the
+// driver's CPU-side copy contends for the same memory bus as the solvers, so a
+// count budget alone let upload storms eat 100-200ms frames; bounding the time
+// converts a storm into slightly slower sharpening (stand-ins cover meanwhile).
+constexpr double kUploadMsBudget = 3.0;
+
+unsigned int GlPresenter::ensureTexture(const CoverageTilePtr &cov, int &budget, int &criticalLeft,
+                                        uint64_t frame, bool critical)
 {
     if (!cov || cov->alpha.empty()) return 0;
     // Coverage tiles are immutable and uniquely identified by payloadId, so an
     // uploaded payload never needs re-uploading; just refresh its LRU stamp.
+    // This hit path is budget-free: residency is never rationed.
     const auto it = textures_.find(cov->payloadId);
     if (it != textures_.end())
     {
         it->second.lastFrame = frame;
         return it->second.id;
     }
-    if (budget <= 0) return 0; // out of upload budget this frame -> caller falls back
+    // An UPLOAD is rationed: normal uploads by the count + per-frame time budget;
+    // CRITICAL uploads (the alternative is a hole) by their own bounded budget --
+    // structurally small, since fallback quads share few distinct payloads.
+    if (critical)
+    {
+        if (criticalLeft <= 0) return 0;
+        --criticalLeft;
+    }
+    else if (budget <= 0 || uploadMs_ >= kUploadMsBudget)
+    {
+        return 0;
+    }
+
     const auto t0 = std::chrono::steady_clock::now();
+    // Quantize coverage to R8: [0,1] in 1/255 steps matches the render quality
+    // target and quarters the upload bandwidth vs R32F.
+    const size_t count = cov->alpha.size();
+    upload8_.resize(count);
+    for (size_t i = 0; i < count; ++i)
+    {
+        const float a = cov->alpha[i];
+        upload8_[i] = static_cast<unsigned char>(
+            a <= 0.0f ? 0 : a >= 1.0f ? 255 : static_cast<int>(a * 255.0f + 0.5f));
+    }
+
     TileTex tex;
-    glGenTextures(1, &tex.id);
-    glBindTexture(GL_TEXTURE_2D, tex.id);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    tex.pooled = (cov->width == tilePx_ && cov->height == tilePx_);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, cov->width, cov->height, 0, GL_RED, GL_FLOAT,
-                 cov->alpha.data());
+    if (tex.pooled && !freeTex_.empty())
+    {
+        // Recycle a same-size texture object: glTexSubImage2D into existing
+        // storage skips the per-frame allocate/validate churn that made fresh
+        // glGenTextures+glTexImage2D cost milliseconds under contention.
+        tex.id = freeTex_.back();
+        freeTex_.pop_back();
+        glBindTexture(GL_TEXTURE_2D, tex.id);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, cov->width, cov->height, GL_RED, GL_UNSIGNED_BYTE,
+                        upload8_.data());
+    }
+    else
+    {
+        glGenTextures(1, &tex.id);
+        glBindTexture(GL_TEXTURE_2D, tex.id);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, cov->width, cov->height, 0, GL_RED, GL_UNSIGNED_BYTE,
+                     upload8_.data());
+    }
     tex.lastFrame = frame;
     textures_.emplace(cov->payloadId, tex);
     --budget;
@@ -204,7 +251,12 @@ void GlPresenter::evictTextures(uint64_t frame)
         auto it = textures_.find(refs[i].second);
         if (it != textures_.end())
         {
-            glDeleteTextures(1, &it->second.id);
+            // Recycle standard-size texture objects through the pool (bounded);
+            // odd sizes and pool overflow are deleted outright.
+            if (it->second.pooled && freeTex_.size() < cap)
+                freeTex_.push_back(it->second.id);
+            else
+                glDeleteTextures(1, &it->second.id);
             textures_.erase(it);
             --toRemove;
         }
@@ -269,6 +321,10 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
     glActiveTexture(GL_TEXTURE0);
 
     int budget = uploadBudget;
+    // Budget-exempt uploads for tiles whose only alternative is a hole. Bounded:
+    // past the cap the tile shows background, which is what a never-drawn region
+    // showed anyway (previously-drawn content is LRU-protected and stays resident).
+    int criticalLeft = 64;
     for (const PresentTile &t : tiles)
     {
         unsigned int texId = 0;
@@ -282,47 +338,125 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         }
         else
         {
-            texId = ensureTexture(t.cov, budget, frame_);
-            if (texId != 0)
+            // Selection order (no-downgrade + no-hole, cheapest-correct first):
+            //   1. own payload: resident, or uploaded within the normal budgets
+            //   2. this key's PREVIOUSLY DRAWN payload (resident, zero upload) --
+            //      republish churn keeps showing the last pass, never an ancestor
+            //   3. proven-true flat stand-in
+            //   4. ancestor stand-in payload (resident or budgeted upload)
+            //   5. the ancestor key's previously drawn payload (uv composed)
+            //   6. CRITICAL (budget-exempt, bounded) upload: own cov, else stand-in
+            //   7. background -- only where nothing was ever drawn (cold region)
+            const bool haveCov = t.cov && !t.cov->alpha.empty();
+            const bool haveStandin = t.standinCov && !t.standinCov->alpha.empty();
+            uint64_t drawnPayload = 0;
+            bool ownTex = false;
+            bool flatStandin = false;
+
+            texId = ensureTexture(t.cov, budget, criticalLeft, frame_, /*critical=*/false);
+            if (texId)
             {
-                glUniform1i(uFlatMode_, 0);
-                u0 = t.u0;
-                v0 = t.v0;
-                u1 = t.u1;
-                v1 = t.v1;
+                ownTex = true;
+                drawnPayload = t.cov->payloadId;
+                u0 = t.u0; v0 = t.v0; u1 = t.u1; v1 = t.v1;
             }
-            else
+            if (!texId)
             {
-                // The tile's OWN texture isn't resident yet. Keep it on the upload
-                // backlog (so the loop re-renders until it's crisp), but draw the
-                // baked coarse-ancestor STAND-IN this frame instead of a hole --
-                // "retain the old tile until the new one is ready". The stand-in is
-                // one shared, already-resident ancestor payload (zero new upload), so
-                // the region shows correct coarse content and sharpens in over the
-                // next few frames as the own texture uploads.
-                if (t.cov && !t.cov->alpha.empty()) ++pendingUploads;
-                if (t.standinFlat)
+                const auto ls = lastShown_.find(t.key);
+                if (ls != lastShown_.end())
                 {
-                    glUniform1i(uFlatMode_, 1);
-                    glUniform1f(uFlatValue_, 1.0f);
-                    texId = dummyTex_;
+                    const auto tex = textures_.find(ls->second.payload);
+                    if (tex != textures_.end())
+                    {
+                        tex->second.lastFrame = frame_;
+                        texId = tex->second.id;
+                        drawnPayload = ls->second.payload;
+                        u0 = ls->second.u0; v0 = ls->second.v0;
+                        u1 = ls->second.u1; v1 = ls->second.v1;
+                    }
+                    else
+                    {
+                        lastShown_.erase(ls);
+                    }
                 }
-                else if (t.standinCov && !t.standinCov->alpha.empty() &&
-                         (texId = ensureTexture(t.standinCov, budget, frame_)) != 0)
+            }
+            if (!texId && t.standinFlat) flatStandin = true;
+            if (!texId && !flatStandin && haveStandin)
+            {
+                texId = ensureTexture(t.standinCov, budget, criticalLeft, frame_, /*critical=*/false);
+                if (texId)
                 {
-                    glUniform1i(uFlatMode_, 0);
-                    u0 = t.su0;
-                    v0 = t.sv0;
-                    u1 = t.su1;
-                    v1 = t.sv1;
+                    drawnPayload = t.standinCov->payloadId;
+                    u0 = t.su0; v0 = t.sv0; u1 = t.su1; v1 = t.sv1;
                 }
                 else
                 {
-                    // No resident stand-in either (a genuinely-cold region) -> leave
-                    // background. This is the only real hole, and it is rare.
-                    ++holeTiles_;
-                    continue;
+                    const auto ls = lastShown_.find(t.standinKey);
+                    if (ls != lastShown_.end())
+                    {
+                        const auto tex = textures_.find(ls->second.payload);
+                        if (tex != textures_.end())
+                        {
+                            // Compose: this tile's sub-rect within whatever the
+                            // ancestor key last showed (both uv maps are
+                            // world-aligned, so the composition is exact).
+                            tex->second.lastFrame = frame_;
+                            texId = tex->second.id;
+                            drawnPayload = ls->second.payload;
+                            const float aw = ls->second.u1 - ls->second.u0;
+                            const float ah = ls->second.v1 - ls->second.v0;
+                            u0 = ls->second.u0 + aw * t.su0;
+                            v0 = ls->second.v0 + ah * t.sv0;
+                            u1 = ls->second.u0 + aw * t.su1;
+                            v1 = ls->second.v0 + ah * t.sv1;
+                        }
+                        else
+                        {
+                            lastShown_.erase(ls);
+                        }
+                    }
                 }
+            }
+            if (!texId && !flatStandin && haveCov)
+            {
+                texId = ensureTexture(t.cov, budget, criticalLeft, frame_, /*critical=*/true);
+                if (texId)
+                {
+                    ownTex = true;
+                    drawnPayload = t.cov->payloadId;
+                    u0 = t.u0; v0 = t.v0; u1 = t.u1; v1 = t.v1;
+                }
+            }
+            if (!texId && !flatStandin && haveStandin)
+            {
+                texId = ensureTexture(t.standinCov, budget, criticalLeft, frame_, /*critical=*/true);
+                if (texId)
+                {
+                    drawnPayload = t.standinCov->payloadId;
+                    u0 = t.su0; v0 = t.sv0; u1 = t.su1; v1 = t.sv1;
+                }
+            }
+
+            if (flatStandin)
+            {
+                if (haveCov) ++pendingUploads; // own texture still owed
+                glUniform1i(uFlatMode_, 1);
+                glUniform1f(uFlatValue_, 1.0f);
+                texId = dummyTex_;
+            }
+            else if (!texId)
+            {
+                // Nothing drawable: a never-drawn region (or the critical budget
+                // ran dry in a cold storm) -> background, which is what this
+                // region showed before anyway.
+                ++holeTiles_;
+                continue;
+            }
+            else
+            {
+                glUniform1i(uFlatMode_, 0);
+                if (!ownTex && haveCov) ++pendingUploads; // own texture still owed
+                lastShown_[t.key] = Shown{drawnPayload, u0, v0, u1, v1};
             }
         }
         float nx0, ny0, nx1, ny1;
@@ -336,6 +470,9 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
     }
 
     evictTextures(frame_);
+    // continuity map hygiene: entries pointing at long-evicted payloads are
+    // pruned lazily on lookup; bound the map against pathological key churn.
+    if (lastShown_.size() > 16384) lastShown_.clear();
     glBindVertexArray(0);
     return pendingUploads;
 }

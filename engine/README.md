@@ -4,20 +4,27 @@ A fresh, self-contained CPU renderer for implicit relations (inequalities and eq
 branch `claude_rewrite`. Reuses none of the prior architecture. Full design in
 [`docs/ARCHITECTURE_REWRITE.md`](../docs/ARCHITECTURE_REWRITE.md).
 
-## What it does (the four objectives)
+## What it does (the three objectives)
 
-1. **Pixel-precise, anti-aliased, stable under oscillation.** Sound directed-rounding interval
-   arithmetic + interval-AD *centered form* (kills the dependency problem) drive a bounded
-   area-accumulating coverage solver. Equalities use a gradient-band model (resolution-independent
-   ~1px line). Explicit `y=f(x)` / `x=f(y)` relations use an exact-measure 1-D quadrature, so
-   `y>sin(2^x)` converges to the smooth `½+arcsin(y)/π` gray with **no flicker** — and this is general,
-   not a sin special-case (`sin(x*y)>0` works through the general 2-D path).
-2. **Frame-level responsiveness independent of load.** Async tile store (immutable snapshots + atomic
-   swap), scheduler thread, worker pool, latest-wins mailbox, epoch cancellation. The main thread is
-   O(visible tiles); a deterministic test proves it loops free while workers grind pathological tiles.
-3. **Throughput.** World-space power-of-two tile pyramid, DFS subdivision, adaptive centered form,
-   bounded per-tile work. Release: a full screenful is 2–35 ms for normal formulas.
-4. **CPU precision; OpenGL is a thin compositor** behind a Vulkan-ready `Presenter` seam.
+The canonical objective statements, each with the check that holds it, live in
+[`CLAUDE.md`](../CLAUDE.md). In short:
+
+1. **Sound precision.** Coverage converges to the analytic area measure (interval arithmetic +
+   centered form + measured sampling); uniformity is claimed only on proof. `y>sin(2^x)` renders as
+   smooth, stable gray — through the exact 1-D quadrature when the structure is detectable, and
+   through the sampled general 2-D path when it is not (`y>sin(2^x)+y*0`, `sin(x*y)>0`).
+2. **Responsiveness independent of load.** The main thread is O(visible tiles) and never blocks on
+   workers. A new viewport first-paints in ~100–200 ms even on a pathological formula: detail tiles
+   run a 4-pass refine ladder (final pass byte-identical to a single fine solve), a viewport change
+   aborts in-flight work the new view won't draw, and the queue orders visible > first-paint >
+   newest > coarse-first. Measure with `gxrepro_prio`.
+3. **Immersion.** What is on screen only ever improves — no holes, no flicker, no downgrade,
+   through any pan/zoom of an unchanged formula.
+
+Ground rules (constraints, not goals): all certified math runs on the CPU — OpenGL is a thin
+compositor behind a Vulkan-ready `Presenter` seam; and subject to the objectives, prefer less work —
+proven-uniform regions collapse to single greedy tiles (a screenful of a normal formula solves in
+2–35 ms Release), the tile store is count-bounded, and an idle app blocks at ~0% CPU.
 
 ## Build
 
@@ -28,9 +35,11 @@ cmd /c _build_msvc.bat <target>      # Debug   -> build/engine/
 cmd /c _build_release.bat <target>   # Release -> build-release/engine/
 ```
 
-Targets: `GxEngineTests` (Catch2, 28 cases), `gxrender` (headless PNG), `gxbench` (throughput),
-`GraphXplorer2` (live GL app). **Use the Release build for any performance impression** — Debug is
-~10× slower (no inlining, checked iterators).
+Targets: `GxEngineTests` (Catch2), `gxrender` (headless PNG), `gxbench` (throughput),
+`gxrepro` (resize/settle), `gxrepro_prio` (objective-2 harness: first-paint / all-sharp latency and
+main-thread walk cost on the degenerate `y > sin(2^x) + y*0`), `GraphXplorer2` (live GL app).
+**Use the Release build for any performance impression** — Debug is ~10× slower (no inlining,
+checked iterators).
 
 ## Run
 

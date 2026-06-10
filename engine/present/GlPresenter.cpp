@@ -17,11 +17,13 @@ layout(location=0) in vec2 corner;
 layout(location=1) in vec4 iNdc;    // x0,y0,x1,y1 on screen
 layout(location=2) in vec4 iUv;     // texture sub-rect (u0,v0,u1,v1)
 layout(location=3) in vec4 iUvFrom; // crossfade-source sub-rect
-layout(location=4) in vec4 iMisc;   // x=layer (<0 => flat), y=layerFrom, z=fade, w=flatValue
+layout(location=4) in vec4 iMisc;   // x=layer (<0 => flat), y=layerFrom, z=fade,
+                                    // w=flatValue (flat) / band weight (textured)
 out vec3 vUv;
 out vec3 vUvFrom;
 out float vFade;
 out float vFlat; // >=0: flat coverage value; <0: sample the texture
+out float vDim;  // textured band weight (dimmed under vector strokes)
 void main(){
     vec2 p = mix(iNdc.xy, iNdc.zw, corner);
     gl_Position = vec4(p, 0.0, 1.0);
@@ -29,6 +31,7 @@ void main(){
     vUvFrom = vec3(mix(iUvFrom.xy, iUvFrom.zw, corner), max(iMisc.y, 0.0));
     vFade = iMisc.z;
     vFlat = iMisc.x < 0.0 ? iMisc.w : -1.0;
+    vDim = iMisc.x < 0.0 ? 1.0 : iMisc.w;
 })";
 
 const char *kTileFs = R"(#version 330 core
@@ -36,6 +39,7 @@ in vec3 vUv;
 in vec3 vUvFrom;
 in float vFade;
 in float vFlat;
+in float vDim;
 out vec4 frag;
 uniform sampler2DArray tiles;     // the bucket's own-content array
 uniform sampler2DArray tilesFrom; // the bucket's crossfade-source array
@@ -45,6 +49,7 @@ void main(){
     // Linear COVERAGE interpolation for crossfades: blending two stacked
     // translucent quads would dip mid-fade; mixing coverages is exact.
     if (vFade < 1.0) c = mix(texture(tilesFrom, vUvFrom).r, c, vFade);
+    if (vFlat < 0.0) c *= vDim; // band softened under vector strokes
     if (c <= 0.0015) discard;
     frag = vec4(fill, c);
 })";
@@ -454,7 +459,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         inst.misc[2] = 1.0f; // fade: steady state
         float u0 = 0, v0 = 0, u1 = 1, v1 = 1;
         int ownArr = 0, fadeArr = -1; // bucket key (flat tiles land in (0,0))
-        bool segsDrawn = false, segSrcConverged = false;
+        bool segsDrawn = false;
 
         if (t.flat)
         {
@@ -580,6 +585,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                 if (!ownTex && haveCov) ++pendingUploads; // own texture still owed
                 ownArr = slot / layersPerArray_;
                 inst.misc[0] = static_cast<float>(slot % layersPerArray_);
+                inst.misc[3] = 1.0f; // textured: full band weight by default
 
                 // ---- refinement crossfade: melt, don't pop -------------------
                 if (prior && prior->payload != drawnPayload && !fades_.count(t.key))
@@ -637,10 +643,6 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                 {
                     appendSegs(t);
                     segsDrawn = true;
-                    // strokes fully replace the band only at full weight; in
-                    // the saturation ramp the band stays under the fading
-                    // strokes, so the regime switch has no tile-blocky seam
-                    segSrcConverged = t.cov->converged && t.cov->strokeAlpha >= 1.0f;
                 }
                 else if (!ownTex && haveStandin && drawnPayload == t.standinCov->payloadId &&
                          !t.standinCov->segs.empty() && segBudget &&
@@ -654,15 +656,15 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                     // its band raster is the honest draft.
                     appendSegsMapped(t);
                     segsDrawn = true;
-                    segSrcConverged = false; // a draft: keep the band underneath
                 }
             }
         }
 
-        // A converged equality tile is fully expressed by its vector strokes --
-        // the band quad underneath would only add raster fuzz. Drafts (partial
-        // or stand-in segs) keep the band: it covers unprocessed cells.
-        if (segsDrawn && segSrcConverged) continue;
+        // The band raster ALWAYS draws -- it is the primary, zoom-consistent
+        // representation (no representation switches = no seams). Where the
+        // crisp stroke overlay is active, the band softens to a faint glow
+        // underneath instead of vanishing.
+        if (segsDrawn) inst.misc[3] = 0.30f;
         worldToNdc(vp, fbW_, fbH_, t.rect.x0, t.rect.y0, inst.ndc[0], inst.ndc[1]);
         worldToNdc(vp, fbW_, fbH_, t.rect.x1, t.rect.y1, inst.ndc[2], inst.ndc[3]);
         inst.uv[0] = u0;

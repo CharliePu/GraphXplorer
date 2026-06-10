@@ -66,15 +66,21 @@ thread-safe store) â†’ `app` (engine: mailbox, scheduler thread, worker pool) â†
   centered form is disabled per-tile when it stops certifying boxes.
 - **Coverage solver.** Bounded **DFS** area-accumulating interval subdivision: proven-uniform boxes
   fill their whole region greedily; only uncertain boxes subdivide, to a sub-pixel floor where they
-  are measured by world-jittered point sampling. Equalities use a gradient band (~1px line) AND
-  marching-squares vector segments extracted from the boundary cells (`CoverageTile.segs`,
-  tile-local; the presenter strokes them at constant screen width -- crisp through zoom; the band
-  remains the stand-in/bail fallback). Explicit
+  are measured by world-jittered point sampling. Equalities render as the gradient band ONLY
+  (~1px AA line, accumulated on half-pixel cells): one representation at every density, so
+  regime/level/draft boundaries can never seam -- sparse curves are thin AA lines, sub-pixel-dense
+  families converge to the honest wash (cells whose interval gradient straddles on both axes fall
+  back to the enclosure test; poles/branch cuts are suppressed via the sound `disc` flag; precision
+  audited vs numpy ground truth by `tools/audit_equality.py`). A marching-squares stroke overlay
+  was tried and REMOVED 2026-06-11 -- every gate between two representations became a visible
+  seam; do not reintroduce display-geometry extraction for rendering (cursor-value tracking should
+  use certified root-solving instead). Explicit
   `v op g(w)` (both axes) use an exact-measure 1-D quadrature; the general 2-D path reaches the same
   smooth measure via sampling (`SolveParams.analytic=false` forces pure subdivision). Detail tiles
   refine through a fixed 4-pass ladder (`refinePassParams`): pass 0 first-paints in a few ms even on
   a pathological tile, the final pass is byte-identical to a single legacy fine solve; equalities
-  (band model, pass-independent) solve once at final quality.
+  (band model, pass-independent) solve once at final quality, with coarse stand-in rasters at the
+  pass-2 budget.
 - **Tiling (greedy quadtree).** `TileKey{epoch, level, i, j}` is a quadtree address (level = depth,
   worldPerPixel = 2^level; a node's 4 children are level-1). A node is classified **UniformTrue /
   UniformFalse / Mixed**. Uniform nodes are greedy leaves (flat fill, exact at any zoom, kept forever

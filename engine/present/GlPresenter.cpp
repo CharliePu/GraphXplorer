@@ -598,14 +598,19 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                 }
 
                 lastShown_[t.key] = Shown{drawnPayload, u0, v0, u1, v1};
-                if (ownTex && !t.cov->segs.empty())
+                // Per-frame stroke budget: beyond it a tile keeps its band quad
+                // instead (segsDrawn stays false), so the frame cost is bounded
+                // no matter how dense the curve family gets.
+                constexpr size_t kFrameSegCap = 65536;
+                const bool segBudget = segScratch_.size() / 4 < kFrameSegCap;
+                if (ownTex && !t.cov->segs.empty() && segBudget)
                 {
                     appendSegs(t);
                     segsDrawn = true;
                     segSrcConverged = t.cov->converged;
                 }
                 else if (!ownTex && haveStandin && drawnPayload == t.standinCov->payloadId &&
-                         !t.standinCov->segs.empty())
+                         !t.standinCov->segs.empty() && segBudget)
                 {
                     appendSegsMapped(t);
                     segsDrawn = true;

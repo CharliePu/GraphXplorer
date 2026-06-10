@@ -278,3 +278,23 @@ TEST_CASE("a pole is not a curve: y = 1/x emits no asymptote artifacts", "[solve
         REQUIRE(t.at(32, py) == Approx(0.0f).margin(5e-2));
     }
 }
+
+TEST_CASE("a sub-pixel-dense curve family hands off strokes to the band raster",
+          "[solver][marching]")
+{
+    // sin(x*y) = 0 around x~100: curve spacing ~2 per pixel here -- strokes
+    // would be pure noise at enormous cost, the band carries the density.
+    Relation r = must("sin(x*y) = 0");
+    EvalScratch s;
+    SolveParams p;
+    p.tilePx = 64;
+    const WorldRect rect{100.0, 100.0, 108.0, 108.0};
+    CoverageTile t = solveTile(r, rect, p, s);
+    REQUIRE(t.segs.empty());                // saturated: no stroke soup
+    REQUIRE(coverageFraction(t) > 0.3);     // the band shows the density
+
+    // a SPARSE view of the same relation still gets vector strokes
+    const WorldRect sparse{0.5, 0.5, 4.5, 4.5};
+    CoverageTile t2 = solveTile(r, sparse, p, s);
+    REQUIRE_FALSE(t2.segs.empty());
+}

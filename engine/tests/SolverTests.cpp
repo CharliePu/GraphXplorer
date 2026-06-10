@@ -290,8 +290,12 @@ TEST_CASE("a sub-pixel-dense curve family hands off strokes to the band raster",
     p.tilePx = 64;
     const WorldRect rect{100.0, 100.0, 108.0, 108.0};
     CoverageTile t = solveTile(r, rect, p, s);
-    REQUIRE(t.segs.empty());                // saturated: no stroke soup
-    REQUIRE(coverageFraction(t) > 0.3);     // the band shows the density
+    REQUIRE(t.segs.empty()); // saturated: no stroke soup
+    // strands here are ~4x denser than pixels: nearly EVERY pixel contains
+    // curve, so the band must be a near-solid wash. (The old gradient-midpoint
+    // distance estimate collapsed in this regime -- interval gradient mids ~0
+    // -- and rendered random darkness instead.)
+    REQUIRE(coverageFraction(t) > 0.85);
 
     // a SPARSE view of the same relation still gets vector strokes
     const WorldRect sparse{0.5, 0.5, 4.5, 4.5};

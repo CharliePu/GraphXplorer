@@ -685,16 +685,14 @@ private:
             // strokes stop adding information over the band raster -- they
             // collectively paint a solid fill at enormous cost (a sub-pixel-
             // dense family is ~a million 1px segments screen-wide; that was
-            // the "too many lines" input lag). Hand the tile to the raster:
-            // the band IS the honest rendering at that density, exactly as
-            // the area measure is for sub-pixel inequality oscillation.
-            // Threshold note: past ~2 crossings/pixel the corner-sign test
-            // aliases (even flip counts look uniform), so a fully saturated
-            // tile registers only ~half its cells -- T^2/4 still catches it
-            // while staying far above any resolvable curve content (a busy
-            // multi-strand tile is a few hundred boundary cells). Stroke
-            // weight RAMPS down across the upper part of the range so the
-            // regime switch blends instead of snapping at tile edges.
+            // the "too many lines" input lag). The BAND raster is the primary,
+            // always-drawn representation (the inequality measure applied to
+            // the ~1px tube around the curve: zoom-consistent, nests across
+            // scales like a contour plot melting into a wash). Strokes are a
+            // pure ENHANCEMENT overlay, kept only when the tile is deep in
+            // the sparse regime where extraction is unimpeachable -- no ramp
+            // zone, no contested densities: every regime/level/draft boundary
+            // that distinguished "strokes vs band" used to be a visible seam.
             constexpr size_t kTileSegCap = 2048;
             // extraction runs on half-pixel cells: thresholds scale with the
             // actual cell count, not the pixel count
@@ -703,15 +701,13 @@ private:
             const double totalCells = cellsPerAxis * cellsPerAxis;
             const double sat =
                 static_cast<double>(marchedCells_ + oscCells_) / (totalCells / 4.0);
-            // Crowded cells dominating the tile = the ~1 strand/cell strobe
-            // blind spot: the extracted family is aliased fiction. A sparse web
-            // has only isolated crowded cells (junctions/tangencies).
-            if (crowdedCells_ > totalCells / 16.0)
-            {
-                segs_.clear();
-                strokeAlpha_ = 0.0f;
-            }
-            else if (sat >= 1.0)
+            // Strokes survive only if: comfortably sparse (sat < 0.6 -- strand
+            // spacing >~ 5px, stable across +-1 level), NO dense pockets, and
+            // only isolated multi-crossing cells (junctions/tangencies; if
+            // they spread, the extraction is strobe-aliased fiction).
+            const bool sparseEnough = sat < 0.6 && oscCells_ == 0 &&
+                                      crowdedCells_ <= totalCells / 64.0;
+            if (!sparseEnough)
             {
                 segs_.clear();
                 strokeAlpha_ = 0.0f;
@@ -726,12 +722,7 @@ private:
                 }
                 else
                 {
-                    strokeAlpha_ = sat <= 0.6 ? 1.0f
-                                              : static_cast<float>((1.0 - sat) / 0.4);
-                    // any dense pocket must keep the band quad underneath
-                    // (a full-weight tile would otherwise skip it and the
-                    // pocket's coverage would vanish)
-                    if (oscCells_ > 0) strokeAlpha_ = std::min(strokeAlpha_, 0.999f);
+                    strokeAlpha_ = 1.0f;
                 }
             }
         }

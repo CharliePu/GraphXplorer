@@ -251,6 +251,86 @@ bool Relation::pointInside(double x, double y, EvalScratch &s) const
     return std::isfinite(t) && t != 0.0;
 }
 
+int Relation::pointInsideCount(const double *xs, const double *ys, int n, EvalScratch &s) const
+{
+    int hits = 0;
+    double vals[256];
+    for (int base = 0; base < n; base += 256)
+    {
+        const int w = std::min(n - base, 256);
+        f_.evalPointBatch(xs + base, ys + base, vals, w, s.sb);
+        if (single_)
+        {
+            switch (op_)
+            {
+            case CmpOp::Less:
+                for (int i = 0; i < w; ++i) hits += std::isfinite(vals[i]) && vals[i] < 0.0;
+                break;
+            case CmpOp::LessEq:
+                for (int i = 0; i < w; ++i) hits += std::isfinite(vals[i]) && vals[i] <= 0.0;
+                break;
+            case CmpOp::Greater:
+                for (int i = 0; i < w; ++i) hits += std::isfinite(vals[i]) && vals[i] > 0.0;
+                break;
+            case CmpOp::GreaterEq:
+                for (int i = 0; i < w; ++i) hits += std::isfinite(vals[i]) && vals[i] >= 0.0;
+                break;
+            case CmpOp::Equal:
+                for (int i = 0; i < w; ++i) hits += vals[i] == 0.0;
+                break;
+            case CmpOp::NotEqual:
+                for (int i = 0; i < w; ++i) hits += std::isfinite(vals[i]) && vals[i] != 0.0;
+                break;
+            }
+        }
+        else
+        {
+            for (int i = 0; i < w; ++i) hits += std::isfinite(vals[i]) && vals[i] != 0.0;
+        }
+    }
+    return hits;
+}
+
+void Relation::pointInsideMask(const double *xs, const double *ys, int n, unsigned char *inside,
+                               EvalScratch &s) const
+{
+    double vals[256];
+    for (int base = 0; base < n; base += 256)
+    {
+        const int w = std::min(n - base, 256);
+        f_.evalPointBatch(xs + base, ys + base, vals, w, s.sb);
+        unsigned char *out = inside + base;
+        if (single_)
+        {
+            switch (op_)
+            {
+            case CmpOp::Less:
+                for (int i = 0; i < w; ++i) out[i] = std::isfinite(vals[i]) && vals[i] < 0.0;
+                break;
+            case CmpOp::LessEq:
+                for (int i = 0; i < w; ++i) out[i] = std::isfinite(vals[i]) && vals[i] <= 0.0;
+                break;
+            case CmpOp::Greater:
+                for (int i = 0; i < w; ++i) out[i] = std::isfinite(vals[i]) && vals[i] > 0.0;
+                break;
+            case CmpOp::GreaterEq:
+                for (int i = 0; i < w; ++i) out[i] = std::isfinite(vals[i]) && vals[i] >= 0.0;
+                break;
+            case CmpOp::Equal:
+                for (int i = 0; i < w; ++i) out[i] = vals[i] == 0.0;
+                break;
+            case CmpOp::NotEqual:
+                for (int i = 0; i < w; ++i) out[i] = std::isfinite(vals[i]) && vals[i] != 0.0;
+                break;
+            }
+        }
+        else
+        {
+            for (int i = 0; i < w; ++i) out[i] = std::isfinite(vals[i]) && vals[i] != 0.0;
+        }
+    }
+}
+
 void Relation::valueAndGrad(const Interval &x, const Interval &y, EvalScratch &s, Interval &val,
                             Interval &gx, Interval &gy) const
 {

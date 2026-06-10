@@ -1,7 +1,9 @@
 #include "Program.h"
 
 #include "math/Round.h"
+#include "math/Simd.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace gxr
@@ -148,6 +150,242 @@ double Program::evalPoint(double x, double y, std::vector<double> &st) const
         }
     }
     return st.empty() ? 0.0 : st.back();
+}
+
+void Program::evalPointBatch(const double *xs, const double *ys, double *out, int n,
+                             std::vector<double> &slab) const
+{
+    // Op-outer interpretation: each instruction sweeps a whole chunk of points,
+    // so the dispatch cost is paid once per op (not once per sample) and the
+    // arithmetic loops auto-vectorize. Chunks keep the working set in L1/L2.
+    constexpr int kChunk = 256;
+    static_assert(kChunk % kLanes == 0);
+    const int rows = std::max(1, maxStack);
+    if (slab.size() < static_cast<size_t>(rows) * kChunk)
+        slab.resize(static_cast<size_t>(rows) * kChunk);
+    // Per-slot "is a splat of this constant" flags enable the const-base pow
+    // rewrite (c^b -> exp2(b*log2 c)) -- the path `2^x` takes (log2(2)==1).
+    double cval[64];
+    bool cflag[64];
+
+    for (int base = 0; base < n; base += kChunk)
+    {
+        const int w = std::min(kChunk, n - base);
+        const int pw = ((w + kLanes - 1) / kLanes) * kLanes; // padded width
+        auto row = [&](int k) { return slab.data() + static_cast<size_t>(k) * kChunk; };
+        int sp = 0;
+
+        for (const auto &in : code)
+        {
+            switch (in.op)
+            {
+            case Op::PushConst:
+            {
+                double *r = row(sp);
+                for (int i = 0; i < pw; ++i) r[i] = in.imm;
+                if (sp < 64)
+                {
+                    cval[sp] = in.imm;
+                    cflag[sp] = true;
+                }
+                ++sp;
+                break;
+            }
+            case Op::PushVar:
+            {
+                double *r = row(sp);
+                const double *src = in.slot == 0 ? xs + base : ys + base;
+                for (int i = 0; i < w; ++i) r[i] = src[i];
+                for (int i = w; i < pw; ++i) r[i] = src[w - 1]; // pad: replicate
+                if (sp < 64) cflag[sp] = false;
+                ++sp;
+                break;
+            }
+            case Op::Neg:
+            {
+                double *r = row(sp - 1);
+                for (int i = 0; i < pw; ++i) r[i] = -r[i];
+                if (sp - 1 < 64) cflag[sp - 1] = false;
+                break;
+            }
+            case Op::Abs:
+            {
+                double *r = row(sp - 1);
+                for (int i = 0; i < pw; ++i) r[i] = std::abs(r[i]);
+                if (sp - 1 < 64) cflag[sp - 1] = false;
+                break;
+            }
+            case Op::Sin:
+            case Op::Cos:
+            case Op::Tan:
+            {
+                double *r = row(sp - 1);
+                for (int i = 0; i < pw; i += kLanes)
+                {
+                    vd a, s, c;
+                    for (int j = 0; j < kLanes; ++j) a.v[j] = r[i + j];
+                    vsincos(a, s, c);
+                    if (in.op == Op::Sin)
+                        for (int j = 0; j < kLanes; ++j) r[i + j] = s.v[j];
+                    else if (in.op == Op::Cos)
+                        for (int j = 0; j < kLanes; ++j) r[i + j] = c.v[j];
+                    else
+                        for (int j = 0; j < kLanes; ++j) r[i + j] = s.v[j] / c.v[j];
+                }
+                if (sp - 1 < 64) cflag[sp - 1] = false;
+                break;
+            }
+            case Op::Exp:
+            {
+                double *r = row(sp - 1);
+                for (int i = 0; i < pw; i += kLanes)
+                {
+                    vd a;
+                    for (int j = 0; j < kLanes; ++j) a.v[j] = r[i + j];
+                    const vd e = vexp(a);
+                    for (int j = 0; j < kLanes; ++j) r[i + j] = e.v[j];
+                }
+                if (sp - 1 < 64) cflag[sp - 1] = false;
+                break;
+            }
+            case Op::Asin:
+            {
+                double *r = row(sp - 1);
+                for (int i = 0; i < pw; ++i) r[i] = std::asin(r[i]);
+                if (sp - 1 < 64) cflag[sp - 1] = false;
+                break;
+            }
+            case Op::Acos:
+            {
+                double *r = row(sp - 1);
+                for (int i = 0; i < pw; ++i) r[i] = std::acos(r[i]);
+                if (sp - 1 < 64) cflag[sp - 1] = false;
+                break;
+            }
+            case Op::Atan:
+            {
+                double *r = row(sp - 1);
+                for (int i = 0; i < pw; ++i) r[i] = std::atan(r[i]);
+                if (sp - 1 < 64) cflag[sp - 1] = false;
+                break;
+            }
+            case Op::Log:
+            {
+                double *r = row(sp - 1);
+                for (int i = 0; i < pw; ++i) r[i] = std::log(r[i]);
+                if (sp - 1 < 64) cflag[sp - 1] = false;
+                break;
+            }
+            case Op::Sqrt:
+            {
+                double *r = row(sp - 1);
+                for (int i = 0; i < pw; ++i) r[i] = std::sqrt(r[i]);
+                if (sp - 1 < 64) cflag[sp - 1] = false;
+                break;
+            }
+            case Op::IPow:
+            {
+                double *r = row(sp - 1);
+                const long long e = static_cast<long long>(in.imm);
+                if (e == 2)
+                    for (int i = 0; i < pw; ++i) r[i] = r[i] * r[i];
+                else if (e == 3)
+                    for (int i = 0; i < pw; ++i) r[i] = r[i] * r[i] * r[i];
+                else if (e == 4)
+                    for (int i = 0; i < pw; ++i)
+                    {
+                        const double s = r[i] * r[i];
+                        r[i] = s * s;
+                    }
+                else
+                    for (int i = 0; i < pw; ++i) r[i] = std::pow(r[i], in.imm);
+                if (sp - 1 < 64) cflag[sp - 1] = false;
+                break;
+            }
+            default: // binary ops
+            {
+                double *a = row(sp - 2);
+                const double *b = row(sp - 1);
+                switch (in.op)
+                {
+                case Op::Add:
+                    for (int i = 0; i < pw; ++i) a[i] = a[i] + b[i];
+                    break;
+                case Op::Sub:
+                    for (int i = 0; i < pw; ++i) a[i] = a[i] - b[i];
+                    break;
+                case Op::Mul:
+                    for (int i = 0; i < pw; ++i) a[i] = a[i] * b[i];
+                    break;
+                case Op::Div:
+                    for (int i = 0; i < pw; ++i) a[i] = a[i] / b[i];
+                    break;
+                case Op::Pow:
+                {
+                    const bool constBase = sp - 2 < 64 && cflag[sp - 2];
+                    const double c = constBase ? cval[sp - 2] : 0.0;
+                    if (constBase && c == 1.0)
+                    {
+                        // IEEE: 1^anything (even NaN) is 1
+                        for (int i = 0; i < pw; ++i) a[i] = 1.0;
+                    }
+                    else if (constBase && c > 0.0 && std::isfinite(c))
+                    {
+                        // c^b = 2^(b*log2 c); for the wall formula 2^x this is
+                        // EXACT in the exponent (log2(2)==1) and pure vexp2.
+                        const double l2c = std::log2(c);
+                        for (int i = 0; i < pw; i += kLanes)
+                        {
+                            vd t;
+                            for (int j = 0; j < kLanes; ++j) t.v[j] = b[i + j] * l2c;
+                            const vd e = vexp2(t);
+                            for (int j = 0; j < kLanes; ++j) a[i + j] = e.v[j];
+                        }
+                    }
+                    else
+                    {
+                        for (int i = 0; i < pw; ++i) a[i] = std::pow(a[i], b[i]);
+                    }
+                    break;
+                }
+                case Op::Less:
+                    for (int i = 0; i < pw; ++i) a[i] = (a[i] < b[i]) ? 1.0 : 0.0;
+                    break;
+                case Op::LessEq:
+                    for (int i = 0; i < pw; ++i) a[i] = (a[i] <= b[i]) ? 1.0 : 0.0;
+                    break;
+                case Op::Greater:
+                    for (int i = 0; i < pw; ++i) a[i] = (a[i] > b[i]) ? 1.0 : 0.0;
+                    break;
+                case Op::GreaterEq:
+                    for (int i = 0; i < pw; ++i) a[i] = (a[i] >= b[i]) ? 1.0 : 0.0;
+                    break;
+                case Op::Equal:
+                    for (int i = 0; i < pw; ++i) a[i] = (a[i] == b[i]) ? 1.0 : 0.0;
+                    break;
+                case Op::NotEqual:
+                    for (int i = 0; i < pw; ++i) a[i] = (a[i] != b[i]) ? 1.0 : 0.0;
+                    break;
+                case Op::And:
+                    for (int i = 0; i < pw; ++i)
+                        a[i] = (a[i] != 0.0 && b[i] != 0.0) ? 1.0 : 0.0;
+                    break;
+                case Op::Or:
+                    for (int i = 0; i < pw; ++i)
+                        a[i] = (a[i] != 0.0 || b[i] != 0.0) ? 1.0 : 0.0;
+                    break;
+                default: break;
+                }
+                if (sp - 2 < 64) cflag[sp - 2] = false;
+                --sp;
+                break;
+            }
+            }
+        }
+
+        const double *res = sp > 0 ? row(sp - 1) : nullptr;
+        for (int i = 0; i < w; ++i) out[base + i] = res ? res[i] : 0.0;
+    }
 }
 
 Interval Program::evalInterval(const Interval &x, const Interval &y, std::vector<Interval> &st) const

@@ -73,6 +73,15 @@ public:
     [[nodiscard]] Interval evalInterval(const Interval &x, const Interval &y,
                                         std::vector<Interval> &stack) const;
     [[nodiscard]] Jet evalJet(const Interval &x, const Interval &y, std::vector<Jet> &stack) const;
+
+    // Evaluate at n points (xs[i], ys[i]) -> out[i]. Semantically evalPoint
+    // (same NaN/comparison behavior; transcendentals agree to a few ulp), but
+    // interpreted op-OUTER over the whole batch: dispatch is amortized and
+    // sin/cos/exp/2^x run through the SIMD kernels in math/Simd.h. Used by the
+    // solver's SAMPLING paths only -- never by the certified interval math.
+    // `slab` is reusable scratch (EvalScratch::sb).
+    void evalPointBatch(const double *xs, const double *ys, double *out, int n,
+                        std::vector<double> &slab) const;
 };
 }
 

@@ -50,8 +50,8 @@ public:
         : rel_(rel), rect_(rect), s_(s), cancel_(cancel), T_(p.tilePx), K_(p.subBits),
           budget_(p.boxBudget)
     {
-        floorN_ = std::max(1, p.floorSamples);
-        bailM_ = std::max(1, p.bailSamples);
+        floorN_ = std::clamp(p.floorSamples, 1, 16);
+        bailM_ = std::clamp(p.bailSamples, 1, 16); // 16x16 = the 256-sample batch ceiling
         pixelSub_ = 1 << K_;
         N_ = T_ * pixelSub_;
         stepX_ = rect_.width() / N_;
@@ -110,6 +110,34 @@ private:
     int T_, K_, pixelSub_, N_;
     int floorN_{1}; // per-axis sub-samples for an uncertain floor/bailout cell
     int bailM_{16}; // per-axis samples for a budget-bailed pixel
+
+    // Deferred floor-cell sampling: a single uncertain floor cell only needs
+    // floorN^2 (typically 4) samples -- far too few to amortize a batch call.
+    // Cells queue their samples here and flush 256 at a time, so the SIMD
+    // kernels always run on full batches. Flush order is deterministic.
+    static constexpr int kPendCap = 256;
+    double pendX_[kPendCap], pendY_[kPendCap];
+    size_t pendPix_[kPendCap]; // target pixel per CELL (samples are cell-contiguous)
+    int pendSamples_{0};
+
+    void flushFloorPending()
+    {
+        if (pendSamples_ == 0) return;
+        unsigned char in[kPendCap];
+        rel_.pointInsideMask(pendX_, pendY_, pendSamples_, in, s_);
+        const int spc = floorN_ * floorN_;
+        const double invTotal = 1.0 / spc;
+        int cell = 0;
+        for (int s = 0; s < pendSamples_; s += spc, ++cell)
+        {
+            int hits = 0;
+            for (int j = 0; j < spc; ++j) hits += in[s + j];
+            const double frac = hits * invTotal;
+            acc_[pendPix_[cell]] += frac;
+            unc_[pendPix_[cell]] += frac * (1.0 - frac) * invTotal;
+        }
+        pendSamples_ = 0;
+    }
     long long budget_;
     long long processed_{0};
     double stepX_, stepY_, wpp_;
@@ -210,6 +238,7 @@ private:
 
     // Sample one box (M x M stratified, world-aligned jittered) -> its coverage
     // measure, distributed via addUniform (correct pixel overlap, no double-count).
+    // The samples are evaluated as ONE batch (SIMD kernels + amortized dispatch).
     void sampleBoxInto(const Box &b, int M)
     {
         const double x0w = rect_.x0 + b.x0 * stepX_;
@@ -217,7 +246,8 @@ private:
         const double bw = (b.x1 - b.x0) * stepX_;
         const double bh = (b.y1 - b.y0) * stepY_;
         const double inv = 1.0 / M;
-        int hits = 0;
+        double bx[256], by[256];
+        int k = 0;
         for (int sy = 0; sy < M; ++sy)
             for (int sx = 0; sx < M; ++sx)
             {
@@ -225,10 +255,11 @@ private:
                 const double oy = y0w + sy * inv * bh;
                 double jx, jy;
                 jitter2(ox, oy, jx, jy);
-                const double px = ox + jx * inv * bw;
-                const double py = oy + jy * inv * bh;
-                if (rel_.pointInside(px, py, s_)) ++hits;
+                bx[k] = ox + jx * inv * bw;
+                by[k] = oy + jy * inv * bh;
+                ++k;
             }
+        const int hits = rel_.pointInsideCount(bx, by, k, s_);
         const int total = M * M;
         const double frac = static_cast<double>(hits) / total;
         addUniform(b, frac, frac * (1.0 - frac) / total); // estimate + variance
@@ -284,11 +315,17 @@ private:
             // N x N stratified (world-jittered) samples over the one uncertain
             // sub-cell -> its coverage MEASURE (true-fraction), so sub-pixel
             // oscillation averages to the analytic measure instead of binary 0/1
-            // grain. Sub-cell area is 1.0 (sub-cell^2).
+            // grain. Sub-cell area is 1.0 (sub-cell^2). The samples are DEFERRED
+            // into the pending buffer and evaluated as full SIMD batches; the
+            // cell's frac/variance land in flushFloorPending(). (Uncertainty =
+            // sampling variance, NOT a full unknown cell: a floor cell is as
+            // resolved as it gets, so it must read as a settled estimate.)
+            const int spc = floorN_ * floorN_;
+            if (pendSamples_ + spc > kPendCap) flushFloorPending();
             const double x0w = rect_.x0 + b.x0 * stepX_;
             const double y0w = rect_.y0 + b.y0 * stepY_;
             const double inv = 1.0 / floorN_;
-            int hits = 0;
+            pendPix_[pendSamples_ / spc] = idx;
             for (int sy = 0; sy < floorN_; ++sy)
                 for (int sx = 0; sx < floorN_; ++sx)
                 {
@@ -296,19 +333,10 @@ private:
                     const double oy = y0w + sy * inv * stepY_;
                     double jx, jy;
                     jitter2(ox, oy, jx, jy);
-                    const double px = ox + jx * inv * stepX_;
-                    const double py = oy + jy * inv * stepY_;
-                    if (rel_.pointInside(px, py, s_)) ++hits;
+                    pendX_[pendSamples_] = ox + jx * inv * stepX_;
+                    pendY_[pendSamples_] = oy + jy * inv * stepY_;
+                    ++pendSamples_;
                 }
-            const int total = floorN_ * floorN_;
-            const double frac = static_cast<double>(hits) / total;
-            acc_[idx] += frac;
-            // Uncertainty = the sampling VARIANCE (small), NOT a full unknown cell:
-            // a floor cell is as resolved as it gets (further subdivision can't
-            // help), so it must read as a low-uncertainty ESTIMATE -- otherwise the
-            // tile reports maximal uncertainty forever and the event-driven loop
-            // never settles past the phase-loss wall. Still nonzero -> an estimate.
-            unc_[idx] += frac * (1.0 - frac) / total;
             return;
         }
 
@@ -339,6 +367,7 @@ private:
 
     CoverageTile finalize(bool converged)
     {
+        flushFloorPending(); // deferred floor cells land before the readout
         CoverageTile tile;
         tile.width = T_;
         tile.height = T_;
@@ -430,6 +459,9 @@ bool solveExplicit1D(const Relation &rel, const WorldRect &rect, const SolvePara
     std::vector<double> prefix;
     g.reserve(S);
     prefix.reserve(S + 1);
+    std::vector<double> ws(static_cast<size_t>(S));
+    std::vector<double> zs(static_cast<size_t>(S), 0.0);
+    std::vector<double> vals(static_cast<size_t>(S));
 
     for (int o = 0; o < T; ++o)
     {
@@ -439,12 +471,15 @@ bool solveExplicit1D(const Relation &rel, const WorldRect &rect, const SolvePara
             return true; // cancelled (not unreliable): caller handles the cancel token
         }
         const double wa = wOrigin + o * wStepPix;
+        for (int k = 0; k < S; ++k) ws[static_cast<size_t>(k)] = wa + (k + 0.5) * wStepPix / S;
+        if (yExplicit)
+            G.evalPointBatch(ws.data(), zs.data(), vals.data(), S, scratch.sb);
+        else
+            G.evalPointBatch(zs.data(), ws.data(), vals.data(), S, scratch.sb);
         g.clear();
         for (int k = 0; k < S; ++k)
         {
-            const double w = wa + (k + 0.5) * wStepPix / S;
-            const double val = yExplicit ? G.evalPoint(w, 0.0, scratch.sd)
-                                         : G.evalPoint(0.0, w, scratch.sd);
+            const double val = vals[static_cast<size_t>(k)];
             // A non-finite sample means g(x) overflowed or hit an asymptote here -- the
             // point sampler can't measure this column. Bail so solveTile uses the sound
             // interval subdivision instead (which bounds e.g. sin by [-1,1] correctly).

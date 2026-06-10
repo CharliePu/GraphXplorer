@@ -40,6 +40,11 @@ struct CoverageTile
     // curves stay crisp through zoom while re-solves are pending. The band
     // raster in `alpha` stays as the fallback (stand-ins, bailed cells).
     std::vector<float> segs;
+    // Stroke weight in [0,1]: 1 = sparse tile, strokes fully replace the band;
+    // ramping to 0 as the curve family approaches the saturation density where
+    // strokes hand off to the raster. The presenter blends band + faded
+    // strokes in the ramp, so the regime switch has no tile-blocky seam.
+    float strokeAlpha{1.0f};
 
     [[nodiscard]] float at(int x, int y) const { return alpha[static_cast<size_t>(y) * width + x]; }
 };

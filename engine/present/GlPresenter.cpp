@@ -61,11 +61,13 @@ void main(){ frag = color; })";
 // Equality-curve strokes: each segment instance expands into a screen-space
 // quad of constant pixel width with square feathered caps.
 const char *kSegVs = R"(#version 330 core
-layout(location=0) in vec2 corner; // (0..1)^2
-layout(location=1) in vec4 iSeg;   // endpoint NDC: x0,y0,x1,y1
+layout(location=0) in vec2 corner;  // (0..1)^2
+layout(location=1) in vec4 iSeg;    // endpoint NDC: x0,y0,x1,y1
+layout(location=2) in float iAlpha; // per-tile stroke weight (saturation ramp)
 uniform vec2 pxOfNdc; // pixels per NDC unit (fbW/2, fbH/2)
 uniform float halfW;  // half stroke width in pixels
 out float vEdge;
+out float vAlpha;
 void main(){
     vec2 aPx = iSeg.xy * pxOfNdc;
     vec2 bPx = iSeg.zw * pxOfNdc;
@@ -78,16 +80,18 @@ void main(){
     vec2 p = aPx + t * along + n * across;
     gl_Position = vec4(p / pxOfNdc, 0.0, 1.0);
     vEdge = corner.y * 2.0 - 1.0;
+    vAlpha = iAlpha;
 })";
 
 const char *kSegFs = R"(#version 330 core
 in float vEdge;
+in float vAlpha;
 out vec4 frag;
 uniform vec4 segColor;
 uniform float halfW;
 void main(){
     float a = clamp((1.0 - abs(vEdge)) * halfW, 0.0, 1.0); // ~1px rim feather
-    frag = vec4(segColor.rgb, segColor.a * a);
+    frag = vec4(segColor.rgb, segColor.a * a * vAlpha);
 })";
 
 constexpr int kWantLayers = 8192;     // 8192 x 64x64 R8 = 32 MB, allocated once
@@ -170,6 +174,7 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
 
     // stroke VAO: shared unit-quad corners + per-instance segment endpoints
+    // and stroke weight (5 floats per instance)
     glGenVertexArrays(1, &segVao_);
     glGenBuffers(1, &segVbo_);
     glBindVertexArray(segVao_);
@@ -178,8 +183,12 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
     glBindBuffer(GL_ARRAY_BUFFER, segVbo_);
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), nullptr);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 5 * sizeof(float), nullptr);
     glVertexAttribDivisor(1, 1);
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                          reinterpret_cast<const void *>(4 * sizeof(float)));
+    glVertexAttribDivisor(2, 1);
     glBindVertexArray(0);
 }
 
@@ -384,6 +393,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
     // tile-local segments to NDC.
     auto appendSegs = [&](const PresentTile &t) {
         const std::vector<float> &sg = t.cov->segs;
+        const float sa = t.cov->strokeAlpha;
         const double w = t.rect.x1 - t.rect.x0, h = t.rect.y1 - t.rect.y0;
         for (size_t i = 0; i + 3 < sg.size(); i += 4)
         {
@@ -391,7 +401,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
             worldToNdc(vp, fbW_, fbH_, t.rect.x0 + sg[i] * w, t.rect.y0 + sg[i + 1] * h, ax, ay);
             worldToNdc(vp, fbW_, fbH_, t.rect.x0 + sg[i + 2] * w, t.rect.y0 + sg[i + 3] * h, bx, by);
             if (ax == bx && ay == by) continue;
-            segScratch_.insert(segScratch_.end(), {ax, ay, bx, by});
+            segScratch_.insert(segScratch_.end(), {ax, ay, bx, by, sa});
         }
     };
     // A STAND-IN's segments: the ancestor's vector data is resolution-
@@ -434,7 +444,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
             worldToNdc(vp, fbW_, fbH_, t.rect.x0 + (cx1 - t.su0) * iu * w,
                        t.rect.y0 + (cy1 - t.sv0) * iv * h, bx, by);
             if (ax == bx && ay == by) continue;
-            segScratch_.insert(segScratch_.end(), {ax, ay, bx, by});
+            segScratch_.insert(segScratch_.end(), {ax, ay, bx, by, t.standinCov->strokeAlpha});
         }
     };
 
@@ -602,12 +612,15 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                 // instead (segsDrawn stays false), so the frame cost is bounded
                 // no matter how dense the curve family gets.
                 constexpr size_t kFrameSegCap = 65536;
-                const bool segBudget = segScratch_.size() / 4 < kFrameSegCap;
+                const bool segBudget = segScratch_.size() / 5 < kFrameSegCap;
                 if (ownTex && !t.cov->segs.empty() && segBudget)
                 {
                     appendSegs(t);
                     segsDrawn = true;
-                    segSrcConverged = t.cov->converged;
+                    // strokes fully replace the band only at full weight; in
+                    // the saturation ramp the band stays under the fading
+                    // strokes, so the regime switch has no tile-blocky seam
+                    segSrcConverged = t.cov->converged && t.cov->strokeAlpha >= 1.0f;
                 }
                 else if (!ownTex && haveStandin && drawnPayload == t.standinCov->payloadId &&
                          !t.standinCov->segs.empty() && segBudget)
@@ -685,7 +698,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         const GLsizeiptr sBytes = static_cast<GLsizeiptr>(segScratch_.size() * sizeof(float));
         glBufferData(GL_ARRAY_BUFFER, sBytes, nullptr, GL_STREAM_DRAW); // orphan
         glBufferSubData(GL_ARRAY_BUFFER, 0, sBytes, segScratch_.data());
-        glDrawArraysInstanced(GL_TRIANGLES, 0, 6, static_cast<GLsizei>(segScratch_.size() / 4));
+        glDrawArraysInstanced(GL_TRIANGLES, 0, 6, static_cast<GLsizei>(segScratch_.size() / 5));
     }
 
     evictSlots(frame_);

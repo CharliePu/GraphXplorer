@@ -151,6 +151,7 @@ private:
     std::vector<double> unc_; // boundary/estimated sub-cell count per pixel
     std::vector<float> segs_; // equality: marching-squares segments (tile-local)
     int marchedCells_{0};     // equality: pixel cells that produced segments
+    float strokeAlpha_{1.0f}; // equality: stroke weight (fades near saturation)
 
     // Naive interval first; escalate to the centered (mean-value) form only while
     // it is still earning its cost. On formulas where it never certifies a box
@@ -623,14 +624,29 @@ private:
             // aliases (even flip counts look uniform), so a fully saturated
             // tile registers only ~half its cells -- T^2/4 still catches it
             // while staying far above any resolvable curve content (a busy
-            // multi-strand tile is a few hundred boundary cells).
+            // multi-strand tile is a few hundred boundary cells). Stroke
+            // weight RAMPS down across the upper part of the range so the
+            // regime switch blends instead of snapping at tile edges.
             constexpr size_t kTileSegCap = 1024;
-            if (marchedCells_ > T_ * T_ / 4)
+            const double sat = static_cast<double>(marchedCells_) / (T_ * T_ / 4.0);
+            if (sat >= 1.0)
+            {
                 segs_.clear();
+                strokeAlpha_ = 0.0f;
+            }
             else
             {
                 simplifySegs();
-                if (segs_.size() / 4 > kTileSegCap) segs_.clear();
+                if (segs_.size() / 4 > kTileSegCap)
+                {
+                    segs_.clear();
+                    strokeAlpha_ = 0.0f;
+                }
+                else
+                {
+                    strokeAlpha_ = sat <= 0.6 ? 1.0f
+                                              : static_cast<float>((1.0 - sat) / 0.4);
+                }
             }
         }
         CoverageTile tile;
@@ -649,6 +665,7 @@ private:
         }
         tile.worstUncertainty = worst;
         tile.segs = std::move(segs_);
+        tile.strokeAlpha = strokeAlpha_;
         return tile;
     }
 };

@@ -66,7 +66,10 @@ thread-safe store) â†’ `app` (engine: mailbox, scheduler thread, worker pool) â†
   centered form is disabled per-tile when it stops certifying boxes.
 - **Coverage solver.** Bounded **DFS** area-accumulating interval subdivision: proven-uniform boxes
   fill their whole region greedily; only uncertain boxes subdivide, to a sub-pixel floor where they
-  are measured by world-jittered point sampling. Equalities use a gradient band (~1px line). Explicit
+  are measured by world-jittered point sampling. Equalities use a gradient band (~1px line) AND
+  marching-squares vector segments extracted from the boundary cells (`CoverageTile.segs`,
+  tile-local; the presenter strokes them at constant screen width -- crisp through zoom; the band
+  remains the stand-in/bail fallback). Explicit
   `v op g(w)` (both axes) use an exact-measure 1-D quadrature; the general 2-D path reaches the same
   smooth measure via sampling (`SolveParams.analytic=false` forces pure subdivision). Detail tiles
   refine through a fixed 4-pass ladder (`refinePassParams`): pass 0 first-paints in a few ms even on

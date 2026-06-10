@@ -147,6 +147,7 @@ private:
     long long centeredWins_{0};
     std::vector<double> acc_; // covered sub-cell area per pixel
     std::vector<double> unc_; // boundary/estimated sub-cell count per pixel
+    std::vector<float> segs_; // equality: marching-squares segments (tile-local)
 
     // Naive interval first; escalate to the centered (mean-value) form only while
     // it is still earning its cost. On formulas where it never certifies a box
@@ -348,6 +349,79 @@ private:
         const double area = static_cast<double>(b.x1 - b.x0) * (b.y1 - b.y0);
         acc_[idx] += cov * area;
         unc_[idx] += area * area;
+        if (!notEqual_) marchCell(b, cx, cy); // extract the curve's vector segments
+    }
+
+    // Marching squares over one boundary pixel cell of an EQUALITY curve. The
+    // interval subdivision already PROVED a sign change may cross this cell, so
+    // segment detection inherits that soundness; corner signs + linear
+    // interpolation place the crossing sub-pixel-accurately, and the center
+    // sample disambiguates the two saddle cases. Segments are stored in
+    // tile-local [0,1] coordinates (vector data: crisp at any zoom).
+    void marchCell(const Box &b, double cx, double cy)
+    {
+        const double x0w = rect_.x0 + b.x0 * stepX_;
+        const double x1w = rect_.x0 + b.x1 * stepX_;
+        const double y0w = rect_.y0 + b.y0 * stepY_;
+        const double y1w = rect_.y0 + b.y1 * stepY_;
+        const double f0 = rel_.fValue(x0w, y0w, s_); // corner order: BL, BR, TR, TL
+        const double f1 = rel_.fValue(x1w, y0w, s_);
+        const double f2 = rel_.fValue(x1w, y1w, s_);
+        const double f3 = rel_.fValue(x0w, y1w, s_);
+        if (!std::isfinite(f0) || !std::isfinite(f1) || !std::isfinite(f2) || !std::isfinite(f3))
+            return; // undefined corner: the band raster covers this cell
+
+        const int code = (f0 < 0.0) | ((f1 < 0.0) << 1) | ((f2 < 0.0) << 2) | ((f3 < 0.0) << 3);
+        if (code == 0 || code == 15) return; // no corner sign change in this cell
+
+        // crossing parameter on an edge from value a to value b
+        const auto cross = [](double a, double bb) {
+            const double d = a - bb;
+            return d == 0.0 ? 0.5 : std::clamp(a / d, 0.0, 1.0);
+        };
+        // edge points in CELL-local [0,1]^2: e0 bottom, e1 right, e2 top, e3 left
+        const double e0x = cross(f0, f1), e1y = cross(f1, f2);
+        const double e2x = 1.0 - cross(f2, f3), e3y = 1.0 - cross(f3, f0);
+        const double ex[4] = {e0x, 1.0, e2x, 0.0};
+        const double ey[4] = {0.0, e1y, 1.0, e3y};
+
+        const double invT = 1.0 / T_;
+        const double px = static_cast<double>(b.x0 >> K_);
+        const double py = static_cast<double>(b.y0 >> K_);
+        const auto emitSeg = [&](int ea, int eb) {
+            segs_.push_back(static_cast<float>((px + ex[ea]) * invT));
+            segs_.push_back(static_cast<float>((py + ey[ea]) * invT));
+            segs_.push_back(static_cast<float>((px + ex[eb]) * invT));
+            segs_.push_back(static_cast<float>((py + ey[eb]) * invT));
+        };
+
+        switch (code)
+        {
+        case 1: case 14: emitSeg(3, 0); break;
+        case 2: case 13: emitSeg(0, 1); break;
+        case 3: case 12: emitSeg(3, 1); break;
+        case 4: case 11: emitSeg(1, 2); break;
+        case 6: case 9: emitSeg(0, 2); break;
+        case 7: case 8: emitSeg(2, 3); break;
+        case 5: case 10: // saddle: the center sample picks the pairing
+        {
+            const double fc = rel_.fValue(cx, cy, s_);
+            const bool cNeg = std::isfinite(fc) && fc < 0.0;
+            const bool sameAsBL = (code == 5) == cNeg;
+            if (sameAsBL)
+            {
+                emitSeg(0, 1);
+                emitSeg(2, 3);
+            }
+            else
+            {
+                emitSeg(3, 0);
+                emitSeg(1, 2);
+            }
+            break;
+        }
+        default: break;
+        }
     }
 
     // Coverage of a sub-cell by the ~1px-wide curve band of f=0.
@@ -383,6 +457,7 @@ private:
             worst = std::max(worst, static_cast<float>(std::sqrt(unc_[i]) / perPixel));
         }
         tile.worstUncertainty = worst;
+        tile.segs = std::move(segs_);
         return tile;
     }
 };

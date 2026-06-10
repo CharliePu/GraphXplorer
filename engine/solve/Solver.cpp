@@ -152,6 +152,7 @@ private:
     std::vector<float> segs_; // equality: marching-squares segments (tile-local)
     int marchedCells_{0};     // equality: pixel cells that produced segments
     int oscCells_{0};         // equality: oscillation-dense cells (band-only)
+    int crowdedCells_{0};     // equality: multi-crossing cells (aliasing tell)
     float strokeAlpha_{1.0f}; // equality: stroke weight (fades near saturation)
 
     // Naive interval first; escalate to the centered (mean-value) form only while
@@ -374,6 +375,7 @@ private:
         const bool pole = val.disc;
         double cov;
         bool dense = false;
+        int flipsTotal = 0;
         if (!pole && gvx.straddlesZero() && gvy.straddlesZero())
         {
             // OSCILLATORY REGIME: when both gradient components straddle zero
@@ -410,6 +412,7 @@ private:
                 }
             }
             dense = std::max(flipsH, flipsV) >= 3;
+            flipsTotal = flipsH + flipsV;
             cov = dense ? 1.0 : (val.straddlesZero() ? 1.0 : 0.0);
         }
         else
@@ -420,9 +423,21 @@ private:
         acc_[idx] += cov * area;
         unc_[idx] += area * area;
         if (dense)
+        {
             ++oscCells_; // counts toward saturation; no segments from parity noise
+        }
         else if (!notEqual_ && !pole)
+        {
+            // CROWDED but not dense (total flips >= 3): more crossings than a
+            // single resolvable strand makes. Isolated, that is a junction or
+            // tangency (march normally); if such cells DOMINATE the tile, the
+            // family runs at ~1 strand/pixel -- the corner grid's strobe blind
+            // spot at |x| or |y| ~ 2pi/wpp, where marching extracts a smooth
+            // but FALSE aliased family (rendered as "light patches" on the
+            // saturated wash). finalize() clears strokes on that count.
+            if (flipsTotal >= 3) ++crowdedCells_;
             marchCell(b, cx, cy); // extract the curve's segments
+        }
     }
 
     // Marching squares over one boundary pixel cell of an EQUALITY curve. The
@@ -677,7 +692,15 @@ private:
             constexpr size_t kTileSegCap = 1024;
             const double sat =
                 static_cast<double>(marchedCells_ + oscCells_) / (T_ * T_ / 4.0);
-            if (sat >= 1.0)
+            // Crowded cells dominating the tile = the ~1 strand/pixel strobe
+            // blind spot: the extracted family is aliased fiction. A sparse web
+            // has only isolated crowded cells (junctions/tangencies).
+            if (crowdedCells_ > T_ * T_ / 16)
+            {
+                segs_.clear();
+                strokeAlpha_ = 0.0f;
+            }
+            else if (sat >= 1.0)
             {
                 segs_.clear();
                 strokeAlpha_ = 0.0f;

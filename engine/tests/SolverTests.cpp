@@ -302,3 +302,26 @@ TEST_CASE("a sub-pixel-dense curve family hands off strokes to the band raster",
     CoverageTile t2 = solveTile(r, sparse, p, s);
     REQUIRE_FALSE(t2.segs.empty());
 }
+
+TEST_CASE("grid-resonant density (~1 strand/pixel) emits no aliased strokes",
+          "[solver][marching]")
+{
+    // At |x| or |y| ~ 2pi/wpp the family oscillates ~once per pixel: the
+    // marching corner grid strobes (a smooth FALSE family) and a naive
+    // density count stays low. These tiles must hand off to the band like
+    // their denser neighbors -- they rendered as "light patches" otherwise.
+    Relation r = must("sin(x)*sin(y) = sin(x*y)");
+    EvalScratch s;
+    SolveParams p;
+    p.tilePx = 64;
+    const WorldRect rect{48.0, 48.0, 56.0, 56.0}; // wpp 0.125: 2pi/wpp ~ 50.3
+    CoverageTile t = solveTile(r, rect, p, s);
+    REQUIRE(t.segs.empty());
+    REQUIRE(t.strokeAlpha == 0.0f);
+    REQUIRE(coverageFraction(t) > 0.9); // the band carries the true density
+
+    // control: a genuinely sparse web view keeps full-weight strokes
+    const WorldRect sparse{-1.0, -1.0, 7.0, 7.0};
+    CoverageTile t2 = solveTile(r, sparse, p, s);
+    REQUIRE_FALSE(t2.segs.empty());
+}

@@ -5,22 +5,34 @@ over a 2D viewport. Namespace `gxr`, tree `engine/`. Reuses **none** of the prio
 numerical core. GPU is used only as a thin compositor behind a `Presenter` seam (OpenGL now,
 Vulkan-ready).
 
-## Objectives (verbatim, with how each is met)
+## Objectives (canonical statement in [`CLAUDE.md`](../CLAUDE.md)), with how each is met
 
-1. **Iterate to near-pixel-perfect, graceful AA, stable under oscillation.**
-   Per pixel we compute *coverage* ∈ [0,1] = the area fraction of the pixel where the relation holds,
-   by sound interval/affine subdivision with **analytic leaf models**. Coverage → alpha. For sub-pixel
-   oscillation (`y>sin(2^x)`) coverage converges to the *Lebesgue measure* of the true-set → a stable,
-   deterministic gray, not point-sample noise. Refinement is progressive and monotone.
-2. **Frame-level responsiveness independent of load.**
-   The main thread only *composites cached tiles* for the current viewport and submits a cheap render
-   request. Its per-frame work is O(visible tiles) — provably independent of formula complexity and of
-   how much solver work is outstanding. All math is on worker threads, fully decoupled.
-3. **High throughput.** World-space power-of-two tile pyramid maximizes reuse across pan/zoom;
-   affine arithmetic gives quadratic boundary convergence; tile-granular lock-free parallelism;
-   bounded per-tile work; mip-down reuse; optional SIMD batch evaluation.
-4. **Precision on CPU.** All certified math is double precision with directed rounding on the CPU.
-   GPU only blits coverage textures + UI.
+1. **Sound precision.** Per pixel we compute *coverage* ∈ [0,1] = the area fraction of the pixel
+   where the relation holds, by sound interval subdivision with analytic leaf models and
+   world-jittered measure sampling. Coverage → alpha. For sub-pixel oscillation (`y>sin(2^x)`, with
+   or without detectable structure) coverage converges to the *Lebesgue measure* of the true-set →
+   a stable, deterministic gray, not point-sample noise. Refinement is progressive and monotone
+   (`publishRefine` never downgrades a raster).
+2. **Responsiveness independent of load.** The main thread only *composites cached tiles* for the
+   current viewport — O(visible tiles), provably independent of formula cost and outstanding solver
+   work; all math is on workers. Generation always targets the current viewport: detail tiles
+   refine through a 4-pass ladder (first paint in a few ms even on a pathological tile), the queue
+   orders visible > first-paint > newest > coarse-first and is re-trued on every viewport change,
+   and in-flight solves the new view won't draw abort in under a millisecond via a per-job flag the
+   solver polls inside its loops.
+3. **Immersion.** The compositor always draws the best content already published for every visible
+   region — its own (possibly stale) raster, or the nearest ready ancestor threaded down the
+   descent as a stand-in — and never replaces better with worse: no holes, no flicker, no
+   downgrade. A region with nothing published yet (cold start, formula change, first visit at a
+   scale beyond every cached ancestor) is covered from its first published primitive onward.
+
+### Ground rules (settled constraints, not goals)
+
+- **Precision on CPU.** All certified math is double precision with directed rounding on the CPU.
+  The GPU only blits coverage textures + UI.
+- **Efficiency is the tiebreaker.** World-space power-of-two tile pyramid maximizes reuse across
+  pan/zoom; proven-uniform regions collapse to greedy variable-size tiles; the centered form gives
+  quadratic boundary convergence; per-tile work is bounded; idle is event-driven at ~0% CPU.
 
 ---
 

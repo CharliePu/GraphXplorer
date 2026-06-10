@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(ls /d/GraphXplorer/build/*.sln)",
-      "Bash(ls /d/GraphXplorer/build/*.ninja)"
+      "Bash(ls /d/GraphXplorer/build/*.ninja)",
+      "Bash(cmd /c _build_release.bat GxEngineTests)"
     ]
   }
 }

@@ -12,13 +12,7 @@
     "name" : "catch2",
     "version>=" : "3.6.0"
   }, {
-    "name" : "glm",
-    "version>=" : "1.0.1#2"
-  }, {
     "name" : "freetype",
     "version>=" : "2.13.2#1"
-  }, {
-    "name" : "ms-gsl",
-    "version>=" : "4.0.0"
   } ]
 }

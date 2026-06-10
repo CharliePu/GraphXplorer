@@ -1,8 +1,8 @@
 # GraphXplorer rewrite engine (`gxr`)
 
-A fresh, self-contained CPU renderer for implicit relations (inequalities and equalities), built on
-branch `claude_rewrite`. Reuses none of the prior architecture. Full design in
-[`docs/ARCHITECTURE_REWRITE.md`](../docs/ARCHITECTURE_REWRITE.md).
+A self-contained CPU renderer for implicit relations (inequalities and equalities). Full design in
+[`docs/ARCHITECTURE_REWRITE.md`](../docs/ARCHITECTURE_REWRITE.md); the project contract lives in
+[`CLAUDE.md`](../CLAUDE.md).
 
 ## What it does (the three objectives)
 
@@ -28,7 +28,7 @@ proven-uniform regions collapse to single greedy tiles (a screenful of a normal 
 
 ## Build
 
-Windows + MSVC (via `VsDevCmd.bat`) + CMake/Ninja + vcpkg, same as the parent project.
+Windows + MSVC (via `VsDevCmd.bat`) + CMake/Ninja + vcpkg.
 
 ```
 cmd /c _build_msvc.bat <target>      # Debug   -> build/engine/

@@ -1,7 +1,8 @@
-# GraphXplorer — project guide (branch `claude_rewrite`)
+# GraphXplorer — project guide
 
-A CPU renderer for implicit relations (`y>sin(2^x)`, `x^2+y^2<1`, `tan(x)>y`, …). The rewrite lives
-under `engine/` (namespace `gxr`); it reuses none of the legacy `src/` architecture. Design detail in
+A CPU renderer for implicit relations (`y>sin(2^x)`, `x^2+y^2<1`, `tan(x)>y`, …). The engine lives
+under `engine/` (namespace `gxr`); it is a from-scratch rewrite — the legacy `src/` app it replaced
+was removed 2026-06-10. Design detail in
 [`docs/ARCHITECTURE_REWRITE.md`](docs/ARCHITECTURE_REWRITE.md); module map in [`engine/README.md`](engine/README.md).
 
 ## Objectives (the contract — do not regress these)

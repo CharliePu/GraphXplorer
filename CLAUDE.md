@@ -92,9 +92,12 @@ thread-safe store) → `app` (engine: mailbox, scheduler thread, worker pool) �
   the queue orders visible > first-paint > newest > coarse-first. The pan-ahead ring (cull margin
   0.5) stays resident and first-painted; only the draw set (margin 0.1) is emitted, requested, and
   refined.
-- **Presentation.** `GlPresenter` (OpenGL 3.3): one R32F texture per resident detail tile + flat quads
-  for uniform tiles, world-positioned, coverage→alpha blend, grid/axes, budgeted uploads, LRU texture
-  eviction. `Overlay` (freetype): formula bar (editable), help/status, debug panel.
+- **Presentation.** `GlPresenter` (OpenGL 3.3): one R8 coverage texture per resident detail tile
+  (object-pooled, `glTexSubImage2D` reuse) + flat quads for uniform tiles, world-positioned,
+  coverage→alpha blend, grid/axes. Uploads are budgeted by count AND per-frame time (~3 ms) so a
+  refine storm slows sharpening instead of the frame; a tile whose only alternative is a hole gets a
+  budget-exempt critical upload (capped). LRU texture eviction recycles into the pool. `Overlay`
+  (freetype): formula bar (editable), help/status, debug panel with frame-latency attribution.
 
 ## Invariants (break these and something subtle breaks)
 

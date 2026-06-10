@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <unordered_map>
+#include <vector>
 
 namespace gxr
 {
@@ -39,13 +40,18 @@ private:
     {
         unsigned int id{0};
         uint64_t lastFrame{0};
+        bool pooled{false}; // standard tilePx-sized: recycled through freeTex_
     };
 
     unsigned int compile(const char *vs, const char *fs);
     // Upload/refresh the texture for a coverage tile, keyed by its payload id so a
     // fallback ancestor's texture is shared by every child quad sampling it.
-    // Returns the GL texture id, or 0 if not resident this frame (out of budget).
-    unsigned int ensureTexture(const CoverageTilePtr &cov, int &budget, uint64_t frame);
+    // Returns the GL texture id, or 0 if not resident this frame. An already-
+    // resident payload ALWAYS hits, regardless of budgets. An upload is gated by
+    // the count budget + the per-frame time budget; `critical` uploads (the
+    // alternative is a hole) bypass those but spend the bounded critical budget.
+    unsigned int ensureTexture(const CoverageTilePtr &cov, int &budget, int &criticalLeft,
+                               uint64_t frame, bool critical);
     void evictTextures(uint64_t frame);
 
     int tilePx_;
@@ -66,6 +72,19 @@ private:
     int uLineColor_{-1};
 
     std::unordered_map<uint64_t, TileTex> textures_;
+    std::vector<unsigned int> freeTex_;  // recycled tilePx-sized texture objects
+    std::vector<unsigned char> upload8_; // R8 quantization scratch (reused)
+    // Residency continuity: what each tile key last actually DREW (payload + the
+    // uv it was drawn with -- world-aligned, so verbatim-reusable). While a
+    // republished payload waits for upload budget, the key keeps drawing its
+    // previous texture (same world region, earlier pass) -- never a downgrade
+    // to an ancestor, never a hole, zero extra uploads.
+    struct Shown
+    {
+        uint64_t payload{0};
+        float u0{0}, v0{0}, u1{1}, v1{1};
+    };
+    std::unordered_map<TileKey, Shown> lastShown_;
 };
 }
 

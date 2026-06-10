@@ -42,6 +42,7 @@ struct PresentTile
     // the presenter draws nothing -> background (correct for a false region).
     CoverageTilePtr standinCov;                      // ancestor raster; null if none/flat
     bool standinFlat{false};                         // true => proven-true ancestor: solid fill
+    TileKey standinKey{};                             // the ancestor's key (set with standinCov)
     float su0{0.0f}, sv0{0.0f}, su1{1.0f}, sv1{1.0f}; // stand-in UV sub-rect
 };
 

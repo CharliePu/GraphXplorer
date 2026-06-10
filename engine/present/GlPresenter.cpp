@@ -623,8 +623,15 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                     segSrcConverged = t.cov->converged && t.cov->strokeAlpha >= 1.0f;
                 }
                 else if (!ownTex && haveStandin && drawnPayload == t.standinCov->payloadId &&
-                         !t.standinCov->segs.empty() && segBudget)
+                         !t.standinCov->segs.empty() && segBudget &&
+                         t.standinCov->strokeAlpha >= 1.0f)
                 {
+                    // Ancestor stroke drafts ONLY from a solidly-sparse
+                    // ancestor: near its saturation ramp the coarser grid's
+                    // extraction is partially aliased, and magnifying it
+                    // painted plausible but FALSE curves that morphed at every
+                    // zoom step. For density the ancestor could not resolve,
+                    // its band raster is the honest draft.
                     appendSegsMapped(t);
                     segsDrawn = true;
                     segSrcConverged = false; // a draft: keep the band underneath

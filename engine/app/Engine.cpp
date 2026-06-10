@@ -717,6 +717,31 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
         if (draw && h.state() != TileState::Queued
             && (node.level <= detail || nc == NodeClass::Unknown))
             stuck.push_back(node);
+
+        // Nothing above covers this region and this node is not classified yet
+        // (a zoom-out's freshly-born coarser root, mid classify round-trip).
+        // The only published content, if any, lies BELOW: follow the EXISTING
+        // subtree -- a missing slot has no descendants, so the recursion is
+        // bounded by what was actually built. The previously-painted area keeps
+        // drawing (no black flash on a scale transition); only genuinely-new
+        // territory shows background until its first paint (the carve-out).
+        if (node.level > detail && !sa.flat && !sa.cov && !sa.falseAnc)
+        {
+            TileKey ch[4];
+            childKeys(node, ch);
+            bool anyExisting = false;
+            for (const TileKey &c : ch) anyExisting = anyExisting || bool(ra.find(c));
+            if (anyExisting)
+            {
+                for (const TileKey &c : ch)
+                {
+                    if (ra.find(c)) emit(c, sa);
+                    else if (keepForViewport(tileRect(c, tilePx_), vp, kDrawMargin))
+                        emitFallback(c, sa); // truly-cold sibling: one gap quad
+                }
+                return;
+            }
+        }
         if (draw) emitFallback(node, sa);
     };
 

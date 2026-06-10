@@ -806,9 +806,16 @@ int runReproGl(const std::string &prefix)
 
     // Scrub like a live user: continuous small zoom/pan steps, a few buildPresents
     // per step (no full settle) -- this is what produces the transient single-frame
-    // holes. Counts hole frames across the whole scrub.
-    auto scrub = [&](const std::string &name, int steps, double zoomMul, double panPx, int fps = 4) {
+    // holes. Counts hole frames across the whole scrub. `guard` (optional) is a
+    // world rect that was FULLY PAINTED before the scrub: a bare tile overlapping
+    // it means previously-shown content got replaced by background (the
+    // "black-flash" class of bug) -- that count must stay 0. Bare tiles outside
+    // the guard are newly-revealed territory awaiting first paint (the accepted
+    // immersion carve-out).
+    auto scrub = [&](const std::string &name, int steps, double zoomMul, double panPx, int fps = 4,
+                     const WorldRect *guard = nullptr) {
         int maxHoles = 0, holeFrames = 0, total = 0, maxPend = 0, pendFrames = 0;
+        int guardBareFrames = 0, guardBareMax = 0;
         for (int s = 0; s < steps; ++s)
         {
             vp.worldPerPixel *= zoomMul;
@@ -819,11 +826,19 @@ int runReproGl(const std::string &prefix)
             {
                 const size_t visible = engine.buildPresent(vp, present);
                 (void)visible;
-                int holes = 0;
+                int holes = 0, guardBare = 0;
                 for (const PresentTile &p : present)
-                    if (!p.flat && !p.cov) ++holes;
+                    if (!p.flat && !p.cov)
+                    {
+                        ++holes;
+                        if (guard && !(p.rect.x1 < guard->x0 || p.rect.x0 > guard->x1 ||
+                                       p.rect.y1 < guard->y0 || p.rect.y0 > guard->y1))
+                            ++guardBare;
+                    }
                 maxHoles = std::max(maxHoles, holes);
                 if (holes > 0) ++holeFrames;
+                guardBareMax = std::max(guardBareMax, guardBare);
+                if (guardBare > 0) ++guardBareFrames;
                 // pend = tiles still sharpening in (own texture uploading; a stand-in
                 // is drawn meanwhile -> NOT a hole). trueHoles = regions that drew
                 // NOTHING. The seamless target is trueHoleFrames == 0.
@@ -837,8 +852,13 @@ int runReproGl(const std::string &prefix)
             }
         }
         saveFramebuffer(fbW, fbH, prefix + name + ".png");
-        std::printf("%-14s frames=%-4d covHoleFrames=%-3d TRUEHOLE(max=%d,frames=%d) store=%zu\n",
-                    name.c_str(), total, holeFrames, maxPend, pendFrames, engine.storeSize());
+        std::printf("%-14s frames=%-4d covHoleFrames=%-3d TRUEHOLE(max=%d,frames=%d)%s store=%zu\n",
+                    name.c_str(), total, holeFrames, maxPend, pendFrames,
+                    guard ? (std::string("  GUARDBARE(max=") + std::to_string(guardBareMax) +
+                             ",frames=" + std::to_string(guardBareFrames) + ")")
+                                .c_str()
+                          : "",
+                    engine.storeSize());
     };
 
     auto setWindow = [&](int w, int h) {
@@ -876,6 +896,18 @@ int runReproGl(const std::string &prefix)
     scrub("fastIn", 30, 0.95, 0.0, 1);
     scrub("fastOut", 30, 1.0 / 0.95, 0.0, 1);
 
+    // (A2) FRESH zoom-out: scrub OUT well past every previously-visited level, so
+    // each coarser detail level is born with never-classified ancestors. The
+    // black-flash regression was exactly here: an Unknown root blocked the descent
+    // to the already-painted subtree for 1-2 frames -> background over content the
+    // user was just looking at. Guard = the painted view at scrub start: bare
+    // tiles over it must be 0 (the reveal ring outside it may briefly show
+    // background until first paint -- the carve-out).
+    {
+        const WorldRect painted = vp.worldBounds();
+        scrub("freshOut", 45, 1.0 / 0.95, 0.0, 2, &painted);
+    }
+
     // (B) Cascade continuation: a deep zoom AFTER prior activity must still converge
     // (all tiles Done) instead of dead-ending at an already-classified intermediate.
     vp.centerX = 15.0;
@@ -891,6 +923,7 @@ int runReproGl(const std::string &prefix)
     renderToCompletion("B-deepNew");
     probe("B-deepNew");
 
-    std::printf("(want: no FROZEN, fast* TRUEHOLE frames=0, B-* nonDone=0)\n");
+    std::printf(
+        "(want: no FROZEN, fast* TRUEHOLE frames=0, freshOut GUARDBARE frames=0, B-* nonDone=0)\n");
     return 0;
 }

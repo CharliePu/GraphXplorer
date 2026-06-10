@@ -17,13 +17,11 @@ layout(location=0) in vec2 corner;
 layout(location=1) in vec4 iNdc;    // x0,y0,x1,y1 on screen
 layout(location=2) in vec4 iUv;     // texture sub-rect (u0,v0,u1,v1)
 layout(location=3) in vec4 iUvFrom; // crossfade-source sub-rect
-layout(location=4) in vec4 iMisc;   // x=layer (<0 => flat), y=layerFrom, z=fade,
-                                    // w=flatValue (flat) / band weight (textured)
+layout(location=4) in vec4 iMisc;   // x=layer (<0 => flat), y=layerFrom, z=fade, w=flatValue
 out vec3 vUv;
 out vec3 vUvFrom;
 out float vFade;
 out float vFlat; // >=0: flat coverage value; <0: sample the texture
-out float vDim;  // textured band weight (dimmed under vector strokes)
 void main(){
     vec2 p = mix(iNdc.xy, iNdc.zw, corner);
     gl_Position = vec4(p, 0.0, 1.0);
@@ -31,7 +29,6 @@ void main(){
     vUvFrom = vec3(mix(iUvFrom.xy, iUvFrom.zw, corner), max(iMisc.y, 0.0));
     vFade = iMisc.z;
     vFlat = iMisc.x < 0.0 ? iMisc.w : -1.0;
-    vDim = iMisc.x < 0.0 ? 1.0 : iMisc.w;
 })";
 
 const char *kTileFs = R"(#version 330 core
@@ -39,7 +36,6 @@ in vec3 vUv;
 in vec3 vUvFrom;
 in float vFade;
 in float vFlat;
-in float vDim;
 out vec4 frag;
 uniform sampler2DArray tiles;     // the bucket's own-content array
 uniform sampler2DArray tilesFrom; // the bucket's crossfade-source array
@@ -49,7 +45,6 @@ void main(){
     // Linear COVERAGE interpolation for crossfades: blending two stacked
     // translucent quads would dip mid-fade; mixing coverages is exact.
     if (vFade < 1.0) c = mix(texture(tilesFrom, vUvFrom).r, c, vFade);
-    if (vFlat < 0.0) c *= vDim; // band softened under vector strokes
     if (c <= 0.0015) discard;
     frag = vec4(fill, c);
 })";
@@ -62,42 +57,6 @@ const char *kLineFs = R"(#version 330 core
 out vec4 frag;
 uniform vec4 color;
 void main(){ frag = color; })";
-
-// Equality-curve strokes: each segment instance expands into a screen-space
-// quad of constant pixel width with square feathered caps.
-const char *kSegVs = R"(#version 330 core
-layout(location=0) in vec2 corner;  // (0..1)^2
-layout(location=1) in vec4 iSeg;    // endpoint NDC: x0,y0,x1,y1
-layout(location=2) in float iAlpha; // per-tile stroke weight (saturation ramp)
-uniform vec2 pxOfNdc; // pixels per NDC unit (fbW/2, fbH/2)
-uniform float halfW;  // half stroke width in pixels
-out float vEdge;
-out float vAlpha;
-void main(){
-    vec2 aPx = iSeg.xy * pxOfNdc;
-    vec2 bPx = iSeg.zw * pxOfNdc;
-    vec2 d = bPx - aPx;
-    float len = max(length(d), 1e-6);
-    vec2 t = d / len;
-    vec2 n = vec2(-t.y, t.x);
-    float along = corner.x * (len + 2.0 * halfW) - halfW;
-    float across = (corner.y * 2.0 - 1.0) * halfW;
-    vec2 p = aPx + t * along + n * across;
-    gl_Position = vec4(p / pxOfNdc, 0.0, 1.0);
-    vEdge = corner.y * 2.0 - 1.0;
-    vAlpha = iAlpha;
-})";
-
-const char *kSegFs = R"(#version 330 core
-in float vEdge;
-in float vAlpha;
-out vec4 frag;
-uniform vec4 segColor;
-uniform float halfW;
-void main(){
-    float a = clamp((1.0 - abs(vEdge)) * halfW, 0.0, 1.0); // ~1px rim feather
-    frag = vec4(segColor.rgb, segColor.a * a * vAlpha);
-})";
 
 constexpr int kWantLayers = 8192;     // 8192 x 64x64 R8 = 32 MB, allocated once
 constexpr double kUploadMsBudget = 3.0; // per-frame time budget for normal uploads
@@ -116,14 +75,10 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
 {
     tileProgram_ = compile(kTileVs, kTileFs);
     lineProgram_ = compile(kLineVs, kLineFs);
-    segProgram_ = compile(kSegVs, kSegFs);
     uFill_ = glGetUniformLocation(tileProgram_, "fill");
     uTiles_ = glGetUniformLocation(tileProgram_, "tiles");
     uTilesFrom_ = glGetUniformLocation(tileProgram_, "tilesFrom");
     uLineColor_ = glGetUniformLocation(lineProgram_, "color");
-    uSegPx_ = glGetUniformLocation(segProgram_, "pxOfNdc");
-    uSegHalfW_ = glGetUniformLocation(segProgram_, "halfW");
-    uSegColor_ = glGetUniformLocation(segProgram_, "segColor");
 
     // The tile atlas: enough R8 2D arrays for kWantLayers total slots (drivers
     // commonly clamp layers per array to 2048, below a dense 4K view's working
@@ -178,22 +133,6 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
 
-    // stroke VAO: shared unit-quad corners + per-instance segment endpoints
-    // and stroke weight (5 floats per instance)
-    glGenVertexArrays(1, &segVao_);
-    glGenBuffers(1, &segVbo_);
-    glBindVertexArray(segVao_);
-    glBindBuffer(GL_ARRAY_BUFFER, quadVbo_);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
-    glBindBuffer(GL_ARRAY_BUFFER, segVbo_);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 5 * sizeof(float), nullptr);
-    glVertexAttribDivisor(1, 1);
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
-                          reinterpret_cast<const void *>(4 * sizeof(float)));
-    glVertexAttribDivisor(2, 1);
     glBindVertexArray(0);
 }
 
@@ -202,14 +141,11 @@ GlPresenter::~GlPresenter()
     for (unsigned int tex : tileArrays_) glDeleteTextures(1, &tex);
     glDeleteProgram(tileProgram_);
     glDeleteProgram(lineProgram_);
-    glDeleteProgram(segProgram_);
     glDeleteVertexArrays(1, &quadVao_);
     glDeleteBuffers(1, &quadVbo_);
     glDeleteBuffers(1, &instVbo_);
     glDeleteVertexArrays(1, &lineVao_);
     glDeleteBuffers(1, &lineVbo_);
-    glDeleteVertexArrays(1, &segVao_);
-    glDeleteBuffers(1, &segVbo_);
 }
 
 unsigned int GlPresenter::compile(const char *vs, const char *fs)
@@ -393,73 +329,12 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
     int criticalLeft = 64;
     const int nArr = static_cast<int>(tileArrays_.size());
     for (auto &b : buckets_) b.clear();
-    segScratch_.clear();
-    // Equality-curve strokes for a tile drawing its OWN raster: transform the
-    // tile-local segments to NDC.
-    auto appendSegs = [&](const PresentTile &t) {
-        const std::vector<float> &sg = t.cov->segs;
-        const float sa = t.cov->strokeAlpha;
-        const double w = t.rect.x1 - t.rect.x0, h = t.rect.y1 - t.rect.y0;
-        for (size_t i = 0; i + 3 < sg.size(); i += 4)
-        {
-            float ax, ay, bx, by;
-            worldToNdc(vp, fbW_, fbH_, t.rect.x0 + sg[i] * w, t.rect.y0 + sg[i + 1] * h, ax, ay);
-            worldToNdc(vp, fbW_, fbH_, t.rect.x0 + sg[i + 2] * w, t.rect.y0 + sg[i + 3] * h, bx, by);
-            if (ax == bx && ay == by) continue;
-            segScratch_.insert(segScratch_.end(), {ax, ay, bx, by, sa});
-        }
-    };
-    // A STAND-IN's segments: the ancestor's vector data is resolution-
-    // independent, so a draft can show crisp (coarser-solved) curves instead
-    // of a magnified raster band. Clip each segment to the displayed sub-rect
-    // [su0,su1]x[sv0,sv1] and map it onto the tile's footprint.
-    auto appendSegsMapped = [&](const PresentTile &t) {
-        const std::vector<float> &sg = t.standinCov->segs;
-        const double w = t.rect.x1 - t.rect.x0, h = t.rect.y1 - t.rect.y0;
-        const double iu = 1.0 / (t.su1 - t.su0), iv = 1.0 / (t.sv1 - t.sv0);
-        for (size_t i = 0; i + 3 < sg.size(); i += 4)
-        {
-            double x0 = sg[i], y0 = sg[i + 1], x1 = sg[i + 2], y1 = sg[i + 3];
-            // Liang-Barsky clip to the sub-rect
-            double t0 = 0.0, t1 = 1.0;
-            const double dx = x1 - x0, dy = y1 - y0;
-            const double p[4] = {-dx, dx, -dy, dy};
-            const double q[4] = {x0 - t.su0, t.su1 - x0, y0 - t.sv0, t.sv1 - y0};
-            bool reject = false;
-            for (int e = 0; e < 4 && !reject; ++e)
-            {
-                if (p[e] == 0.0)
-                    reject = q[e] < 0.0;
-                else
-                {
-                    const double r = q[e] / p[e];
-                    if (p[e] < 0.0)
-                        t0 = std::max(t0, r);
-                    else
-                        t1 = std::min(t1, r);
-                    reject = t0 > t1;
-                }
-            }
-            if (reject) continue;
-            const double cx0 = x0 + t0 * dx, cy0 = y0 + t0 * dy;
-            const double cx1 = x0 + t1 * dx, cy1 = y0 + t1 * dy;
-            float ax, ay, bx, by;
-            worldToNdc(vp, fbW_, fbH_, t.rect.x0 + (cx0 - t.su0) * iu * w,
-                       t.rect.y0 + (cy0 - t.sv0) * iv * h, ax, ay);
-            worldToNdc(vp, fbW_, fbH_, t.rect.x0 + (cx1 - t.su0) * iu * w,
-                       t.rect.y0 + (cy1 - t.sv0) * iv * h, bx, by);
-            if (ax == bx && ay == by) continue;
-            segScratch_.insert(segScratch_.end(), {ax, ay, bx, by, t.standinCov->strokeAlpha});
-        }
-    };
-
     for (const PresentTile &t : tiles)
     {
         Inst inst{};
         inst.misc[2] = 1.0f; // fade: steady state
         float u0 = 0, v0 = 0, u1 = 1, v1 = 1;
         int ownArr = 0, fadeArr = -1; // bucket key (flat tiles land in (0,0))
-        bool segsDrawn = false;
 
         if (t.flat)
         {
@@ -585,7 +460,6 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                 if (!ownTex && haveCov) ++pendingUploads; // own texture still owed
                 ownArr = slot / layersPerArray_;
                 inst.misc[0] = static_cast<float>(slot % layersPerArray_);
-                inst.misc[3] = 1.0f; // textured: full band weight by default
 
                 // ---- refinement crossfade: melt, don't pop -------------------
                 if (prior && prior->payload != drawnPayload && !fades_.count(t.key))
@@ -634,37 +508,9 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                 }
 
                 lastShown_[t.key] = Shown{drawnPayload, u0, v0, u1, v1};
-                // Per-frame stroke budget: beyond it a tile keeps its band quad
-                // instead (segsDrawn stays false), so the frame cost is bounded
-                // no matter how dense the curve family gets.
-                constexpr size_t kFrameSegCap = 65536;
-                const bool segBudget = segScratch_.size() / 5 < kFrameSegCap;
-                if (ownTex && !t.cov->segs.empty() && segBudget)
-                {
-                    appendSegs(t);
-                    segsDrawn = true;
-                }
-                else if (!ownTex && haveStandin && drawnPayload == t.standinCov->payloadId &&
-                         !t.standinCov->segs.empty() && segBudget &&
-                         t.standinCov->strokeAlpha >= 1.0f)
-                {
-                    // Ancestor stroke drafts ONLY from a solidly-sparse
-                    // ancestor: near its saturation ramp the coarser grid's
-                    // extraction is partially aliased, and magnifying it
-                    // painted plausible but FALSE curves that morphed at every
-                    // zoom step. For density the ancestor could not resolve,
-                    // its band raster is the honest draft.
-                    appendSegsMapped(t);
-                    segsDrawn = true;
-                }
             }
         }
 
-        // The band raster ALWAYS draws -- it is the primary, zoom-consistent
-        // representation (no representation switches = no seams). Where the
-        // crisp stroke overlay is active, the band softens to a faint glow
-        // underneath instead of vanishing.
-        if (segsDrawn) inst.misc[3] = 0.30f;
         worldToNdc(vp, fbW_, fbH_, t.rect.x0, t.rect.y0, inst.ndc[0], inst.ndc[1]);
         worldToNdc(vp, fbW_, fbH_, t.rect.x1, t.rect.y1, inst.ndc[2], inst.ndc[3]);
         inst.uv[0] = u0;
@@ -713,21 +559,6 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
             offset += n;
         }
         glActiveTexture(GL_TEXTURE0);
-    }
-
-    // ---- equality-curve strokes (constant screen width, on top of the band) --
-    if (!segScratch_.empty())
-    {
-        glUseProgram(segProgram_);
-        glUniform2f(uSegPx_, fbW_ * 0.5f, fbH_ * 0.5f);
-        glUniform1f(uSegHalfW_, 1.4f);
-        glUniform4f(uSegColor_, 0.30f, 0.70f, 1.0f, 1.0f);
-        glBindVertexArray(segVao_);
-        glBindBuffer(GL_ARRAY_BUFFER, segVbo_);
-        const GLsizeiptr sBytes = static_cast<GLsizeiptr>(segScratch_.size() * sizeof(float));
-        glBufferData(GL_ARRAY_BUFFER, sBytes, nullptr, GL_STREAM_DRAW); // orphan
-        glBufferSubData(GL_ARRAY_BUFFER, 0, sBytes, segScratch_.data());
-        glDrawArraysInstanced(GL_TRIANGLES, 0, 6, static_cast<GLsizei>(segScratch_.size() / 5));
     }
 
     evictSlots(frame_);

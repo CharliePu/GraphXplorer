@@ -207,7 +207,7 @@ TEST_CASE("equality renders a thin, non-vanishing curve", "[solver]")
     REQUIRE(t.at(56, 4) == Approx(0.0f).margin(1e-3));
 }
 
-TEST_CASE("equality curves yield marching-squares segments on the curve", "[solver][marching]")
+TEST_CASE("equality band hugs the analytic curve (parabola)", "[solver]")
 {
     Relation r = must("y = x^2");
     EvalScratch s;
@@ -216,34 +216,29 @@ TEST_CASE("equality curves yield marching-squares segments on the curve", "[solv
     const WorldRect rect{-1.0, -0.5, 1.0, 1.5};
     CoverageTile t = solveTile(r, rect, p, s);
 
-    // the curve crosses this tile: segments must exist, in tile-local [0,1]
-    REQUIRE(t.segs.size() >= 8);
-    REQUIRE(t.segs.size() % 4 == 0);
-
-    const double pixel = rect.width() / t.width;
-    double worst = 0.0;
-    for (size_t i = 0; i + 3 < t.segs.size(); i += 4)
-    {
-        for (int e = 0; e < 2; ++e)
+    // every strongly-lit pixel center lies within ~1.5px of the curve, and
+    // pixels ON the curve are lit
+    const double pw = rect.width() / t.width, ph = rect.height() / t.height;
+    for (int py = 0; py < t.height; ++py)
+        for (int px = 0; px < t.width; ++px)
         {
-            const double lx = t.segs[i + 2 * e], ly = t.segs[i + 2 * e + 1];
-            REQUIRE(lx >= 0.0);
-            REQUIRE(lx <= 1.0);
-            REQUIRE(ly >= 0.0);
-            REQUIRE(ly <= 1.0);
-            const double wx = rect.x0 + lx * rect.width();
-            const double wy = rect.y0 + ly * rect.height();
-            worst = std::max(worst, std::abs(wy - wx * wx));
+            const double wx = rect.x0 + (px + 0.5) * pw;
+            const double wy = rect.y0 + (py + 0.5) * ph;
+            const double distY = std::abs(wy - wx * wx);
+            if (t.at(px, py) > 0.6) REQUIRE(distY < 3.0 * ph);
         }
+    int onCurveLit = 0, onCurve = 0;
+    for (int px = 4; px < t.width - 4; ++px)
+    {
+        const double wx = rect.x0 + (px + 0.5) * pw;
+        const int py = static_cast<int>((wx * wx - rect.y0) / ph);
+        if (py < 1 || py >= t.height - 1) continue;
+        ++onCurve;
+        if (t.at(px, py) > 0.25 || t.at(px, py - 1) > 0.25 || t.at(px, py + 1) > 0.25)
+            ++onCurveLit;
     }
-    // endpoints sit on the analytic curve to sub-pixel accuracy (linear
-    // interpolation within a boundary pixel cell)
-    REQUIRE(worst < 2.5 * pixel);
-
-    // inequalities carry no segments
-    Relation ineq = must("y > x^2");
-    CoverageTile t2 = solveTile(ineq, rect, p, s);
-    REQUIRE(t2.segs.empty());
+    REQUIRE(onCurve > 30);
+    REQUIRE(onCurveLit == onCurve); // no gaps along the curve
 }
 
 TEST_CASE("a pole is not a curve: y = 1/x emits no asymptote artifacts", "[solver][marching]")
@@ -255,22 +250,12 @@ TEST_CASE("a pole is not a curve: y = 1/x emits no asymptote artifacts", "[solve
     const WorldRect rect{-1.0, -8.0, 1.0, 8.0}; // pole column x=0 crosses the tile
     CoverageTile t = solveTile(r, rect, p, s);
 
-    // both hyperbola branches are present...
-    REQUIRE(t.segs.size() >= 8);
+    // both hyperbola branches are present
+    double total = 0.0;
+    for (float v : t.alpha) total += v;
+    REQUIRE(total > 20.0);
 
-    // ...and every segment endpoint lies ON the curve (x*y == 1), so no
-    // fabricated vertical segments along the asymptote (where x*y ~ 0).
-    for (size_t i = 0; i + 3 < t.segs.size(); i += 4)
-    {
-        for (int e = 0; e < 2; ++e)
-        {
-            const double wx = rect.x0 + t.segs[i + 2 * e] * rect.width();
-            const double wy = rect.y0 + t.segs[i + 2 * e + 1] * rect.height();
-            REQUIRE(std::abs(wx * wy - 1.0) < 0.2);
-        }
-    }
-
-    // the band raster is dark down the pole column too (away from the curve):
+    // the band raster is dark down the pole column (away from the curve):
     // at x ~ 0 the real curve needs |y| >= 66, far outside this tile
     for (int py = 8; py < 56; py += 4)
     {
@@ -290,38 +275,30 @@ TEST_CASE("a sub-pixel-dense curve family hands off strokes to the band raster",
     p.tilePx = 64;
     const WorldRect rect{100.0, 100.0, 108.0, 108.0};
     CoverageTile t = solveTile(r, rect, p, s);
-    REQUIRE(t.segs.empty()); // saturated: no stroke soup
     // strands here are ~4x denser than pixels: nearly EVERY pixel contains
     // curve, so the band must be a near-solid wash. (The old gradient-midpoint
     // distance estimate collapsed in this regime -- interval gradient mids ~0
     // -- and rendered random darkness instead.)
     REQUIRE(coverageFraction(t) > 0.85);
 
-    // a SPARSE view of the same relation still gets vector strokes
+    // a SPARSE view of the same relation renders THIN curves, not a wash
     const WorldRect sparse{0.5, 0.5, 4.5, 4.5};
     CoverageTile t2 = solveTile(r, sparse, p, s);
-    REQUIRE_FALSE(t2.segs.empty());
+    REQUIRE(coverageFraction(t2) < 0.30);
 }
 
-TEST_CASE("grid-resonant density (~1 strand/pixel) emits no aliased strokes",
-          "[solver][marching]")
+TEST_CASE("grid-resonant density (~1 strand/pixel) renders the honest wash",
+          "[solver]")
 {
-    // At |x| or |y| ~ 2pi/wpp the family oscillates ~once per pixel: the
-    // marching corner grid strobes (a smooth FALSE family) and a naive
-    // density count stays low. These tiles must hand off to the band like
-    // their denser neighbors -- they rendered as "light patches" otherwise.
+    // At |x| or |y| ~ 2pi/wpp the family oscillates ~once per pixel -- the
+    // strobe blind spot that once produced aliased "light patch" strokes.
+    // Band-primary rendering must show the near-solid truth here (the numpy
+    // audit measured 99.8%% true curve pixels in this region).
     Relation r = must("sin(x)*sin(y) = sin(x*y)");
     EvalScratch s;
     SolveParams p;
     p.tilePx = 64;
     const WorldRect rect{48.0, 48.0, 56.0, 56.0}; // wpp 0.125: 2pi/wpp ~ 50.3
     CoverageTile t = solveTile(r, rect, p, s);
-    REQUIRE(t.segs.empty());
-    REQUIRE(t.strokeAlpha == 0.0f);
-    REQUIRE(coverageFraction(t) > 0.9); // the band carries the true density
-
-    // control: a genuinely sparse web view keeps full-weight strokes
-    const WorldRect sparse{-1.0, -1.0, 7.0, 7.0};
-    CoverageTile t2 = solveTile(r, sparse, p, s);
-    REQUIRE_FALSE(t2.segs.empty());
+    REQUIRE(coverageFraction(t) > 0.9);
 }

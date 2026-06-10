@@ -1,7 +1,9 @@
 #include "Solver.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 namespace gxr
@@ -16,6 +18,30 @@ struct Box
 // half line-width of the rendered equality curve, in pixels
 constexpr double kCurveHalfWidthPx = 0.6;
 
+// Deterministic, world-aligned sample jitter. Stratified samples at fixed
+// in-cell offsets phase-lock against a regular oscillation and render as
+// streak artifacts; hashing the stratum's WORLD origin into the offset turns
+// that aliasing into unbiased MC noise while keeping the tile a pure function
+// of world position (same region -> identical tile -> no temporal flicker).
+inline uint64_t mix64(uint64_t x)
+{
+    x ^= x >> 30;
+    x *= 0xbf58476d1ce4e5b9ULL;
+    x ^= x >> 27;
+    x *= 0x94d049bb133111ebULL;
+    x ^= x >> 31;
+    return x;
+}
+
+// two offsets in [0,1) for the stratum whose world origin is (wx, wy)
+inline void jitter2(double wx, double wy, double &jx, double &jy)
+{
+    uint64_t h = mix64(std::bit_cast<uint64_t>(wx) ^ 0x9e3779b97f4a7c15ULL);
+    h = mix64(h ^ std::bit_cast<uint64_t>(wy));
+    jx = static_cast<double>(h >> 11) * 0x1.0p-53;
+    jy = static_cast<double>(mix64(h) >> 11) * 0x1.0p-53;
+}
+
 class TileSolver
 {
 public:
@@ -25,6 +51,7 @@ public:
           budget_(p.boxBudget)
     {
         floorN_ = std::max(1, p.floorSamples);
+        bailM_ = std::max(1, p.bailSamples);
         pixelSub_ = 1 << K_;
         N_ = T_ * pixelSub_;
         stepX_ = rect_.width() / N_;
@@ -54,7 +81,7 @@ public:
                 bailed = true;
                 break;
             }
-            if ((processed_ & 2047) == 0 && cancel_.cancelled())
+            if ((processed_ & 511) == 0 && cancel_.cancelled())
             {
                 bailed = true;
                 break;
@@ -66,7 +93,11 @@ public:
 
         if (bailed)
         {
-            for (const Box &b : stack) addHalf(b); // estimate the unprocessed frontier
+            for (const Box &b : stack)
+            {
+                if (cancel_.cancelled()) break; // abandoned: result is never published
+                addHalf(b);                     // estimate the unprocessed frontier
+            }
         }
         return finalize(!bailed);
     }
@@ -78,6 +109,7 @@ private:
     CancelToken cancel_;
     int T_, K_, pixelSub_, N_;
     int floorN_{1}; // per-axis sub-samples for an uncertain floor/bailout cell
+    int bailM_{16}; // per-axis samples for a budget-bailed pixel
     long long budget_;
     long long processed_{0};
     double stepX_, stepY_, wpp_;
@@ -147,7 +179,10 @@ private:
     }
 
     // Distribute a uniform coverage fraction over the pixels a box overlaps.
-    void addUniform(const Box &b, double covFrac, double uncFrac)
+    // `varFrac` is the VARIANCE of covFrac as an estimate (0 for proven boxes);
+    // it accumulates with the square of the area weight, so finalize() can read
+    // a pixel's true RMS coverage error as sqrt(unc)/pixelArea.
+    void addUniform(const Box &b, double covFrac, double varFrac)
     {
         const int sz = b.x1 - b.x0;
         if (sz >= pixelSub_)
@@ -160,7 +195,7 @@ private:
                 {
                     const size_t idx = static_cast<size_t>(py) * T_ + px;
                     acc_[idx] += covFrac * full;
-                    unc_[idx] += uncFrac * full;
+                    unc_[idx] += varFrac * full * full;
                 }
         }
         else
@@ -169,12 +204,12 @@ private:
             const size_t idx = static_cast<size_t>(py) * T_ + px;
             const double area = static_cast<double>(sz) * sz;
             acc_[idx] += covFrac * area;
-            unc_[idx] += uncFrac * area;
+            unc_[idx] += varFrac * area * area;
         }
     }
 
-    // Sample one box (M x M stratified, world-aligned) -> its coverage measure, and
-    // distribute via addUniform (correct pixel overlap + area units, no double-count).
+    // Sample one box (M x M stratified, world-aligned jittered) -> its coverage
+    // measure, distributed via addUniform (correct pixel overlap, no double-count).
     void sampleBoxInto(const Box &b, int M)
     {
         const double x0w = rect_.x0 + b.x0 * stepX_;
@@ -186,13 +221,17 @@ private:
         for (int sy = 0; sy < M; ++sy)
             for (int sx = 0; sx < M; ++sx)
             {
-                const double px = x0w + (sx + 0.5) * inv * bw;
-                const double py = y0w + (sy + 0.5) * inv * bh;
+                const double ox = x0w + sx * inv * bw; // stratum world origin
+                const double oy = y0w + sy * inv * bh;
+                double jx, jy;
+                jitter2(ox, oy, jx, jy);
+                const double px = ox + jx * inv * bw;
+                const double py = oy + jy * inv * bh;
                 if (rel_.pointInside(px, py, s_)) ++hits;
             }
         const int total = M * M;
         const double frac = static_cast<double>(hits) / total;
-        addUniform(b, frac, std::sqrt(frac * (1.0 - frac) / total)); // estimate + stderr
+        addUniform(b, frac, frac * (1.0 - frac) / total); // estimate + variance
     }
 
     // Budget-bailout estimate for an unprocessed box. With sampling on (inequalities),
@@ -200,24 +239,27 @@ private:
     // value -> the oscillation-dominated frontier renders smooth, like the explicit-1D
     // path, instead of blocky chunks. Equalities keep the flat estimate (their
     // measure-zero curve can't be point-sampled -> the band model handles them).
-    static constexpr int kBailSamplesPerAxis = 16; // ~256 samples/pixel for bailed cells
     void addHalf(const Box &b)
     {
         if (floorN_ <= 1 || equalityCurve_)
         {
-            addUniform(b, 0.5, 1.0); // legacy flat estimate
+            addUniform(b, 0.5, 0.25); // legacy flat estimate (worst-case variance)
             return;
         }
         const int sz = b.x1 - b.x0;
         if (sz <= pixelSub_)
         {
-            sampleBoxInto(b, kBailSamplesPerAxis); // sub-pixel or single-pixel box
+            sampleBoxInto(b, bailM_); // sub-pixel or single-pixel box
             return;
         }
         // Multi-pixel box: split to pixel-sized boxes so it is not a flat blocky chunk.
+        // Polled for cancel: a large bailed box is tens of ms of sampling otherwise.
         for (int py = b.y0; py < b.y1; py += pixelSub_)
             for (int px = b.x0; px < b.x1; px += pixelSub_)
-                sampleBoxInto(Box{px, py, px + pixelSub_, py + pixelSub_}, kBailSamplesPerAxis);
+            {
+                if (cancel_.cancelled()) return; // abandoned: never published
+                sampleBoxInto(Box{px, py, px + pixelSub_, py + pixelSub_}, bailM_);
+            }
     }
 
     // Floor leaf. For inequalities this is a single sub-pixel cell, resolved by
@@ -239,9 +281,10 @@ private:
                 unc_[idx] += 1.0;
                 return;
             }
-            // N x N stratified samples over the one uncertain sub-cell -> its coverage
-            // MEASURE (true-fraction), so sub-pixel oscillation averages to the analytic
-            // measure instead of binary 0/1 grain. Sub-cell area is 1.0 (sub-cell^2).
+            // N x N stratified (world-jittered) samples over the one uncertain
+            // sub-cell -> its coverage MEASURE (true-fraction), so sub-pixel
+            // oscillation averages to the analytic measure instead of binary 0/1
+            // grain. Sub-cell area is 1.0 (sub-cell^2).
             const double x0w = rect_.x0 + b.x0 * stepX_;
             const double y0w = rect_.y0 + b.y0 * stepY_;
             const double inv = 1.0 / floorN_;
@@ -249,30 +292,34 @@ private:
             for (int sy = 0; sy < floorN_; ++sy)
                 for (int sx = 0; sx < floorN_; ++sx)
                 {
-                    const double px = x0w + (sx + 0.5) * inv * stepX_;
-                    const double py = y0w + (sy + 0.5) * inv * stepY_;
+                    const double ox = x0w + sx * inv * stepX_;
+                    const double oy = y0w + sy * inv * stepY_;
+                    double jx, jy;
+                    jitter2(ox, oy, jx, jy);
+                    const double px = ox + jx * inv * stepX_;
+                    const double py = oy + jy * inv * stepY_;
                     if (rel_.pointInside(px, py, s_)) ++hits;
                 }
             const int total = floorN_ * floorN_;
             const double frac = static_cast<double>(hits) / total;
             acc_[idx] += frac;
-            // Uncertainty = the sampling standard error (small), NOT a full unknown
-            // cell: a floor cell is as resolved as it gets (further subdivision can't
+            // Uncertainty = the sampling VARIANCE (small), NOT a full unknown cell:
+            // a floor cell is as resolved as it gets (further subdivision can't
             // help), so it must read as a low-uncertainty ESTIMATE -- otherwise the
-            // tile reports maximal uncertainty forever and the event-driven loop never
-            // settles past the phase-loss wall. Still nonzero -> flagged as estimate.
-            unc_[idx] += std::sqrt(frac * (1.0 - frac) / total);
+            // tile reports maximal uncertainty forever and the event-driven loop
+            // never settles past the phase-loss wall. Still nonzero -> an estimate.
+            unc_[idx] += frac * (1.0 - frac) / total;
             return;
         }
 
-        // equality: one pixel-sized box
+        // equality: one pixel-sized box (band model; variance is a modeling bound)
         const double cx = rect_.x0 + (b.x0 + b.x1) * 0.5 * stepX_;
         const double cy = rect_.y0 + (b.y0 + b.y1) * 0.5 * stepY_;
         double cov = bandCoverage(ix, iy, cx, cy);
         if (notEqual_) cov = 1.0 - cov;
         const double area = static_cast<double>(b.x1 - b.x0) * (b.y1 - b.y0);
         acc_[idx] += cov * area;
-        unc_[idx] += area;
+        unc_[idx] += area * area;
     }
 
     // Coverage of a sub-cell by the ~1px-wide curve band of f=0.
@@ -303,7 +350,8 @@ private:
         for (size_t i = 0; i < tile.alpha.size(); ++i)
         {
             tile.alpha[i] = static_cast<float>(std::clamp(acc_[i] / perPixel, 0.0, 1.0));
-            worst = std::max(worst, static_cast<float>(unc_[i] / perPixel));
+            // unc_ holds summed VARIANCE (area^2-weighted): RMS error = sqrt/area.
+            worst = std::max(worst, static_cast<float>(std::sqrt(unc_[i]) / perPixel));
         }
         tile.worstUncertainty = worst;
         return tile;
@@ -385,7 +433,7 @@ bool solveExplicit1D(const Relation &rel, const WorldRect &rect, const SolvePara
 
     for (int o = 0; o < T; ++o)
     {
-        if ((o & 31) == 0 && cancel.cancelled())
+        if (cancel.cancelled()) // per column: a column is up to ~8k evals (~0.2ms)
         {
             tile.converged = false;
             return true; // cancelled (not unreliable): caller handles the cancel token

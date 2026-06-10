@@ -43,7 +43,8 @@ struct Viewport
 };
 
 // worldPerPixel at a pyramid level (global power-of-two scale convention).
-[[nodiscard]] inline double worldPerPixelAtLevel(int level) { return std::exp2(static_cast<double>(level)); }
+// ldexp is exact and far cheaper than exp2 on the per-node compositor path.
+[[nodiscard]] inline double worldPerPixelAtLevel(int level) { return std::ldexp(1.0, level); }
 }
 
 #endif // GXR_TILE_GEOMETRY_H

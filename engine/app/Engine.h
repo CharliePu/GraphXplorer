@@ -84,6 +84,9 @@ public:
     [[nodiscard]] size_t storeSize() const { return store_.size(); }
     [[nodiscard]] uint64_t jobsCompleted() const { return jobsCompleted_.load(); }
     [[nodiscard]] uint64_t currentEpoch() const { return epoch_.load(); }
+    [[nodiscard]] int jobsInFlight() const { return jobsInFlight_.load(); }
+    [[nodiscard]] uint64_t abortsArmed() const { return abortsArmed_.load(); }
+    [[nodiscard]] const TileStore &storeView() const { return store_; } // read-only probes
     void waitUntilQuiescent(); // test helper: block until the job queue drains
 
     int tilePx() const { return tilePx_; }
@@ -100,23 +103,61 @@ private:
         bool baseRaster{false}; // start-level Mixed node: render a coarse placeholder raster
         uint64_t viewportGen{0}; // viewport generation this job was scheduled for (priority)
         uint64_t seq{0};         // FIFO tie-break within a priority tier
+        int refinePass{0};       // progressive ladder pass (0 = classify + first paint)
+        bool onScreen{true};     // strictly inside the viewport at enqueue time
     };
 
-    // Priority: newest viewport first, then coarsest level (coarse-first paint),
-    // then oldest seq (FIFO). The main thread never touches this queue, so its
-    // O(log N) cost stays off the responsiveness path.
+    // Priority tiers (MAX-heap):
+    //   1. strictly-VISIBLE before the speculative pan-ahead ring (obj 2)
+    //   2. FIRST PAINT (pass 0) before any refinement -> the screen fills at
+    //      coarse quality before anything sharpens ("appear all first")
+    //   3. newest viewport generation (recency among equals)
+    //   4. coarsest level (the no-holes base/fallback layer fills first)
+    //   5. earlier refine pass (the field sharpens one step together)
+    //   6. oldest seq (FIFO)
+    // Generation is deliberately NOT the top tier: whether a job should run at
+    // all is decided by the wantsTile draw-model cull at dequeue, and a zoom
+    // storm leaves the still-wanted discovery cascade of the FINAL viewport
+    // carrying mid-storm generations -- gen-first would bury it under the
+    // current generation's self-enqueued refines (first-paint starvation).
+    // The main thread never touches this queue, so its O(log N) cost stays off
+    // the responsiveness path.
     struct JobCmp
     {
         bool operator()(const Job &a, const Job &b) const
         {
+            if (a.onScreen != b.onScreen) return a.onScreen < b.onScreen;
+            const bool afp = a.refinePass == 0, bfp = b.refinePass == 0;
+            if (afp != bfp) return afp < bfp;
             if (a.viewportGen != b.viewportGen) return a.viewportGen < b.viewportGen;
             if (a.key.level != b.key.level) return a.key.level < b.key.level;
+            if (a.refinePass != b.refinePass) return a.refinePass > b.refinePass;
             return a.seq > b.seq;
         }
     };
 
+    // A worker's currently-executing job + its abort flag, so setViewport can
+    // cancel in-flight work whose output the latest viewport will not draw.
+    struct Inflight
+    {
+        TileKey key;
+        WorldRect rect;
+        int refinePass{0};
+        std::shared_ptr<std::atomic<bool>> abort;
+    };
+
     void schedulerLoop();
     void workerLoop(int workerIndex);
+    void selfEnqueueRefine(const Job &done);
+    void registerInflight(const Job &job, const std::shared_ptr<std::atomic<bool>> &abort);
+    void unregisterInflight(const TileKey &key);
+    // Arm the abort flag of in-flight jobs the latest viewport will not draw
+    // (scheduler thread; see the wantsTile draw-model predicate in Engine.cpp).
+    void abandonStaleInflight();
+    // Rebuild the queue against the latest viewport: drop never-drawn jobs
+    // (abandoning their slots) and refresh survivors' priority flags, which go
+    // stale the moment the user moves (scheduler thread).
+    void requeueForViewport(const Viewport &vp);
     void enqueueVisible(const Viewport &vp, std::shared_ptr<const Relation> rel, uint64_t epoch,
                         const std::shared_ptr<std::atomic<bool>> &cancel);
     void serviceResolve(const std::vector<TileKey> &keys, const Viewport &vp,
@@ -165,6 +206,11 @@ private:
     std::atomic<uint64_t> jobSeq_{0};
     std::atomic<uint64_t> jobsCompleted_{0};
     std::atomic<int> jobsInFlight_{0};
+
+    // in-flight registry (<= one entry per worker), for viewport-change aborts
+    std::mutex inflightMutex_;
+    std::vector<Inflight> inflight_;
+    std::atomic<uint64_t> abortsArmed_{0}; // diagnostic: aborts requested so far
 
     std::atomic<bool> stop_{false};
     std::atomic<uint64_t> frameCounter_{0};

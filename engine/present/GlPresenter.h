@@ -12,10 +12,12 @@
 
 namespace gxr
 {
-// OpenGL 3.3 compositor. One R32F texture per resident coverage tile, drawn as a
-// world-positioned textured quad with coverage->alpha blending, plus axes/grid.
-// All GL calls happen on the thread that constructs and drives it (the main
-// thread). Requires a current GL context and a loaded glad before construction.
+// OpenGL 3.3 compositor. All resident tile rasters live as R8 layers of ONE
+// texture array (allocated once -- uploads are glTexSubImage3D into existing
+// storage, so there is no per-tile allocation churn), and every tile quad of a
+// frame is drawn by a single instanced draw call with per-instance attributes
+// (rect, uv+layer, crossfade source, flat fill). All GL calls happen on the
+// thread that constructs and drives it. Requires a current GL context.
 class GlPresenter : public Presenter
 {
 public:
@@ -31,7 +33,7 @@ public:
     // True holes drawn last frame (region with no own tile AND no resident stand-in).
     // The seamless-swap target is 0; an in-flight upload draws a stand-in, not a hole.
     [[nodiscard]] int lastHoleTiles() const { return holeTiles_; }
-    // Per-frame latency attribution: time spent inside glTexImage2D uploads, how
+    // Per-frame latency attribution: time spent inside texture uploads, how
     // many tiles were uploaded, and how many quads were drawn last frame.
     [[nodiscard]] double lastUploadMs() const { return uploadMs_; }
     [[nodiscard]] int lastUploads() const { return uploads_; }
@@ -43,57 +45,60 @@ public:
 private:
     struct TileTex
     {
-        unsigned int id{0};
+        int layer{-1};
         uint64_t lastFrame{0};
-        bool pooled{false}; // standard tilePx-sized: recycled through freeTex_
     };
 
     unsigned int compile(const char *vs, const char *fs);
-    // Grow the recycled-texture pool toward `target` total tile textures, so
-    // steady-state uploads recycle instead of allocating: a LIVE glTexImage2D
-    // under driver backpressure was observed stalling 20-50ms; pre-allocating
-    // while the GPU is quiet (startup / right after a resize) avoids that.
-    void prewarmPool(size_t target);
-    // Upload/refresh the texture for a coverage tile, keyed by its payload id so a
-    // fallback ancestor's texture is shared by every child quad sampling it.
-    // Returns the GL texture id, or 0 if not resident this frame. An already-
-    // resident payload ALWAYS hits, regardless of budgets. An upload is gated by
-    // the count budget + the per-frame time budget; `critical` uploads (the
-    // alternative is a hole) bypass those but spend the bounded critical budget.
-    unsigned int ensureTexture(const CoverageTilePtr &cov, int &budget, int &criticalLeft,
-                               uint64_t frame, bool critical);
-    void evictTextures(uint64_t frame);
+    // Upload/refresh the array layer for a coverage tile, keyed by its payload
+    // id so a fallback ancestor's layer is shared by every quad sampling it.
+    // Returns the layer, or -1 if not resident this frame. A resident payload
+    // ALWAYS hits regardless of budgets; an upload is rationed by the count
+    // budget + the per-frame time budget, except `critical` uploads (the
+    // alternative is a hole), which spend their own bounded budget.
+    int ensureLayer(const CoverageTilePtr &cov, int &budget, int &criticalLeft, uint64_t frame,
+                    bool critical);
+    void evictLayers(uint64_t frame);
 
     int tilePx_;
     int fbW_{1}, fbH_{1};
     uint64_t frame_{0};
-    int holeTiles_{0}; // true holes drawn last frame (no own tile, no resident stand-in)
-    double uploadMs_{0.0}; // time inside texture uploads last frame
-    int uploads_{0};       // textures uploaded last frame
-    int drawnTiles_{0};    // quads drawn last frame
+    int holeTiles_{0};
+    double uploadMs_{0.0};
+    int uploads_{0};
+    int drawnTiles_{0};
 
     unsigned int tileProgram_{0};
     unsigned int lineProgram_{0};
-    unsigned int quadVao_{0}, quadVbo_{0};
+    unsigned int quadVao_{0}, quadVbo_{0}, instVbo_{0};
     unsigned int lineVao_{0}, lineVbo_{0};
-    unsigned int dummyTex_{0}; // 1x1, bound for flat (textureless) draws
+    unsigned int tileArray_{0}; // GL_TEXTURE_2D_ARRAY, R8, tilePx^2 x layers
+    int layerCount_{0};
 
-    int uNdcRect_{-1}, uUvRect_{-1}, uTex_{-1}, uFill_{-1}, uFlatMode_{-1}, uFlatValue_{-1};
+    int uFill_{-1}, uTiles_{-1};
     int uLineColor_{-1};
-    int uTexFrom_{-1}, uUvRectFrom_{-1}, uFade_{-1};
 
-    std::unordered_map<uint64_t, TileTex> textures_;
-    // Recycled tilePx-sized texture objects, stamped with their eviction frame.
-    // A texture is only reused a few frames after eviction: glTexSubImage2D into
-    // an object the GPU may still be reading forces an implicit driver sync
-    // (observed as one-off 20-30ms uploads).
-    std::deque<std::pair<unsigned int, uint64_t>> freeTex_;
-    std::vector<unsigned char> upload8_; // R8 quantization scratch (reused)
-    // Residency continuity: what each tile key last actually DREW (payload + the
-    // uv it was drawn with -- world-aligned, so verbatim-reusable). While a
-    // republished payload waits for upload budget, the key keeps drawing its
-    // previous texture (same world region, earlier pass) -- never a downgrade
-    // to an ancestor, never a hole, zero extra uploads.
+    // Per-instance record for the single instanced tile draw.
+    struct Inst
+    {
+        float ndc[4];    // x0,y0,x1,y1
+        float uv[4];     // u0,v0,u1,v1
+        float uvFrom[4]; // crossfade source sub-rect
+        float misc[4];   // x=layer (<0 => flat), y=layerFrom, z=fade, w=flatValue
+    };
+    std::vector<Inst> insts_;
+
+    std::unordered_map<uint64_t, TileTex> layers_; // payloadId -> resident layer
+    // Free layers, stamped with their release frame: a layer is only reused a
+    // few frames later so glTexSubImage3D never hits a still-in-flight read
+    // (implicit driver sync, observed as one-off 20-30ms uploads).
+    std::deque<std::pair<int, uint64_t>> freeLayers_;
+    std::vector<unsigned char> upload8_; // R8 quantization scratch
+
+    // Residency continuity: what each tile key last actually DREW (payload +
+    // the uv it was drawn with). While a republished payload waits for budget,
+    // the key keeps drawing its previous layer -- never a downgrade to an
+    // ancestor, never a hole, zero extra uploads.
     struct Shown
     {
         uint64_t payload{0};
@@ -103,13 +108,12 @@ private:
 
     // Active crossfades: when a key's shown payload changes (a finer ladder
     // pass, or stand-in -> own raster), the previous content fades out over
-    // kFadeMs. Mid-fade retargets keep the original source and start time, so
-    // a fade always completes on schedule even under publish churn.
+    // kFadeMs. Mid-fade retargets keep the original source and start time.
     struct Fade
     {
-        uint64_t payload{0}; // fade FROM this payload
+        uint64_t payload{0};
         float u0{0}, v0{0}, u1{1}, v1{1};
-        double t0{0}; // ms timestamp of the fade start
+        double t0{0};
     };
     std::unordered_map<TileKey, Fade> fades_;
     int fadesActive_{0};

@@ -92,12 +92,15 @@ thread-safe store) → `app` (engine: mailbox, scheduler thread, worker pool) �
   the queue orders visible > first-paint > newest > coarse-first. The pan-ahead ring (cull margin
   0.5) stays resident and first-painted; only the draw set (margin 0.1) is emitted, requested, and
   refined.
-- **Presentation.** `GlPresenter` (OpenGL 3.3): one R8 coverage texture per resident detail tile
-  (object-pooled, `glTexSubImage2D` reuse) + flat quads for uniform tiles, world-positioned,
-  coverage→alpha blend, grid/axes. Uploads are budgeted by count AND per-frame time (~3 ms) so a
-  refine storm slows sharpening instead of the frame; a tile whose only alternative is a hole gets a
-  budget-exempt critical upload (capped). LRU texture eviction recycles into the pool. `Overlay`
-  (freetype): formula bar (editable), help/status, debug panel with frame-latency attribution.
+- **Presentation.** `GlPresenter` (OpenGL 3.3): all resident tile rasters are R8 layers of ONE
+  texture array (allocated once -- uploads are `glTexSubImage3D` into existing storage, aged-pool
+  layer recycling, no allocation churn), and every tile quad of a frame is ONE instanced draw with
+  per-instance rect/uv/layer/fade attributes. Uploads are budgeted by count AND per-frame time
+  (~3 ms) so a refine storm slows sharpening instead of the frame; a tile whose only alternative is
+  a hole gets a budget-exempt critical upload (capped); a residency-continuity map keeps each tile
+  key drawing what it last showed (no downgrade, no pop), and payload changes crossfade over
+  ~120 ms. `Overlay` (freetype): formula bar (editable), help/status, debug panel with
+  frame-latency attribution (per-frame CSV in `out/gx_frames.csv`).
 
 ## Invariants (break these and something subtle breaks)
 

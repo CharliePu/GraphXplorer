@@ -464,8 +464,12 @@ void Engine::workerLoop(int)
                             // Equality curves render via the band model, which is
                             // subBits-independent -- every ladder pass would emit the
                             // same bytes. Solve them ONCE at final quality instead.
+                            // Their coarse BASE rasters get a mid-ladder budget: the
+                            // pass-0 budget bails on curve-dense tiles, leaving draft
+                            // stand-ins with missing curve sections.
                             const bool equality = job.rel->isEquality();
-                            const int pass = (atDetail && equality) ? kMaxRefinePass : 0;
+                            const int pass =
+                                equality ? (atDetail ? kMaxRefinePass : 2) : 0;
                             // Pass-0 otherwise: a detail tile's FIRST paint and a
                             // covering node's stand-in raster both need to land in
                             // a few ms, not after a full fine solve. Detail tiles

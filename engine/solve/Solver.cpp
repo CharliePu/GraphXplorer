@@ -151,6 +151,7 @@ private:
     std::vector<double> unc_; // boundary/estimated sub-cell count per pixel
     std::vector<float> segs_; // equality: marching-squares segments (tile-local)
     int marchedCells_{0};     // equality: pixel cells that produced segments
+    int oscCells_{0};         // equality: oscillation-dense cells (band-only)
     float strokeAlpha_{1.0f}; // equality: stroke weight (fades near saturation)
 
     // Naive interval first; escalate to the centered (mean-value) form only while
@@ -371,11 +372,57 @@ private:
         // sound, so suppressing band + segments here can never erase a
         // genuinely continuous crossing.
         const bool pole = val.disc;
-        double cov = pole ? 0.0 : bandCoverage(val, gvx, gvy, cx, cy);
+        double cov;
+        bool dense = false;
+        if (!pole && gvx.straddlesZero() && gvy.straddlesZero())
+        {
+            // OSCILLATORY REGIME: when both gradient components straddle zero
+            // over the pixel, the band's |f(center)|/|grad mid| distance is
+            // meaningless (the interval midpoints collapse to ~0 and the
+            // estimate explodes -- zoomed-out dense families rendered as
+            // random darkness). Measure instead: count sign flips of f along
+            // the pixel's two mid-lines. >=3 crossings on a line = strands
+            // closer than a third of a pixel: the ~1px band saturates the
+            // cell, and a marching segment would be parity noise. 1-2 flips
+            // (a junction or tangency) keeps the normal path, with a
+            // gradient-free straddle fallback for the coverage.
+            int flipsH = 0, flipsV = 0;
+            const double x0w = rect_.x0 + b.x0 * stepX_;
+            const double y0w = rect_.y0 + b.y0 * stepY_;
+            const double w = (b.x1 - b.x0) * stepX_, h = (b.y1 - b.y0) * stepY_;
+            double prev = std::numeric_limits<double>::quiet_NaN();
+            for (int k = 0; k < 8; ++k)
+            {
+                const double f = rel_.fValue(x0w + (k + 0.5) * 0.125 * w, cy, s_);
+                if (std::isfinite(f) && std::isfinite(prev) && (f < 0.0) != (prev < 0.0))
+                    ++flipsH;
+                prev = f;
+            }
+            if (flipsH < 3) // the H line alone usually decides in dense fields
+            {
+                prev = std::numeric_limits<double>::quiet_NaN();
+                for (int k = 0; k < 8; ++k)
+                {
+                    const double f = rel_.fValue(cx, y0w + (k + 0.5) * 0.125 * h, s_);
+                    if (std::isfinite(f) && std::isfinite(prev) && (f < 0.0) != (prev < 0.0))
+                        ++flipsV;
+                    prev = f;
+                }
+            }
+            dense = std::max(flipsH, flipsV) >= 3;
+            cov = dense ? 1.0 : (val.straddlesZero() ? 1.0 : 0.0);
+        }
+        else
+        {
+            cov = pole ? 0.0 : bandCoverage(val, gvx, gvy, cx, cy);
+        }
         if (notEqual_) cov = 1.0 - cov;
         acc_[idx] += cov * area;
         unc_[idx] += area * area;
-        if (!notEqual_ && !pole) marchCell(b, cx, cy); // extract the curve's segments
+        if (dense)
+            ++oscCells_; // counts toward saturation; no segments from parity noise
+        else if (!notEqual_ && !pole)
+            marchCell(b, cx, cy); // extract the curve's segments
     }
 
     // Marching squares over one boundary pixel cell of an EQUALITY curve. The
@@ -628,7 +675,8 @@ private:
             // weight RAMPS down across the upper part of the range so the
             // regime switch blends instead of snapping at tile edges.
             constexpr size_t kTileSegCap = 1024;
-            const double sat = static_cast<double>(marchedCells_) / (T_ * T_ / 4.0);
+            const double sat =
+                static_cast<double>(marchedCells_ + oscCells_) / (T_ * T_ / 4.0);
             if (sat >= 1.0)
             {
                 segs_.clear();
@@ -646,6 +694,10 @@ private:
                 {
                     strokeAlpha_ = sat <= 0.6 ? 1.0f
                                               : static_cast<float>((1.0 - sat) / 0.4);
+                    // any dense pocket must keep the band quad underneath
+                    // (a full-weight tile would otherwise skip it and the
+                    // pocket's coverage would vanish)
+                    if (oscCells_ > 0) strokeAlpha_ = std::min(strokeAlpha_, 0.999f);
                 }
             }
         }

@@ -199,7 +199,11 @@ private:
         // Equalities stop at pixel level, where the gradient band IS the AA line
         // (descending further would only thin the measure-zero curve to nothing).
         const int sz = b.x1 - b.x0;
-        const int floorSize = equalityCurve_ ? pixelSub_ : 1;
+        // Equalities march on HALF-pixel cells (2x supersampled extraction):
+        // placement error halves, and adjacent detail levels' stroke quality
+        // overlaps, so a zoom across a level boundary no longer snaps between
+        // a thin and a chunky rendering of the same strands.
+        const int floorSize = equalityCurve_ ? std::max(1, pixelSub_ / 2) : 1;
         if (sz <= floorSize)
         {
             addFloor(b, ix, iy);
@@ -475,13 +479,15 @@ private:
         const double ey[4] = {0.0, e1y, 1.0, e3y};
 
         const double invT = 1.0 / T_;
-        const double px = static_cast<double>(b.x0 >> K_);
-        const double py = static_cast<double>(b.y0 >> K_);
+        // cell origin/size in PIXEL units (cells may be half-pixel)
+        const double px = b.x0 / static_cast<double>(pixelSub_);
+        const double py = b.y0 / static_cast<double>(pixelSub_);
+        const double cw = (b.x1 - b.x0) / static_cast<double>(pixelSub_);
         const auto emitSeg = [&](int ea, int eb) {
-            segs_.push_back(static_cast<float>((px + ex[ea]) * invT));
-            segs_.push_back(static_cast<float>((py + ey[ea]) * invT));
-            segs_.push_back(static_cast<float>((px + ex[eb]) * invT));
-            segs_.push_back(static_cast<float>((py + ey[eb]) * invT));
+            segs_.push_back(static_cast<float>((px + ex[ea] * cw) * invT));
+            segs_.push_back(static_cast<float>((py + ey[ea] * cw) * invT));
+            segs_.push_back(static_cast<float>((px + ex[eb] * cw) * invT));
+            segs_.push_back(static_cast<float>((py + ey[eb] * cw) * invT));
         };
 
         switch (code)
@@ -689,13 +695,18 @@ private:
             // multi-strand tile is a few hundred boundary cells). Stroke
             // weight RAMPS down across the upper part of the range so the
             // regime switch blends instead of snapping at tile edges.
-            constexpr size_t kTileSegCap = 1024;
+            constexpr size_t kTileSegCap = 2048;
+            // extraction runs on half-pixel cells: thresholds scale with the
+            // actual cell count, not the pixel count
+            const double cellsPerAxis =
+                static_cast<double>(T_) * pixelSub_ / std::max(1, pixelSub_ / 2);
+            const double totalCells = cellsPerAxis * cellsPerAxis;
             const double sat =
-                static_cast<double>(marchedCells_ + oscCells_) / (T_ * T_ / 4.0);
-            // Crowded cells dominating the tile = the ~1 strand/pixel strobe
+                static_cast<double>(marchedCells_ + oscCells_) / (totalCells / 4.0);
+            // Crowded cells dominating the tile = the ~1 strand/cell strobe
             // blind spot: the extracted family is aliased fiction. A sparse web
             // has only isolated crowded cells (junctions/tangencies).
-            if (crowdedCells_ > T_ * T_ / 16)
+            if (crowdedCells_ > totalCells / 16.0)
             {
                 segs_.clear();
                 strokeAlpha_ = 0.0f;

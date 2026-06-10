@@ -583,8 +583,28 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
 
                 // ---- refinement crossfade: melt, don't pop -------------------
                 if (prior && prior->payload != drawnPayload && !fades_.count(t.key))
+                {
                     fades_.emplace(t.key, Fade{prior->payload, prior->u0, prior->v0, prior->u1,
                                                prior->v1, nowMs});
+                }
+                else if (!prior && !fades_.count(t.key))
+                {
+                    // LEVEL-TRANSITION fade-in: this key never drew before, but
+                    // its region was just showing an ancestor stand-in. Melt
+                    // from that content (uv-composed to this tile's footprint)
+                    // instead of popping -- immersion across scale changes.
+                    const auto ls = lastShown_.find(t.standinKey);
+                    if (ls != lastShown_.end() && ls->second.payload != drawnPayload)
+                    {
+                        const float aw = ls->second.u1 - ls->second.u0;
+                        const float ah = ls->second.v1 - ls->second.v0;
+                        fades_.emplace(t.key, Fade{ls->second.payload,
+                                                   ls->second.u0 + aw * t.su0,
+                                                   ls->second.v0 + ah * t.sv0,
+                                                   ls->second.u0 + aw * t.su1,
+                                                   ls->second.v0 + ah * t.sv1, nowMs});
+                    }
+                }
                 if (const auto f = fades_.find(t.key); f != fades_.end())
                 {
                     const double tt = (nowMs - f->second.t0) / kFadeMs;

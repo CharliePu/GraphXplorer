@@ -214,3 +214,19 @@ TEST_CASE("OBJECTIVE 2 (generation): after a pan storm the current viewport full
     // off-screen detail work was culled at the source -> store never exploded.
     REQUIRE(engine.storeSize() < 16000);
 }
+
+TEST_CASE("eviction never removes the recently-touched working set (soft cap)", "[store]")
+{
+    TileStore store;
+    for (int i = 0; i < 20; ++i)
+    {
+        TileKey k{1, 0, i, 0};
+        store.ensureQueued(k);
+        store.touch(k, static_cast<uint64_t>(i < 12 ? 100 : 1)); // 12 active, 8 old
+    }
+    // budget far below the active set: only the 8 old tiles may go; the store
+    // stays ABOVE budget rather than cannibalizing what the compositor uses.
+    store.evictToBudget(4, /*keepEpoch=*/1, /*protectAfterFrame=*/100);
+    REQUIRE(store.size() == 12);
+    for (int i = 0; i < 12; ++i) REQUIRE(store.state(TileKey{1, 0, i, 0}) != TileState::Missing);
+}

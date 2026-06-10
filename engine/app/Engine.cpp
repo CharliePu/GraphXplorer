@@ -221,7 +221,12 @@ void Engine::enqueueVisible(const Viewport &vp, std::shared_ptr<const Relation> 
         }
     }
     pushJobs(toEnqueue);
-    store_.evictToBudget(kResidencyTiles, epoch);
+    // Trim history, but never the active working set: everything buildPresent
+    // touched in the last few frames is exempt (a big window / deep level whose
+    // working set exceeds the budget must grow the store, not thrash it --
+    // evict/re-solve cycling showed up as permanently unfilled holes).
+    const uint64_t frameNow = frameCounter_.load(std::memory_order_relaxed);
+    store_.evictToBudget(kResidencyTiles, epoch, frameNow >= 4 ? frameNow - 4 : 0);
 }
 
 void Engine::schedulerLoop()

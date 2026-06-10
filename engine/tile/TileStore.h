@@ -79,10 +79,16 @@ public:
     void touch(const TileKey &key, uint64_t frame);
 
     // Evict least-recently-touched tiles when over `maxTiles`, down to a low
-    // watermark, preferring tiles from epochs older than `keepEpoch`. The scan
-    // and ordering run OUTSIDE the unique lock so readers are stalled only for
-    // the erase itself.
-    void evictToBudget(size_t maxTiles, uint64_t keepEpoch);
+    // watermark, preferring tiles from epochs older than `keepEpoch`. Tiles
+    // touched at or after `protectAfterFrame` are NEVER evicted: the compositor
+    // touches exactly the active working set every frame, so this makes the
+    // budget a SOFT cap that trims history but cannot thrash the current view
+    // (a working set larger than the budget -- huge window, deep level -- keeps
+    // the store above budget instead of evict/re-solve cycling forever). The
+    // scan and ordering run OUTSIDE the unique lock so readers are stalled only
+    // for the erase itself.
+    void evictToBudget(size_t maxTiles, uint64_t keepEpoch,
+                       uint64_t protectAfterFrame = UINT64_MAX);
 
     [[nodiscard]] size_t size() const;
 

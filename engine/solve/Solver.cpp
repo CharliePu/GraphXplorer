@@ -150,6 +150,7 @@ private:
     std::vector<double> acc_; // covered sub-cell area per pixel
     std::vector<double> unc_; // boundary/estimated sub-cell count per pixel
     std::vector<float> segs_; // equality: marching-squares segments (tile-local)
+    int marchedCells_{0};     // equality: pixel cells that produced segments
 
     // Naive interval first; escalate to the centered (mean-value) form only while
     // it is still earning its cost. On formulas where it never certifies a box
@@ -397,6 +398,7 @@ private:
 
         const int code = (f0 < 0.0) | ((f1 < 0.0) << 1) | ((f2 < 0.0) << 2) | ((f3 < 0.0) << 3);
         if (code == 0 || code == 15) return; // no corner sign change in this cell
+        ++marchedCells_;
 
         // crossing parameter on an edge from value a to value b
         const auto cross = [](double a, double bb) {
@@ -608,7 +610,29 @@ private:
     CoverageTile finalize(bool converged)
     {
         flushFloorPending(); // deferred floor cells land before the readout
-        if (equalityCurve_) simplifySegs();
+        if (equalityCurve_)
+        {
+            // STROKE SATURATION: when most pixel cells contain curve, the
+            // strokes stop adding information over the band raster -- they
+            // collectively paint a solid fill at enormous cost (a sub-pixel-
+            // dense family is ~a million 1px segments screen-wide; that was
+            // the "too many lines" input lag). Hand the tile to the raster:
+            // the band IS the honest rendering at that density, exactly as
+            // the area measure is for sub-pixel inequality oscillation.
+            // Threshold note: past ~2 crossings/pixel the corner-sign test
+            // aliases (even flip counts look uniform), so a fully saturated
+            // tile registers only ~half its cells -- T^2/4 still catches it
+            // while staying far above any resolvable curve content (a busy
+            // multi-strand tile is a few hundred boundary cells).
+            constexpr size_t kTileSegCap = 1024;
+            if (marchedCells_ > T_ * T_ / 4)
+                segs_.clear();
+            else
+            {
+                simplifySegs();
+                if (segs_.size() / 4 > kTileSegCap) segs_.clear();
+            }
+        }
         CoverageTile tile;
         tile.width = T_;
         tile.height = T_;

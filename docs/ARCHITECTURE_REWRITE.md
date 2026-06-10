@@ -1,9 +1,9 @@
-# GraphXplorer Renderer — Rewrite Architecture (`claude_rewrite`)
+# GraphXplorer Renderer — Architecture
 
-Fresh, self-contained CPU rendering engine for implicit relations (inequalities and equalities)
-over a 2D viewport. Namespace `gxr`, tree `engine/`. Reuses **none** of the prior architecture or
-numerical core. GPU is used only as a thin compositor behind a `Presenter` seam (OpenGL now,
-Vulkan-ready).
+Self-contained CPU rendering engine for implicit relations (inequalities and equalities) over a 2D
+viewport. Namespace `gxr`, tree `engine/`; written from scratch in 2026-06 to replace the original
+renderer (removed 2026-06-10). GPU is used only as a thin compositor behind a `Presenter` seam
+(OpenGL now, Vulkan-ready).
 
 ## Objectives (canonical statement in [`CLAUDE.md`](../CLAUDE.md)), with how each is met
 

@@ -26,5 +26,6 @@
 # Local tooling
 /.codex/
 /.codex_*.png
+/.pi-lens/
 /pipeline.log
 /repomix-output.txt

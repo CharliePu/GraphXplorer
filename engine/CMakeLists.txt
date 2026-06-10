@@ -24,6 +24,7 @@ file(GLOB GXR_TEST_SRC CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp
 if(GXR_TEST_SRC)
     add_executable(GxEngineTests ${GXR_TEST_SRC})
     target_link_libraries(GxEngineTests PRIVATE GxEngine Catch2::Catch2WithMain)
+    add_test(NAME GxEngineTests COMMAND GxEngineTests)
 endif()
 
 # Headless CPU tools (validatable in any environment)

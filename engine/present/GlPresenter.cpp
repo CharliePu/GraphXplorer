@@ -74,7 +74,7 @@ uniform sampler2D tex;
 void main(){
     vec3 c = texture(tex, vUv).rgb;
     float l = dot(c, vec3(0.299, 0.587, 0.114));
-    frag = vec4(c * smoothstep(0.55, 0.80, l), 1.0);
+    frag = vec4(c * smoothstep(0.38, 0.62, l), 1.0);
 })";
 
 const char *kBloomBlurFs = R"(#version 330 core
@@ -256,7 +256,7 @@ void GlPresenter::bloomPass()
     glBlendFunc(GL_ONE, GL_ONE); // additive: light adds
     glUseProgram(addProg_);
     glUniform1i(uAddTex_, 0);
-    glUniform1f(uAddK_, 0.65f);
+    glUniform1f(uAddK_, 0.95f);
     glBindTexture(GL_TEXTURE_2D, bloomTex_[1]);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -419,7 +419,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                              std::chrono::steady_clock::now().time_since_epoch())
                              .count();
     glViewport(0, 0, fbW_, fbH_);
-    glClearColor(0.039f, 0.043f, 0.055f, 1.0f);
+    glClearColor(0.043f, 0.047f, 0.060f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -462,16 +462,16 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         pushLine(0, wb.y0, 0, wb.y1);
         pushLine(wb.x0, 0, wb.x1, 0);
 
-        const float wk = 0.35f + 0.65f * chromeWake_;
+        const float wk = 0.48f + 0.52f * chromeWake_;
         glUseProgram(lineProgram_);
         glBindVertexArray(lineVao_);
         glBindBuffer(GL_ARRAY_BUFFER, lineVbo_);
         glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts.size() * sizeof(float)),
                      verts.data(), GL_DYNAMIC_DRAW);
         glPointSize(std::max(1.5f, 1.2f * pxScale_));
-        glUniform4f(uLineColor_, 0.66f, 0.68f, 0.72f, 0.16f * wk);
+        glUniform4f(uLineColor_, 0.70f, 0.72f, 0.78f, 0.24f * wk);
         glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(dotCount));
-        glUniform4f(uLineColor_, 0.74f, 0.76f, 0.80f, 0.26f * wk);
+        glUniform4f(uLineColor_, 0.80f, 0.82f, 0.88f, 0.40f * wk);
         glDrawArrays(GL_LINES, static_cast<GLsizei>(dotCount), 4);
     }
 
@@ -498,22 +498,24 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         const float *pal = kRelationPalette[t.slot & 7];
         if (t.equality)
         {
-            // near-white core: the bloom halo carries the hue
-            inst.color[0] = pal[0] + (1.0f - pal[0]) * 0.60f;
-            inst.color[1] = pal[1] + (1.0f - pal[1]) * 0.60f;
-            inst.color[2] = pal[2] + (1.0f - pal[2]) * 0.60f;
+            // near-white core: the bloom halo carries the hue. Alpha is
+            // OVER-DRIVEN (GL clamps at 1) so the band's accumulated coverage
+            // saturates to a luminous line instead of topping out gray.
+            inst.color[0] = pal[0] + (1.0f - pal[0]) * 0.85f;
+            inst.color[1] = pal[1] + (1.0f - pal[1]) * 0.85f;
+            inst.color[2] = pal[2] + (1.0f - pal[2]) * 0.85f;
         }
         else
         {
             // region fills wear a DEEP wash of the hue (below the bloom
             // threshold, richer than a pale alpha-tint)
-            inst.color[0] = pal[0] * 0.62f;
-            inst.color[1] = pal[1] * 0.62f;
-            inst.color[2] = pal[2] * 0.62f;
+            inst.color[0] = pal[0] * 0.82f;
+            inst.color[1] = pal[1] * 0.82f;
+            inst.color[2] = pal[2] * 0.82f;
         }
         // translucent region fills once several relations are shown, so
         // overlaps BLEND; equality bands keep full strength (thin lines)
-        inst.color[3] = t.equality ? 1.0f : fillOpacity;
+        inst.color[3] = t.equality ? 1.45f : fillOpacity; // >1 saturates the core (GL clamps)
         float u0 = 0, v0 = 0, u1 = 1, v1 = 1;
         int ownArr = 0, fadeArr = -1; // bucket key (flat tiles land in (0,0))
 

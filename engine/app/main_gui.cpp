@@ -216,8 +216,8 @@ void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
                         {pal[0], pal[1], pal[2], a});
             prettyRun(ui, formulas[i], 0, formulas[i].size(), x + padX + dot + 6 * s,
                       capY + (capH - ui.lineHeight(capScale)) * 0.5f + 1, capScale,
-                      sel ? std::array<float, 4>{0.88f, 0.90f, 0.94f, a}
-                          : std::array<float, 4>{0.60f, 0.63f, 0.69f, a},
+                      sel ? std::array<float, 4>{0.94f, 0.96f, 0.99f, a}
+                          : std::array<float, 4>{0.72f, 0.75f, 0.81f, a},
                       true);
             x += capW[i] + gap;
         }
@@ -322,7 +322,7 @@ struct AppSettings
 {
     bool grid = true;
     bool labels = true;
-    float fillOpacity = 0.55f;
+    float fillOpacity = 0.66f;
     float uiScaleMul = 1.0f;
 };
 
@@ -526,8 +526,8 @@ void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH, float ba
     }
     const int decimalsY = decimalsFor(lstepY);
     auto fmtY = [&](double v) { return fmtStep(v, decimalsY); };
-    const float wk = 0.25f + 0.75f * wake; // labels sleep with the rest of the chrome
-    const std::array<float, 4> fg{0.62f, 0.64f, 0.69f, 0.95f * wk};
+    const float wk = 0.40f + 0.60f * wake; // labels sleep with the rest of the chrome
+    const std::array<float, 4> fg{0.78f, 0.80f, 0.85f, 0.95f * wk};
     const std::array<float, 4> bg{0.03f, 0.03f, 0.05f, 0.75f * wk};
     // Draw each label with a 1px dark outline so it stays legible over both the
     // bright (true) fill and the dark (false) background it straddles on the axis.

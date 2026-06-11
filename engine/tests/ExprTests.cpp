@@ -112,3 +112,30 @@ TEST_CASE("undefined domains contribute no truth", "[expr]")
     // x strictly negative -> sqrt undefined over the whole box
     REQUIRE(r.classifyBox(iv(-2.0, -1.0), iv(0.0, 1.0), s) == Sign::Undefined);
 }
+
+TEST_CASE("implicit multiplication parses like every real grapher", "[expr]")
+{
+    EvalScratch s;
+    auto agree = [&](const std::string &a, const std::string &b) {
+        std::string e1, e2;
+        auto ra = Relation::parse(a, e1);
+        auto rb = Relation::parse(b, e2);
+        REQUIRE(ra.has_value());
+        REQUIRE(rb.has_value());
+        for (double x : {-2.3, -0.7, 0.4, 1.9})
+            for (double y : {-1.6, 0.3, 2.2})
+                REQUIRE(ra->pointInside(x, y, s) == rb->pointInside(x, y, s));
+    };
+    agree("x+y < 2x+y", "x+y < 2*x+y");          // the reported bug
+    agree("y > 2x^2", "y > 2*(x^2)");            // implicit binds below ^
+    agree("y < 2(x+1)", "y < 2*(x+1)");
+    agree("xy > 1", "x*y > 1");
+    agree("y = sin(x)cos(x)", "y = sin(x)*cos(x)");
+    agree("y > (x+1)(x-1)", "y > (x+1)*(x-1)");
+    agree("y > x(x - 2)", "y > x*(x - 2)");
+    agree("y < 2pi", "y < 2*pi");
+    agree("y > 2 - x", "y > 2-x");               // '-' never starts an implicit term
+
+    std::string err;
+    REQUIRE_FALSE(Relation::parse("y > zq", err).has_value()); // unknown ident still fails
+}

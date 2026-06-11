@@ -102,9 +102,10 @@ void roundedRect(Overlay &ui, float x, float y, float w, float h, float r,
 void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
            const std::vector<std::string> &formulas, size_t selected, bool editing,
            const std::string &edit, size_t editPos, const std::string &status, float wake,
-           float barK, bool helpOpen)
+           float barK, bool helpOpen, std::vector<std::array<float, 4>> *capRects)
 {
     if (!ui.ok()) return;
+    if (capRects) capRects->clear();
     const float w = static_cast<float>(fbW), h = static_cast<float>(fbH);
 
     glass.capture();
@@ -130,6 +131,7 @@ void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
             const bool sel = i == selected;
             glass.panel(x, capY, capW[i], capH, capH * 0.5f,
                         rowAlpha * (sel ? 1.0f : 0.62f));
+            if (capRects) capRects->push_back({x, capY, capW[i], capH});
             x += capW[i] + gap;
         }
         ui.begin();
@@ -179,8 +181,11 @@ void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
                     err ? std::array<float, 4>{0.85f, 0.38f, 0.38f, 0.85f * k}
                         : std::array<float, 4>{pal[0], pal[1], pal[2], 0.55f * k});
         if (err)
-            ui.text(bx + 18 * s, by + bh + 8 * s, status, 0.74f,
+        {
+            const float ew = ui.textWidth(status, 0.74f);
+            ui.text(bx + (bw - ew) * 0.5f, by + bh + 10 * s, status, 0.74f,
                     {0.90f, 0.45f, 0.45f, 0.9f * k});
+        }
     }
 
     // ---- shortcuts flyover (?) ----
@@ -557,6 +562,7 @@ int main(int argc, char **argv)
     bool wantScreenshot = false;
     bool viewportDirty = false;
 
+    std::vector<std::array<float, 4>> capsuleRects; // last-drawn capsule hit zones
     AppSettings cfg;
     bool settingsOpen = false;
     int settingsSel = 0;
@@ -848,7 +854,7 @@ int main(int argc, char **argv)
         const auto tOverlay0 = SClock::now();
         if (cfg.labels) drawAxisNumbers(overlay, vp, fbW, fbH, 18.0f * uiS(), wakeK);
         drawUi(overlay, glass, fbW, fbH, uiS(), formulas, selected, editing, editBuffer,
-               editPos, status, wakeK, barK, helpOpen);
+               editPos, status, wakeK, barK, helpOpen, &capsuleRects);
         {
             // live cursor coordinates (a plotter staple), bottom-right, quiet
             const double wx = vp.centerX + (mouseX - fbW * 0.5) * vp.worldPerPixel;
@@ -1056,6 +1062,49 @@ int main(int argc, char **argv)
 
     window.mouseButtonEvent.setCallback(
         [&](glfw::Window &w, glfw::MouseButton b, glfw::MouseButtonState s, glfw::ModifierKeyBit) {
+            if (b == glfw::MouseButton::Left && s == glfw::MouseButtonState::Press)
+            {
+                if (helpOpen) helpOpen = false; // any click dismisses the flyover
+                auto [mx2, my2] = w.getCursorPos();
+                for (size_t i = 0; i < capsuleRects.size(); ++i)
+                {
+                    const auto &r = capsuleRects[i];
+                    if (mx2 < r[0] || mx2 > r[0] + r[2] || my2 < r[1] || my2 > r[1] + r[3])
+                        continue;
+                    act();
+                    markInput();
+                    if (editing && selected == i) return; // already editing this one
+                    editing = false;
+                    if (selected == i && i < formulas.size())
+                    {
+                        editing = true; // second click opens the editor...
+                        editBuffer = formulas[i];
+                        // ...with the caret at the clicked character
+                        const float textX =
+                            r[0] + (16.0f + 8.0f + 6.0f) * uiS();
+                        size_t best = editBuffer.size();
+                        float bestD = 1e9f;
+                        for (size_t k2 = 0; k2 <= editBuffer.size(); ++k2)
+                        {
+                            const float px2 =
+                                textX + overlay.textWidth(editBuffer.substr(0, k2), 0.86f);
+                            const float d2 = std::abs(px2 - static_cast<float>(mx2));
+                            if (d2 < bestD)
+                            {
+                                bestD = d2;
+                                best = k2;
+                            }
+                        }
+                        editPos = best;
+                    }
+                    else
+                    {
+                        selected = i;
+                    }
+                    status.clear();
+                    return; // consumed: do not start a drag
+                }
+            }
             if (b == glfw::MouseButton::Left)
             {
                 const bool was = dragging;
@@ -1371,7 +1420,7 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
         (void)presenter.renderFrame(vp, present, /*uploadBudget=*/64);
         drawAxisNumbers(overlay, vp, fbW, fbH, 18.0f * s, 1.0f);
         drawUi(overlay, glass, fbW, fbH, s, {formula}, 0, /*editing=*/false, "", 0, "", 1.0f,
-               0.0f, false);
+               0.0f, false, nullptr);
         if (debug)
         {
             engine.debugTiles(vp, dbgTiles);

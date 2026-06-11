@@ -135,7 +135,11 @@ private:
         return lhs;
     }
 
-    // mul := unary (('*'|'/') unary)*
+    // mul := unary (('*'|'/') unary | implicit)*
+    // Implicit multiplication: any adjacent primary-start continues the
+    // product -- 2x, 2(x+1), x y, sin(x)cos(x), (a)(b), 2pi. The implicit
+    // operand is a POW term (2x^2 == 2*(x^2)), and '-' never starts one, so
+    // "2 - x" stays a subtraction.
     std::unique_ptr<Node> parseMul()
     {
         auto lhs = parseUnary();
@@ -144,6 +148,13 @@ private:
             skipWs();
             if (accept("*")) lhs = makeBinary(NodeKind::Mul, std::move(lhs), parseUnary());
             else if (accept("/")) lhs = makeBinary(NodeKind::Div, std::move(lhs), parseUnary());
+            else if (pos < s.size() &&
+                     (std::isalpha(static_cast<unsigned char>(s[pos])) || s[pos] == '_' ||
+                      std::isdigit(static_cast<unsigned char>(s[pos])) || s[pos] == '.' ||
+                      s[pos] == '('))
+            {
+                lhs = makeBinary(NodeKind::Mul, std::move(lhs), parsePow());
+            }
             else break;
         }
         return lhs;
@@ -234,39 +245,48 @@ private:
         }
         const std::string name{s.substr(start, pos - start)};
 
-        // function call?
-        skipWs();
-        if (pos < s.size() && s[pos] == '(')
+        static const std::unordered_map<std::string, NodeKind> fns{
+            {"sin", NodeKind::Sin},   {"cos", NodeKind::Cos},   {"tan", NodeKind::Tan},
+            {"asin", NodeKind::Asin}, {"acos", NodeKind::Acos}, {"atan", NodeKind::Atan},
+            {"log", NodeKind::Log},   {"ln", NodeKind::Log},    {"exp", NodeKind::Exp},
+            {"sqrt", NodeKind::Sqrt}, {"abs", NodeKind::Abs}};
+        const auto it = fns.find(name);
+        if (it != fns.end())
         {
-            ++pos; // consume '('
-            auto arg = parseOr();
-            if (!accept(")")) fail("missing ')' after function argument");
-            static const std::unordered_map<std::string, NodeKind> fns{
-                {"sin", NodeKind::Sin},   {"cos", NodeKind::Cos},   {"tan", NodeKind::Tan},
-                {"asin", NodeKind::Asin}, {"acos", NodeKind::Acos}, {"atan", NodeKind::Atan},
-                {"log", NodeKind::Log},   {"ln", NodeKind::Log},    {"exp", NodeKind::Exp},
-                {"sqrt", NodeKind::Sqrt}, {"abs", NodeKind::Abs}};
-            const auto it = fns.find(name);
-            if (it == fns.end()) fail("unknown function '" + name + "'");
-            return makeUnary(it->second, std::move(arg));
+            skipWs();
+            if (pos < s.size() && s[pos] == '(')
+            {
+                ++pos; // consume '('
+                auto arg = parseOr();
+                if (!accept(")")) fail("missing ')' after function argument");
+                return makeUnary(it->second, std::move(arg));
+            }
+            fail("function '" + name + "' needs parentheses");
         }
+        // a non-function name followed by '(' is an implicit product: x(x+1)
 
-        if (name == "x")
-        {
+        auto makeVar = [](int slot) {
             auto n = std::make_unique<Node>();
             n->kind = NodeKind::Var;
-            n->slot = 0;
+            n->slot = slot;
             return n;
-        }
-        if (name == "y")
-        {
-            auto n = std::make_unique<Node>();
-            n->kind = NodeKind::Var;
-            n->slot = 1;
-            return n;
-        }
+        };
+        if (name == "x") return makeVar(0);
+        if (name == "y") return makeVar(1);
         if (name == "pi") return makeConst(std::numbers::pi);
         if (name == "e") return makeConst(std::numbers::e);
+
+        // pure variable runs split into products: xy -> x*y, xxy -> x*x*y
+        bool pureVars = name.size() > 1;
+        for (const char ch : name) pureVars = pureVars && (ch == 'x' || ch == 'y');
+        if (pureVars)
+        {
+            auto prod = makeVar(name[0] == 'x' ? 0 : 1);
+            for (size_t i = 1; i < name.size(); ++i)
+                prod = makeBinary(NodeKind::Mul, std::move(prod),
+                                  makeVar(name[i] == 'x' ? 0 : 1));
+            return prod;
+        }
         fail("unknown identifier '" + name + "'");
     }
 };

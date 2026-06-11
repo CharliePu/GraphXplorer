@@ -100,96 +100,110 @@ void roundedRect(Overlay &ui, float x, float y, float w, float h, float r,
 }
 
 void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
-           const std::vector<std::string> &formulas, size_t selected, float selAnim,
-           bool editing, const std::string &edit, size_t editPos, const std::string &status)
+           const std::vector<std::string> &formulas, size_t selected, bool editing,
+           const std::string &edit, size_t editPos, const std::string &status, float wake,
+           float barK, bool helpOpen)
 {
     if (!ui.ok()) return;
     const float w = static_cast<float>(fbW), h = static_cast<float>(fbH);
-    const float rowH = 30.0f * s, pad = 10.0f * s;
-    constexpr float textScale = 0.92f;
-
-    // --- formula card (frosted glass) ---
-    float cardW = 300.0f * s;
-    for (size_t i = 0; i < formulas.size(); ++i)
-    {
-        const std::string &str = (editing && i == selected) ? edit : formulas[i];
-        cardW = std::max(cardW, ui.textWidth(str, textScale) + 52.0f * s);
-    }
-    cardW = std::min(cardW, w - 24.0f * s);
-    const bool showStatus = !status.empty();
-    // clamp the card to the window; rows SCROLL so the selected one stays
-    // visible (a tall list on a small hi-dpi window must not overflow)
-    const float maxCardH = h - 100.0f * s;
-    size_t maxRows = static_cast<size_t>(
-        std::max(1.0f, (maxCardH - pad * 2 - (showStatus ? 20.0f * s : 0.0f)) / rowH));
-    const size_t rows = std::min(formulas.size(), maxRows);
-    size_t firstRow = 0;
-    if (formulas.size() > rows && selected >= rows)
-        firstRow = std::min(selected - rows + 1, formulas.size() - rows);
-    const float cardH = pad * 2 + rowH * static_cast<float>(rows) +
-                        (showStatus ? 20.0f * s : 0.0f);
-
-    // hint pill geometry first, so both panels frost from one capture
-    const float hintScale = 0.72f;
-    std::string hint = editing
-        ? "Enter apply    Esc cancel"
-        : "Tab select    Enter edit    N new    X delete    1-6 presets    S settings    D debug";
-    float tw = ui.textWidth(hint, hintScale);
-    if (tw + 28.0f * s > w - 24.0f * s)
-    {
-        hint = editing ? "Enter ok   Esc" : "Tab   Enter   N   X   1-6   S   D";
-        tw = ui.textWidth(hint, hintScale);
-    }
-    if (tw + 28.0f * s > w - 24.0f * s)
-    {
-        hint = editing ? "Enter / Esc" : "Tab  Enter  N  X";
-        tw = ui.textWidth(hint, hintScale);
-    }
-    const float pillW = std::min(tw + 28.0f * s, w - 24.0f * s), pillH = 26.0f * s;
-    const float px = (w - pillW) * 0.5f, py = h - 40.0f * s;
 
     glass.capture();
-    glass.panel(12 * s, 12 * s, cardW, cardH, 12.0f * s);
-    glass.panel(px, py, pillW, pillH, pillH * 0.5f);
 
-    ui.begin();
-    // selection highlight glides between rows (selAnim eases toward selected)
-    if (!formulas.empty())
+    // ---- relation capsules (bottom-center): quiet, they sleep with the rest
+    const float capScale = 0.86f;
+    const float capH = 32.0f * s, gap = 8.0f * s, padX = 16.0f * s, dot = 8.0f * s;
+    std::vector<float> capW(formulas.size());
+    float total = 0;
+    for (size_t i = 0; i < formulas.size(); ++i)
     {
-        const float hy = 12 * s + pad + rowH * (selAnim - static_cast<float>(firstRow)) - 1;
-        const bool ed = editing;
-        if (hy > 12 * s && hy < 12 * s + cardH - rowH * 0.5f)
-            roundedRect(ui, 18 * s, hy, cardW - 12 * s, rowH - 4 * s, 4 * s,
-                        {1.0f, 1.0f, 1.0f, ed ? 0.10f : 0.06f});
+        capW[i] = ui.textWidth(formulas[i], capScale) + padX * 2 + dot + 6 * s;
+        total += capW[i] + (i ? gap : 0);
     }
-    for (size_t i = firstRow; i < firstRow + rows && i < formulas.size(); ++i)
+    float cx0 = std::max(12.0f * s, (w - total) * 0.5f);
+    const float capY = h - capH - 16.0f * s;
+    const float rowAlpha = (0.28f + 0.72f * wake) * (1.0f - 0.85f * barK);
+    if (rowAlpha > 0.02f)
     {
-        const float y = 12 * s + pad + rowH * static_cast<float>(i - firstRow);
-        const bool sel = i == selected;
-        const bool ed = editing && sel;
-        const float *pal = kRelationPalette[i & 7];
-        ui.fillRect(22 * s, y + 4 * s, 3 * s, rowH - 14 * s,
-                    {pal[0], pal[1], pal[2], sel ? 1.0f : 0.75f});
-        const std::string &shown = ed ? edit : formulas[i];
-        const std::array<float, 4> fcol = ed ? std::array<float, 4>{0.98f, 0.99f, 1.0f, 1.0f}
-                                          : sel ? std::array<float, 4>{0.88f, 0.92f, 0.98f, 1.0f}
-                                                : std::array<float, 4>{0.62f, 0.67f, 0.76f, 1.0f};
-        ui.text(36 * s, y + 2 * s, shown, textScale, fcol);
-        if (ed)
+        float x = cx0;
+        for (size_t i = 0; i < formulas.size(); ++i)
         {
-            const std::string prefix = shown.substr(0, std::min(editPos, shown.size()));
-            const float cx = 36.0f * s + ui.textWidth(prefix, textScale) + 1.0f;
-            ui.fillRect(cx, y + 1 * s, 2 * s, 20 * s, {pal[0], pal[1], pal[2], 1.0f});
+            const bool sel = i == selected;
+            glass.panel(x, capY, capW[i], capH, capH * 0.5f,
+                        rowAlpha * (sel ? 1.0f : 0.62f));
+            x += capW[i] + gap;
+        }
+        ui.begin();
+        x = cx0;
+        for (size_t i = 0; i < formulas.size(); ++i)
+        {
+            const bool sel = i == selected;
+            const float *pal = kRelationPalette[i & 7];
+            const float a = rowAlpha * (sel ? 1.0f : 0.62f);
+            roundedRect(ui, x + padX, capY + capH * 0.5f - dot * 0.5f, dot, dot, dot * 0.5f,
+                        {pal[0], pal[1], pal[2], a});
+            ui.text(x + padX + dot + 6 * s, capY + (capH - ui.lineHeight(capScale)) * 0.5f + 1,
+                    formulas[i], capScale,
+                    sel ? std::array<float, 4>{0.88f, 0.90f, 0.94f, a}
+                        : std::array<float, 4>{0.60f, 0.63f, 0.69f, a});
+            x += capW[i] + gap;
         }
     }
-    if (firstRow > 0) ui.text(cardW - 8 * s, 14 * s, "^", 0.7f, {0.6f, 0.65f, 0.75f, 0.8f});
-    if (firstRow + rows < formulas.size())
-        ui.text(cardW - 8 * s, 12 * s + cardH - 16 * s, "v", 0.7f, {0.6f, 0.65f, 0.75f, 0.8f});
-    if (showStatus)
-        ui.text(24 * s, 12 * s + pad + rowH * static_cast<float>(rows) + 2 * s, status, 0.72f,
-                {1.0f, 0.48f, 0.48f, 1.0f});
 
-    ui.text(px + 14.0f * s, py + 5.0f * s, hint, hintScale, {0.62f, 0.67f, 0.77f, 1.0f});
+    // ---- spotlight bar: condenses in on a spring while editing ----
+    if (barK > 0.012f)
+    {
+        const float k = std::min(1.0f, barK);
+        const float scl = 0.90f + 0.10f * k;
+        const float bw = std::min(720.0f * s, w - 80.0f * s) * scl;
+        const float bh = 64.0f * s * scl;
+        const float bx = (w - bw) * 0.5f, by = h * 0.34f - bh * 0.5f;
+        glass.panel(bx, by, bw, bh, 16.0f * s * scl, k);
+        ui.begin();
+        const std::string &shown = editing ? edit : formulas[selected];
+        const float *pal = kRelationPalette[selected & 7];
+        const float tScale = 1.08f;
+        const float tx = bx + 22.0f * s;
+        const float ty = by + (bh - ui.lineHeight(tScale)) * 0.5f - 3 * s;
+        roundedRect(ui, bx + 10 * s, by + bh * 0.5f - 5 * s, 10 * s, 10 * s, 5 * s,
+                    {pal[0], pal[1], pal[2], k});
+        ui.text(tx + 8 * s, ty, shown, tScale, {0.92f, 0.94f, 0.97f, k});
+        if (editing)
+        {
+            const std::string prefix = shown.substr(0, std::min(editPos, shown.size()));
+            const float cxr = tx + 8 * s + ui.textWidth(prefix, tScale) + 1.5f;
+            ui.fillRect(cxr, ty + 1, 2.0f * s, ui.lineHeight(tScale) - 4, {pal[0], pal[1], pal[2], k});
+        }
+        // status hairline: accent = ok, red = parse error
+        const bool err = !status.empty();
+        ui.fillRect(bx + 18 * s, by + bh - 10 * s, bw - 36 * s, 1.5f * s,
+                    err ? std::array<float, 4>{0.85f, 0.38f, 0.38f, 0.85f * k}
+                        : std::array<float, 4>{pal[0], pal[1], pal[2], 0.55f * k});
+        if (err)
+            ui.text(bx + 18 * s, by + bh + 8 * s, status, 0.74f,
+                    {0.90f, 0.45f, 0.45f, 0.9f * k});
+    }
+
+    // ---- shortcuts flyover (?) ----
+    if (helpOpen)
+    {
+        const char *lines[] = {"Enter      edit relation",   "Tab        next relation",
+                               "N / X      add / delete",    "1-6        presets",
+                               "S          settings",        "P          screenshot",
+                               "D          debug overlay",   "R          home",
+                               "?          close this"};
+        const int n = static_cast<int>(sizeof(lines) / sizeof(lines[0]));
+        const float lw = 320.0f * s, lh2 = ui.lineHeight(0.84f) + 6 * s;
+        const float ph = 24.0f * s * 2 + lh2 * static_cast<float>(n);
+        const float px = (w - lw) * 0.5f, py = (h - ph) * 0.42f;
+        glass.panel(px, py, lw, ph, 14.0f * s);
+        ui.begin();
+        float y = py + 22.0f * s;
+        for (const char *ln : lines)
+        {
+            ui.text(px + 26.0f * s, y, ln, 0.84f, {0.72f, 0.75f, 0.81f, 1.0f});
+            y += lh2;
+        }
+    }
 }
 
 // ---- Settings page: a frosted panel of widget rows (toggles + sliders),
@@ -583,6 +597,8 @@ int main(int argc, char **argv)
 
     // sleeping chrome: attention eases grid/labels/HUD between wake and rest
     float wakeK = 1.0f;
+    float barK = 0.0f, barV = 0.0f; // spotlight-bar spring
+    bool helpOpen = false;
     auto lastActivity = std::chrono::steady_clock::now();
     auto act = [&]() { lastActivity = std::chrono::steady_clock::now(); };
     // pan release-inertia (world units/s), fed by recent drag velocity
@@ -768,6 +784,18 @@ int main(int argc, char **argv)
                 viewportDirty = true;
             }
 
+            // spotlight bar: stiff spring with a touch of overshoot
+            {
+                const float target = editing ? 1.0f : 0.0f;
+                barV += (320.0f * (target - barK) - 22.0f * barV) * static_cast<float>(adt);
+                barK += barV * static_cast<float>(adt);
+                if (std::abs(barK - target) < 0.0015f && std::abs(barV) < 0.02f)
+                {
+                    barK = target;
+                    barV = 0.0f;
+                }
+            }
+
             // sleeping chrome: ease toward rest after ~2.5s of stillness
             const double idleFor =
                 std::chrono::duration<double>(nowA - lastActivity).count();
@@ -819,8 +847,8 @@ int main(int argc, char **argv)
         if (presenter.activeFades() > 0) finalRender = false; // crossfades still animating
         const auto tOverlay0 = SClock::now();
         if (cfg.labels) drawAxisNumbers(overlay, vp, fbW, fbH, 18.0f * uiS(), wakeK);
-        drawUi(overlay, glass, fbW, fbH, uiS(), formulas, selected, selAnim, editing, editBuffer,
-               editPos, status);
+        drawUi(overlay, glass, fbW, fbH, uiS(), formulas, selected, editing, editBuffer,
+               editPos, status, wakeK, barK, helpOpen);
         {
             // live cursor coordinates (a plotter staple), bottom-right, quiet
             const double wx = vp.centerX + (mouseX - fbW * 0.5) * vp.worldPerPixel;
@@ -833,7 +861,7 @@ int main(int argc, char **argv)
             // hide rather than collide with the centered hint pill on narrow windows
             if (rx > fbW * 0.5f + 260 * cs * 0.5f + 8 * cs)
                 overlay.text(rx, fbH - 40 * cs + 5 * cs, cbuf, 0.72f,
-                             {0.50f, 0.55f, 0.65f, 0.9f});
+                             {0.50f, 0.55f, 0.65f, 0.9f * (0.25f + 0.75f * wakeK)});
         }
         if (settingsOpen) drawSettings(overlay, glass, fbW, fbH, uiS(), cfg, settingsSel);
         if (showDebug)
@@ -1011,6 +1039,12 @@ int main(int argc, char **argv)
 
     // typed characters feed the formula editor (inserted at the caret)
     window.charEvent.setCallback([&](glfw::Window &, unsigned int codepoint) {
+        if (!editing && !settingsOpen && codepoint == '?')
+        {
+            helpOpen = !helpOpen;
+            act();
+            return;
+        }
         if (editing && codepoint >= 32 && codepoint < 127)
         {
             editPos = std::min(editPos, editBuffer.size());
@@ -1259,6 +1293,7 @@ int main(int argc, char **argv)
         else if (presenter.activeFades() > 0 || viewAnimating ||
                  std::abs(panVx) > 1e-12 || std::abs(panVy) > 1e-12 ||
                  (wakeK > 0.0f && wakeK < 1.0f) ||
+                 std::abs(barK - (editing ? 1.0f : 0.0f)) > 0.0015f ||
                  std::abs(selAnim - static_cast<float>(selected)) > 0.004f)
             glfw::waitEvents(0.006); // crossfades / view & UI animations / glide
         else
@@ -1335,7 +1370,8 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
         engine.buildPresent(vp, present);
         (void)presenter.renderFrame(vp, present, /*uploadBudget=*/64);
         drawAxisNumbers(overlay, vp, fbW, fbH, 18.0f * s, 1.0f);
-        drawUi(overlay, glass, fbW, fbH, s, {formula}, 0, 0.0f, /*editing=*/false, "", 0, "");
+        drawUi(overlay, glass, fbW, fbH, s, {formula}, 0, /*editing=*/false, "", 0, "", 1.0f,
+               0.0f, false);
         if (debug)
         {
             engine.debugTiles(vp, dbgTiles);

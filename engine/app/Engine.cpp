@@ -134,7 +134,8 @@ void Engine::setRelations(const std::vector<std::shared_ptr<const Relation>> &re
 
         auto eps = std::make_shared<std::vector<SlotInfo>>();
         for (const Slot &s : mailSlots_)
-            eps->push_back(SlotInfo{s.epoch, s.rel && s.rel->isEquality()});
+            eps->push_back(SlotInfo{s.epoch, s.rel && s.rel->isEquality(),
+                                    s.rel && s.rel->isClosedInequality()});
         currentSlots_.store(std::shared_ptr<const std::vector<SlotInfo>>(std::move(eps)),
                             std::memory_order_release);
         mailDirty_ = true;
@@ -617,6 +618,7 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
     std::vector<TileKey> stuck; // detail tiles that need a (re)solve (see below)
     int curSlot = 0;            // slot being walked (stamped on emitted tiles)
     bool curEquality = false;
+    bool curClosed = false;
 
     {
     // ONE shared lock + ONE hash lookup per visited node for the whole walk
@@ -691,6 +693,7 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
         p.rect = tileRect(node, tilePx_);
         p.slot = curSlot;
         p.equality = curEquality;
+        p.closed = curClosed;
         p.level = node.level;
         if (sa.flat)
         {
@@ -738,6 +741,7 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
             p.rect = tileRect(node, tilePx_);
             p.slot = curSlot;
             p.equality = curEquality;
+            p.closed = curClosed;
             p.level = node.level;
             p.state = TileState::Done;
             p.flat = true;
@@ -782,6 +786,7 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
                 p.cov = std::move(cov);
                 p.slot = curSlot;
                 p.equality = curEquality;
+                p.closed = curClosed;
                 p.level = node.level;
                 p.state = done ? TileState::Done : TileState::Coarse;
                 p.fallback = !done; // keep refining while not final
@@ -843,6 +848,7 @@ size_t Engine::buildPresent(const Viewport &vp, std::vector<PresentTile> &out)
         {
             curSlot = static_cast<int>(si);
             curEquality = (*eps)[si].equality;
+            curClosed = (*eps)[si].closed;
             for (const TileKey &s : startNodes(vp, (*eps)[si].epoch)) emit(s, resolveStandin(s));
         }
     }

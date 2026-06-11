@@ -46,9 +46,17 @@ uniform sampler2DArray tilesFrom; // the bucket's crossfade-source array
 void main(){
     float c = (vFlat >= 0.0) ? vFlat : texture(tiles, vUv).r;
     // Linear COVERAGE interpolation for crossfades: blending two stacked
-    // translucent quads would dip mid-fade; mixing coverages is exact.
+    // translucent quads would dip mix-fade; mixing coverages is exact.
     if (vFade < 1.0) c = mix(texture(tilesFrom, vUvFrom).r, c, vFade);
     if (c <= 0.0015) discard;
+    if (vFlat >= 0.0) {
+        // FLAT uniform region: no texture to tap -- a proven-true interior of
+        // a closed inequality is pure wash (the rim lives in boundary tiles)
+        float aF = vColor.a > 1.001 ? vColor.a - 1.0 : vColor.a;
+        vec3 cF = vColor.a > 1.001 ? vColor.rgb * 0.88 : vColor.rgb;
+        frag = vec4(cF, c * aF);
+        return;
+    }
     if (vColor.a > 1.001) {
         // EQUALITY band, two regimes -- discriminated by LOCAL DENSITY, not
         // per-pixel coverage (a lone line core and a 1px-spaced strand field
@@ -64,8 +72,9 @@ void main(){
         float wash = smoothstep(0.45, 0.78, dens * 0.2);
         vec3 lineCol = mix(vColor.rgb, vec3(1.0), 0.85);
         vec3 washCol = vColor.rgb * 0.88;
-        float aLine = min(c * vColor.a, 1.0);
-        frag = vec4(mix(lineCol, washCol, wash), mix(aLine, 0.60, wash));
+        float washA = vColor.a - 1.0; // encoded wash opacity
+        float aLine = min(c * 1.45, 1.0);
+        frag = vec4(mix(lineCol, washCol, wash), mix(aLine, washA, wash));
     } else {
         frag = vec4(vColor.rgb, c * vColor.a);
     }
@@ -515,11 +524,11 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         Inst inst{};
         inst.misc[2] = 1.0f; // fade: steady state
         const float *pal = kRelationPalette[t.slot & 7];
-        if (t.equality)
+        if (t.equality || t.closed)
         {
             // RAW hue: the shader white-mixes the LINE regime and washes the
             // DENSE regime (a saturated band must read as tinted mist, not a
-            // solid white bar -- the alpha>1 drive marks equality instances)
+            // solid white bar -- the alpha>1 drive marks these instances)
             inst.color[0] = pal[0];
             inst.color[1] = pal[1];
             inst.color[2] = pal[2];
@@ -534,7 +543,14 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         }
         // translucent region fills once several relations are shown, so
         // overlaps BLEND; equality bands keep full strength (thin lines)
-        inst.color[3] = t.equality ? 1.45f : fillOpacity; // >1 saturates the core (GL clamps)
+        // alpha encoding: >1 routes the DUAL-REGIME shader branch and carries
+        // the wash opacity as (alpha - 1). Equalities AND closed inequalities
+        // (>=, <=) take it -- closed fills get an automatic white-hot rim at
+        // the boundary (the local-density transition) and hue mist inside,
+        // which is exactly the "boundary line" a closed inequality promises.
+        inst.color[3] = t.equality ? 1.60f
+                        : t.closed ? 1.0f + fillOpacity
+                                   : fillOpacity;
         float u0 = 0, v0 = 0, u1 = 1, v1 = 1;
         int ownArr = 0, fadeArr = -1; // bucket key (flat tiles land in (0,0))
 

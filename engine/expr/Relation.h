@@ -48,6 +48,12 @@ public:
 
     [[nodiscard]] bool isEquality() const { return single_ && (op_ == CmpOp::Equal || op_ == CmpOp::NotEqual); }
     [[nodiscard]] bool isNotEqual() const { return single_ && op_ == CmpOp::NotEqual; }
+    // closed inequality (>=, <=): the boundary belongs to the set and renders
+    // as a line; strict (<, >) excludes it and renders fill only
+    [[nodiscard]] bool isClosedInequality() const
+    {
+        return single_ && (op_ == CmpOp::LessEq || op_ == CmpOp::GreaterEq);
+    }
     [[nodiscard]] bool isSingleCompare() const { return single_; }
     [[nodiscard]] CmpOp op() const { return op_; }
 

@@ -28,6 +28,7 @@ struct PresentTile
     WorldRect rect;     // the SCREEN footprint to draw (always the leaf's own rect)
     CoverageTilePtr cov; // texture to sample (own tile, or an ancestor for fallback); null if flat
     int slot{0};        // relation slot index (selects the fill color)
+    bool equality{false}; // curve band (always full-strength) vs region fill
     int level{0};
     bool fallback{false};
     TileState state{TileState::Missing};
@@ -194,8 +195,13 @@ private:
     std::vector<Slot> mailSlots_;
     bool mailDirty_{false};
     std::atomic<uint64_t> epoch_{0};
-    // live slot epochs, published for the main thread's buildPresent walk
-    std::atomic<std::shared_ptr<const std::vector<uint64_t>>> currentEpochs_;
+    // live slot epochs + kind, published for the main thread's buildPresent walk
+    struct SlotInfo
+    {
+        uint64_t epoch{0};
+        bool equality{false};
+    };
+    std::atomic<std::shared_ptr<const std::vector<SlotInfo>>> currentSlots_;
 
     // Resolve requests: detail-level tiles the compositor needs but that are stuck
     // (an intermediate Coarse node reused at a coarser zoom, or a culled Missing

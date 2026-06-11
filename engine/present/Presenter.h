@@ -13,14 +13,14 @@ namespace gxr
 // Lumen grade: desaturated jewel tones -- region fills wear these as a wash;
 // equality cores render near-white and the bloom halo carries the hue.
 inline constexpr float kRelationPalette[8][3] = {
-    {0.56f, 0.66f, 0.77f}, // steel blue
-    {0.79f, 0.63f, 0.42f}, // brass
-    {0.61f, 0.72f, 0.60f}, // sage
-    {0.79f, 0.60f, 0.65f}, // dusty rose
-    {0.66f, 0.64f, 0.79f}, // smoke lavender
-    {0.79f, 0.54f, 0.42f}, // copper
-    {0.58f, 0.73f, 0.73f}, // mist cyan
-    {0.62f, 0.63f, 0.67f}, // pewter
+    {0.48f, 0.66f, 0.84f}, // steel blue
+    {0.86f, 0.63f, 0.34f}, // brass
+    {0.55f, 0.76f, 0.55f}, // sage
+    {0.86f, 0.55f, 0.64f}, // dusty rose
+    {0.66f, 0.61f, 0.86f}, // smoke lavender
+    {0.86f, 0.49f, 0.34f}, // copper
+    {0.50f, 0.77f, 0.77f}, // mist cyan
+    {0.64f, 0.65f, 0.70f}, // pewter
 };
 
 // Abstraction over the GPU presentation backend. This is the Vulkan-ready seam:

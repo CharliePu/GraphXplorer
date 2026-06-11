@@ -585,6 +585,7 @@ void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH, float ba
 // tile-texture upload and compositing end-to-end). Usage: --selftest out.png [formula]
 float gSelftestScale = 0.0f;   // 0 = use the window content scale
 double gSelftestStretch = 1.0; // y-axis stretch for anisotropy screenshots
+double gSelftestCx = 0.0, gSelftestCy = 0.0, gSelftestSpan = 0.0;
 int runSelftest(const std::string &outPng, const std::string &formula, bool debug,
                 int W, int H);
 // Drive the REAL render loop offscreen through small -> maximize -> zoom-out and
@@ -614,6 +615,16 @@ int main(int argc, char **argv)
                         gSelftestScale = static_cast<float>(std::atof(a.substr(at + 1).c_str()));
                     if (const size_t sl = a.find('/'); sl != std::string::npos)
                         gSelftestStretch = std::atof(a.substr(sl + 1).c_str());
+                }
+                else if (const size_t c1 = a.find(','); c1 != std::string::npos)
+                {
+                    // "cx,cy,spanX": move the selftest viewport
+                    gSelftestCx = std::atof(a.substr(0, c1).c_str());
+                    const std::string rest = a.substr(c1 + 1);
+                    const size_t c2 = rest.find(',');
+                    gSelftestCy = std::atof(rest.substr(0, c2).c_str());
+                    if (c2 != std::string::npos)
+                        gSelftestSpan = std::atof(rest.substr(c2 + 1).c_str());
                 }
             }
         }
@@ -1695,7 +1706,8 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
     presenter.resize(fbW, fbH);
     glass.resize(fbW, fbH);
     overlay.resize(fbW, fbH);
-    Viewport vp{0.0, 0.0, 16.0 / fbW, fbW, fbH};
+    Viewport vp{gSelftestCx, gSelftestCy,
+                (gSelftestSpan > 0.0 ? gSelftestSpan : 16.0) / fbW, fbW, fbH};
     vp.yStretch = gSelftestStretch;
 
     // semicolon-separated formulas land in successive relation slots

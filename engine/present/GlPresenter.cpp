@@ -49,7 +49,26 @@ void main(){
     // translucent quads would dip mid-fade; mixing coverages is exact.
     if (vFade < 1.0) c = mix(texture(tilesFrom, vUvFrom).r, c, vFade);
     if (c <= 0.0015) discard;
-    frag = vec4(vColor.rgb, c * vColor.a);
+    if (vColor.a > 1.001) {
+        // EQUALITY band, two regimes -- discriminated by LOCAL DENSITY, not
+        // per-pixel coverage (a lone line core and a 1px-spaced strand field
+        // share the same pixel value; only the neighborhood differs):
+        //  - sparse: white-hot core, alpha over-driven (GL clamps at 1)
+        //  - dense:  the relation's HUE wash, light mist -- never white slab
+        float dens = c;
+        vec2 t2 = vec2(2.0 / 64.0, 0.0);
+        dens += texture(tiles, vec3(vUv.xy + t2.xy, vUv.z)).r;
+        dens += texture(tiles, vec3(vUv.xy - t2.xy, vUv.z)).r;
+        dens += texture(tiles, vec3(vUv.xy + t2.yx, vUv.z)).r;
+        dens += texture(tiles, vec3(vUv.xy - t2.yx, vUv.z)).r;
+        float wash = smoothstep(0.45, 0.78, dens * 0.2);
+        vec3 lineCol = mix(vColor.rgb, vec3(1.0), 0.85);
+        vec3 washCol = vColor.rgb * 0.88;
+        float aLine = min(c * vColor.a, 1.0);
+        frag = vec4(mix(lineCol, washCol, wash), mix(aLine, 0.60, wash));
+    } else {
+        frag = vec4(vColor.rgb, c * vColor.a);
+    }
 })";
 
 const char *kLineVs = R"(#version 330 core
@@ -498,12 +517,12 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         const float *pal = kRelationPalette[t.slot & 7];
         if (t.equality)
         {
-            // near-white core: the bloom halo carries the hue. Alpha is
-            // OVER-DRIVEN (GL clamps at 1) so the band's accumulated coverage
-            // saturates to a luminous line instead of topping out gray.
-            inst.color[0] = pal[0] + (1.0f - pal[0]) * 0.85f;
-            inst.color[1] = pal[1] + (1.0f - pal[1]) * 0.85f;
-            inst.color[2] = pal[2] + (1.0f - pal[2]) * 0.85f;
+            // RAW hue: the shader white-mixes the LINE regime and washes the
+            // DENSE regime (a saturated band must read as tinted mist, not a
+            // solid white bar -- the alpha>1 drive marks equality instances)
+            inst.color[0] = pal[0];
+            inst.color[1] = pal[1];
+            inst.color[2] = pal[2];
         }
         else
         {

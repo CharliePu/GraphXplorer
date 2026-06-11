@@ -44,6 +44,12 @@ public:
     // user settings (wired from the Settings page)
     void setGridVisible(bool v) { gridVisible_ = v; }
     void setFillOpacity(float a) { fillOpacity_ = a; }
+    // sleeping chrome: grid/axis brightness eases with user attention (0..1)
+    void setChrome(float wake, float pxScale)
+    {
+        chromeWake_ = wake;
+        pxScale_ = pxScale;
+    }
     // atlas occupancy diagnostics
     [[nodiscard]] size_t residentLayers() const { return layers_.size(); }
     [[nodiscard]] size_t freeLayers() const { return freeLayers_.size(); }
@@ -72,14 +78,24 @@ private:
     int holeTiles_{0};
     bool gridVisible_{true};
     float fillOpacity_{0.55f}; // multi-relation region-fill opacity
+    float chromeWake_{1.0f};
+    float pxScale_{1.0f};
     double uploadMs_{0.0};
     int uploads_{0};
     int drawnTiles_{0};
 
     unsigned int tileProgram_{0};
     unsigned int lineProgram_{0};
+    unsigned int brightProg_{0}, blurProg_{0}, addProg_{0}; // bloom chain
     unsigned int quadVao_{0}, quadVbo_{0}, instVbo_{0};
     unsigned int lineVao_{0}, lineVbo_{0};
+    unsigned int bloomFbo_[2] = {0, 0};
+    unsigned int bloomTex_[2] = {0, 0};
+    unsigned int triVao_{0}, triVbo_{0}; // fullscreen triangle for bloom passes
+    int bw_{1}, bh_{1};
+    int uBrightTex_{-1}, uBlurTex_{-1}, uBlurDir_{-1}, uAddTex_{-1}, uAddK_{-1};
+    void makeBloomTargets();
+    void bloomPass();
     // The tile atlas: SEVERAL R8 2D arrays (drivers commonly clamp
     // GL_MAX_ARRAY_TEXTURE_LAYERS to 2048, below a dense 4K view's working
     // set). Instances are bucketed by their (own array, fade-source array)

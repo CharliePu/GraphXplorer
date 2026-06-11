@@ -60,4 +60,4 @@ add_executable(GraphXplorer
         ${CMAKE_CURRENT_SOURCE_DIR}/present/Overlay.cpp)
 target_include_directories(GraphXplorer PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_compile_definitions(GraphXplorer PRIVATE GXR_ASSET_DIR="${CMAKE_SOURCE_DIR}")
-target_link_libraries(GraphXplorer PRIVATE GxEngine glfw glad::glad Freetype::Freetype)
+target_link_libraries(GraphXplorer PRIVATE GxEngine glfw glad::glad Freetype::Freetype dwmapi)

@@ -104,8 +104,8 @@ constexpr double kFadeMs = 120.0;       // refinement crossfade duration
 
 void worldToNdc(const Viewport &vp, int fbW, int fbH, double wx, double wy, float &nx, float &ny)
 {
-    const double sx = (wx - vp.centerX) / vp.worldPerPixel + fbW * 0.5;
-    const double sy = (wy - vp.centerY) / vp.worldPerPixel + fbH * 0.5;
+    const double sx = (wx - vp.centerX) / vp.wppX() + fbW * 0.5;
+    const double sy = (wy - vp.centerY) / vp.wppY() + fbH * 0.5;
     nx = static_cast<float>(sx / fbW * 2.0 - 1.0);
     ny = static_cast<float>(sy / fbH * 2.0 - 1.0);
 }
@@ -429,10 +429,13 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
     {
         std::vector<float> verts;
         const WorldRect wb = vp.worldBounds();
-        const double rawStep = vp.worldPerPixel * 90.0;
-        const double mag = std::pow(10.0, std::floor(std::log10(std::max(rawStep, 1e-300))));
-        const double norm = rawStep / mag;
-        const double step = (norm < 2.0 ? 1.0 : norm < 5.0 ? 2.0 : 5.0) * mag;
+        auto nice = [](double raw) {
+            const double mag = std::pow(10.0, std::floor(std::log10(std::max(raw, 1e-300))));
+            const double norm = raw / mag;
+            return (norm < 2.0 ? 1.0 : norm < 5.0 ? 2.0 : 5.0) * mag;
+        };
+        const double stepX = nice(vp.wppX() * 90.0);
+        const double stepY = nice(vp.wppY() * 90.0);
         // dot lattice instead of ruled lines: quieter, instrument-like; it
         // brightens when the user is active and sleeps when they are not
         auto pushDot = [&](double x, double y) {
@@ -441,10 +444,12 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
             verts.insert(verts.end(), {a, b});
         };
         int guard = 0;
-        for (double x = std::ceil(wb.x0 / step) * step; x <= wb.x1 && guard < 400; x += step, ++guard)
+        for (double x = std::ceil(wb.x0 / stepX) * stepX; x <= wb.x1 && guard < 400;
+             x += stepX, ++guard)
         {
             int g2 = 0;
-            for (double y = std::ceil(wb.y0 / step) * step; y <= wb.y1 && g2 < 400; y += step, ++g2)
+            for (double y = std::ceil(wb.y0 / stepY) * stepY; y <= wb.y1 && g2 < 400;
+                 y += stepY, ++g2)
                 pushDot(x, y);
         }
         const size_t dotCount = verts.size() / 2;

@@ -102,10 +102,14 @@ void roundedRect(Overlay &ui, float x, float y, float w, float h, float r,
 void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
            const std::vector<std::string> &formulas, size_t selected, bool editing,
            const std::string &edit, size_t editPos, const std::string &status, float wake,
-           float barK, bool helpOpen, std::vector<std::array<float, 4>> *capRects)
+           float barK, bool helpOpen, std::vector<std::array<float, 4>> *capRects,
+           std::vector<std::array<float, 4>> *zoomRects, std::array<float, 4> *barRect,
+           float *barTextX)
 {
     if (!ui.ok()) return;
     if (capRects) capRects->clear();
+    if (zoomRects) zoomRects->clear();
+    if (barRect) *barRect = {0, 0, 0, 0};
     const float w = static_cast<float>(fbW), h = static_cast<float>(fbH);
 
     glass.capture();
@@ -168,6 +172,8 @@ void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
         const float ty = by + (bh - ui.lineHeight(tScale)) * 0.5f - 3 * s;
         roundedRect(ui, bx + 10 * s, by + bh * 0.5f - 5 * s, 10 * s, 10 * s, 5 * s,
                     {pal[0], pal[1], pal[2], k});
+        if (barRect) *barRect = {bx, by, bw, bh};
+        if (barTextX) *barTextX = tx + 8 * s;
         ui.text(tx + 8 * s, ty, shown, tScale, {0.92f, 0.94f, 0.97f, k});
         if (editing)
         {
@@ -185,6 +191,32 @@ void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
             const float ew = ui.textWidth(status, 0.74f);
             ui.text(bx + (bw - ew) * 0.5f, by + bh + 10 * s, status, 0.74f,
                     {0.90f, 0.45f, 0.45f, 0.9f * k});
+        }
+    }
+
+    // ---- zoom cluster (top-right): -, +, and aspect reset ----
+    {
+        const float bh2 = 30.0f * s, bw2 = 34.0f * s, bwAspect = 44.0f * s, g2 = 6.0f * s;
+        const float zx = w - (bw2 * 2 + bwAspect + g2 * 2) - 14.0f * s, zy = 14.0f * s;
+        const float za = 0.25f + 0.75f * wake;
+        const char *labels2[3] = {"-", "+", "1:1"};
+        float xx = zx;
+        for (int i = 0; i < 3; ++i)
+        {
+            const float ww = i == 2 ? bwAspect : bw2;
+            glass.panel(xx, zy, ww, bh2, bh2 * 0.5f, za);
+            if (zoomRects) zoomRects->push_back({xx, zy, ww, bh2});
+            xx += ww + g2;
+        }
+        ui.begin();
+        xx = zx;
+        for (int i = 0; i < 3; ++i)
+        {
+            const float ww = i == 2 ? bwAspect : bw2;
+            const float tw2 = ui.textWidth(labels2[i], 0.84f);
+            ui.text(xx + (ww - tw2) * 0.5f, zy + (bh2 - ui.lineHeight(0.84f)) * 0.5f + 1,
+                    labels2[i], 0.84f, {0.72f, 0.75f, 0.81f, za});
+            xx += ww + g2;
         }
     }
 
@@ -222,7 +254,8 @@ struct AppSettings
 };
 
 void drawSettings(Overlay &ui, Glass &glass, int fbW, int fbH, float s, const AppSettings &cfg,
-                 int sel)
+                 int sel, std::array<float, 4> rowZones[4] = nullptr,
+                 std::array<float, 4> sliderZones[4] = nullptr)
 {
     if (!ui.ok()) return;
     const float w = static_cast<float>(fbW), h = static_cast<float>(fbH);
@@ -238,6 +271,7 @@ void drawSettings(Overlay &ui, Glass &glass, int fbW, int fbH, float s, const Ap
     for (int i = 0; i < 4; ++i)
     {
         const float ry = y + titleH + rowH * static_cast<float>(i);
+        if (rowZones) rowZones[i] = {x + 8 * s, ry, pw - 16 * s, rowH - 6 * s};
         if (i == sel)
             roundedRect(ui, x + 8 * s, ry, pw - 16 * s, rowH - 6 * s, 5 * s,
                         {1.0f, 1.0f, 1.0f, 0.07f});
@@ -263,6 +297,7 @@ void drawSettings(Overlay &ui, Glass &glass, int fbW, int fbH, float s, const Ap
             const float v01 = i == 2 ? (cfg.fillOpacity - 0.20f) / 0.80f
                                      : (cfg.uiScaleMul - 0.75f) / 0.75f;
             const float tx = vx, ty = ry + 17 * s, twW = 96 * s;
+            if (sliderZones) sliderZones[i] = {tx, ty, twW, 4 * s};
             ui.fillRect(tx, ty, twW, 4 * s, {1.0f, 1.0f, 1.0f, 0.14f});
             ui.fillRect(tx, ty, twW * std::clamp(v01, 0.0f, 1.0f), 4 * s,
                         {0.00f, 0.55f, 0.98f, 0.95f});
@@ -286,16 +321,17 @@ void drawDebug(Overlay &ui, Glass &glass, float s, const Viewport &vp, int fbW, 
 {
     if (!ui.ok()) return;
     ui.begin();
-    const double cx = vp.centerX, cy = vp.centerY, wpp = vp.worldPerPixel;
-    auto sx = [&](double wx) { return (wx - cx) / wpp + fbW * 0.5; };
-    auto syTop = [&](double wy) { return fbH * 0.5 - (wy - cy) / wpp; };
+    const double cx = vp.centerX, cy = vp.centerY;
+    const double wppx = vp.wppX(), wppy = vp.wppY();
+    auto sx = [&](double wx) { return (wx - cx) / wppx + fbW * 0.5; };
+    auto syTop = [&](double wy) { return fbH * 0.5 - (wy - cy) / wppy; };
 
     for (const DebugTile &t : tiles)
     {
         const float x = static_cast<float>(sx(t.rect.x0));
         const float top = static_cast<float>(syTop(t.rect.y1));
-        const float tw = static_cast<float>((t.rect.x1 - t.rect.x0) / wpp);
-        const float th = static_cast<float>((t.rect.y1 - t.rect.y0) / wpp);
+        const float tw = static_cast<float>((t.rect.x1 - t.rect.x0) / wppx);
+        const float th = static_cast<float>((t.rect.y1 - t.rect.y0) / wppy);
         std::array<float, 4> c;
         switch (t.state)
         {
@@ -323,7 +359,8 @@ void drawDebug(Overlay &ui, Glass &glass, float s, const Viewport &vp, int fbW, 
     };
     std::snprintf(buf, sizeof buf, "fps %.0f    frame %.1f ms", fps, frameMs);
     line(buf);
-    std::snprintf(buf, sizeof buf, "level %d    wpp %.4g", vp.activeLevel(), wpp);
+    std::snprintf(buf, sizeof buf, "level %d    wpp %.4g  ys %.3g", vp.activeLevel(), vp.wppX(),
+                  vp.yStretch);
     line(buf);
     std::snprintf(buf, sizeof buf, "center  %.4g , %.4g", cx, cy);
     line(buf);
@@ -356,18 +393,22 @@ void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH, float ba
                     float wake)
 {
     if (!ui.ok()) return;
-    const double cx = vp.centerX, cy = vp.centerY, wpp = vp.worldPerPixel;
-    if (!(wpp > 0.0)) return;
+    const double cx = vp.centerX, cy = vp.centerY;
+    const double wppx = vp.wppX(), wppy = vp.wppY();
+    if (!(wppx > 0.0) || !(wppy > 0.0)) return;
     const WorldRect wb = vp.worldBounds();
-    // Same 1/2/5 x 10^n choice the presenter uses for the grid lines.
-    const double rawStep = wpp * 90.0;
-    const double mag = std::pow(10.0, std::floor(std::log10(std::max(rawStep, 1e-300))));
-    const double norm = rawStep / mag;
-    const double step = (norm < 2.0 ? 1.0 : norm < 5.0 ? 2.0 : 5.0) * mag;
-    if (!(step > 0.0)) return;
+    // Same 1/2/5 x 10^n choice the presenter uses for the grid dots, per axis.
+    auto nice = [](double raw) {
+        const double mag = std::pow(10.0, std::floor(std::log10(std::max(raw, 1e-300))));
+        const double norm = raw / mag;
+        return (norm < 2.0 ? 1.0 : norm < 5.0 ? 2.0 : 5.0) * mag;
+    };
+    const double step = nice(wppx * 90.0);
+    const double stepYg = nice(wppy * 90.0);
+    if (!(step > 0.0) || !(stepYg > 0.0)) return;
 
-    auto sx = [&](double wx) { return (wx - cx) / wpp + fbW * 0.5; };
-    auto syTop = [&](double wy) { return fbH * 0.5 - (wy - cy) / wpp; };
+    auto sx = [&](double wx) { return (wx - cx) / wppx + fbW * 0.5; };
+    auto syTop = [&](double wy) { return fbH * 0.5 - (wy - cy) / wppy; };
 
     ui.begin();
     const float sc = 0.74f;
@@ -395,13 +436,23 @@ void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH, float ba
         const int d = decimalsFor(lstep);
         const float widest =
             std::max(ui.textWidth(fmtStep(-maxAbsX, d), sc), ui.textWidth(fmtStep(maxAbsX, d), sc));
-        if (lstep / wpp >= widest + 18.0f) break;
+        if (lstep / wppx >= widest + 18.0f) break;
         const double m = std::pow(10.0, std::floor(std::log10(lstep * 1.0000001)));
         const double n = lstep / m;
         lstep = (n < 1.5 ? 2.0 : n < 3.0 ? 5.0 : 10.0) * m;
     }
     const int decimals = decimalsFor(lstep);
     auto fmt = [&](double v) { return fmtStep(v, decimals); };
+    // Y labels get their OWN step (anisotropic axes), widened until rows clear
+    double lstepY = stepYg;
+    for (int guard = 0; guard < 24 && lstepY / wppy < lh + 10.0f; ++guard)
+    {
+        const double m = std::pow(10.0, std::floor(std::log10(lstepY * 1.0000001)));
+        const double n = lstepY / m;
+        lstepY = (n < 1.5 ? 2.0 : n < 3.0 ? 5.0 : 10.0) * m;
+    }
+    const int decimalsY = decimalsFor(lstepY);
+    auto fmtY = [&](double v) { return fmtStep(v, decimalsY); };
     const float wk = 0.25f + 0.75f * wake; // labels sleep with the rest of the chrome
     const std::array<float, 4> fg{0.62f, 0.64f, 0.69f, 0.95f * wk};
     const std::array<float, 4> bg{0.03f, 0.03f, 0.05f, 0.75f * wk};
@@ -435,15 +486,15 @@ void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH, float ba
 
     // Y labels: right-aligned just left of the y-axis column, clamped to the screen.
     {
-        const long long j0 = static_cast<long long>(std::ceil(wb.y0 / lstep));
-        const long long j1 = static_cast<long long>(std::floor(wb.y1 / lstep));
+        const long long j0 = static_cast<long long>(std::ceil(wb.y0 / lstepY));
+        const long long j1 = static_cast<long long>(std::floor(wb.y1 / lstepY));
         for (long long j = j0; j <= j1 && j - j0 < 200; ++j)
         {
             if (j == 0) continue;
-            const double y = static_cast<double>(j) * lstep;
+            const double y = static_cast<double>(j) * lstepY;
             const float py = static_cast<float>(syTop(y));
             if (py < barH + 4 || py > fbH - 30) continue;
-            const std::string s = fmt(y);
+            const std::string s = fmtY(y);
             const float w = ui.textWidth(s, sc);
             const float colX = std::clamp(static_cast<float>(sx(0.0)) - w - 6.0f, 3.0f,
                                           static_cast<float>(fbW) - w - 3.0f);
@@ -459,7 +510,8 @@ void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH, float ba
 
 // Render the live GL pipeline headlessly to a PNG (validates context, shaders,
 // tile-texture upload and compositing end-to-end). Usage: --selftest out.png [formula]
-float gSelftestScale = 0.0f; // 0 = use the window content scale
+float gSelftestScale = 0.0f;   // 0 = use the window content scale
+double gSelftestStretch = 1.0; // y-axis stretch for anisotropy screenshots
 int runSelftest(const std::string &outPng, const std::string &formula, bool debug,
                 int W, int H);
 // Drive the REAL render loop offscreen through small -> maximize -> zoom-out and
@@ -487,6 +539,8 @@ int main(int argc, char **argv)
                     H = std::max(64, std::atoi(a.substr(xPos + 1).c_str()));
                     if (const size_t at = a.find('@'); at != std::string::npos)
                         gSelftestScale = static_cast<float>(std::atof(a.substr(at + 1).c_str()));
+                    if (const size_t sl = a.find('/'); sl != std::string::npos)
+                        gSelftestStretch = std::atof(a.substr(sl + 1).c_str());
                 }
             }
         }
@@ -563,6 +617,12 @@ int main(int argc, char **argv)
     bool viewportDirty = false;
 
     std::vector<std::array<float, 4>> capsuleRects; // last-drawn capsule hit zones
+    std::vector<std::array<float, 4>> zoomRects;     // zoom cluster hit zones
+    std::array<float, 4> barRect{};                  // spotlight bar hit zone
+    float barTextX = 0.0f;
+    std::array<float, 4> setRows[4]{};
+    std::array<float, 4> setSliders[4]{};
+    int dragSlider = -1;
     AppSettings cfg;
     bool settingsOpen = false;
     int settingsSel = 0;
@@ -597,6 +657,7 @@ int main(int argc, char **argv)
     // eased view animation: scroll/reset move TARGETS; the loop glides vp
     // toward them (smooth zoom, fly-home), exponential approach in log space.
     double targetWpp = vp.worldPerPixel, targetCx = vp.centerX, targetCy = vp.centerY;
+    double targetStretch = 1.0; // anisotropic y-stretch target (capped 1/8..8)
     bool viewAnimating = false;
     float selAnim = 0.0f; // eased selection-highlight row
     auto animPrev = std::chrono::steady_clock::now();
@@ -758,13 +819,18 @@ int main(int argc, char **argv)
                 const double lw = std::log(vp.worldPerPixel) +
                                   (std::log(targetWpp) - std::log(vp.worldPerPixel)) * k;
                 vp.worldPerPixel = std::exp(lw);
+                const double ls = std::log(vp.yStretch) +
+                                  (std::log(targetStretch) - std::log(vp.yStretch)) * k;
+                vp.yStretch = std::exp(ls);
                 vp.centerX += (targetCx - vp.centerX) * k;
                 vp.centerY += (targetCy - vp.centerY) * k;
                 if (std::abs(std::log(vp.worldPerPixel / targetWpp)) < 5e-4 &&
+                    std::abs(std::log(vp.yStretch / targetStretch)) < 5e-4 &&
                     std::abs(targetCx - vp.centerX) < vp.worldPerPixel * 0.2 &&
-                    std::abs(targetCy - vp.centerY) < vp.worldPerPixel * 0.2)
+                    std::abs(targetCy - vp.centerY) < vp.wppY() * 0.2)
                 {
                     vp.worldPerPixel = targetWpp;
+                    vp.yStretch = targetStretch;
                     vp.centerX = targetCx;
                     vp.centerY = targetCy;
                     viewAnimating = false;
@@ -854,22 +920,92 @@ int main(int argc, char **argv)
         const auto tOverlay0 = SClock::now();
         if (cfg.labels) drawAxisNumbers(overlay, vp, fbW, fbH, 18.0f * uiS(), wakeK);
         drawUi(overlay, glass, fbW, fbH, uiS(), formulas, selected, editing, editBuffer,
-               editPos, status, wakeK, barK, helpOpen, &capsuleRects);
+               editPos, status, wakeK, barK, helpOpen, &capsuleRects, &zoomRects, &barRect,
+               &barTextX);
         {
-            // live cursor coordinates (a plotter staple), bottom-right, quiet
-            const double wx = vp.centerX + (mouseX - fbW * 0.5) * vp.worldPerPixel;
-            const double wy = vp.centerY - (mouseY - fbH * 0.5) * vp.worldPerPixel;
-            char cbuf[64];
-            std::snprintf(cbuf, sizeof cbuf, "%.6g, %.6g", wx, wy);
+            // live cursor coordinates -- and when hovering near the SELECTED
+            // equality curve, a CERTIFIED trace: bracket a sign change of f
+            // along the vertical through the cursor, bisect to ~1 ulp, and
+            // read out the point ON the curve (a marker pins it).
+            const double wx = vp.centerX + (mouseX - fbW * 0.5) * vp.wppX();
+            const double wyc = vp.centerY - (mouseY - fbH * 0.5) * vp.wppY();
+            bool traced = false;
+            double traceY = 0.0;
+            if (!editing && !settingsOpen && selected < rels.size() && rels[selected] &&
+                rels[selected]->isEquality())
+            {
+                static EvalScratch ts2; // main thread only
+                const Relation &R = *rels[selected];
+                const double span = 18.0 * vp.wppY();
+                constexpr int N = 24;
+                double py2 = wyc - span, pf = R.fValue(wx, py2, ts2);
+                double bLo = 0, bHi = 0, bD = 1e300;
+                for (int i2 = 1; i2 <= N; ++i2)
+                {
+                    const double yy = wyc - span + 2.0 * span * i2 / N;
+                    const double ff = R.fValue(wx, yy, ts2);
+                    if (std::isfinite(pf) && std::isfinite(ff) && (pf < 0.0) != (ff < 0.0))
+                    {
+                        const double d2 = std::abs(0.5 * (py2 + yy) - wyc);
+                        if (d2 < bD)
+                        {
+                            bD = d2;
+                            bLo = py2;
+                            bHi = yy;
+                            traced = true;
+                        }
+                    }
+                    py2 = yy;
+                    pf = ff;
+                }
+                if (traced)
+                {
+                    double lo = bLo, hi = bHi;
+                    double flo = R.fValue(wx, lo, ts2);
+                    for (int it2 = 0; it2 < 60; ++it2)
+                    {
+                        const double mid = 0.5 * (lo + hi);
+                        const double fm = R.fValue(wx, mid, ts2);
+                        if (!std::isfinite(fm)) break;
+                        if ((fm < 0.0) == (flo < 0.0))
+                        {
+                            lo = mid;
+                            flo = fm;
+                        }
+                        else hi = mid;
+                    }
+                    traceY = 0.5 * (lo + hi);
+                }
+            }
             const float cs = uiS();
+            if (traced)
+            {
+                const float sxp = static_cast<float>(
+                    fbW * 0.5 + (wx - vp.centerX) / vp.wppX());
+                const float syp = static_cast<float>(
+                    fbH * 0.5 - (traceY - vp.centerY) / vp.wppY());
+                const float *pal = kRelationPalette[selected & 7];
+                roundedRect(overlay, sxp - 5 * cs, syp - 5 * cs, 10 * cs, 10 * cs, 5 * cs,
+                            {pal[0], pal[1], pal[2], 0.95f});
+                roundedRect(overlay, sxp - 2 * cs, syp - 2 * cs, 4 * cs, 4 * cs, 2 * cs,
+                            {0.98f, 0.99f, 1.0f, 1.0f});
+            }
+            char cbuf[80];
+            if (traced)
+                std::snprintf(cbuf, sizeof cbuf, "%.8g, %.8g", wx, traceY);
+            else
+                std::snprintf(cbuf, sizeof cbuf, "%.6g, %.6g", wx, wyc);
             const float cw = overlay.textWidth(cbuf, 0.72f);
             const float rx = fbW - cw - 16 * cs;
-            // hide rather than collide with the centered hint pill on narrow windows
+            // hide rather than collide with the capsules on narrow windows
             if (rx > fbW * 0.5f + 260 * cs * 0.5f + 8 * cs)
                 overlay.text(rx, fbH - 40 * cs + 5 * cs, cbuf, 0.72f,
-                             {0.50f, 0.55f, 0.65f, 0.9f * (0.25f + 0.75f * wakeK)});
+                             traced ? std::array<float, 4>{0.78f, 0.82f, 0.90f, 0.95f}
+                                    : std::array<float, 4>{0.50f, 0.55f, 0.65f,
+                                                           0.9f * (0.25f + 0.75f * wakeK)});
         }
-        if (settingsOpen) drawSettings(overlay, glass, fbW, fbH, uiS(), cfg, settingsSel);
+        if (settingsOpen)
+            drawSettings(overlay, glass, fbW, fbH, uiS(), cfg, settingsSel, setRows, setSliders);
         if (showDebug)
         {
             engine.debugTiles(vp, dbgTiles);
@@ -1066,6 +1202,66 @@ int main(int argc, char **argv)
             {
                 if (helpOpen) helpOpen = false; // any click dismisses the flyover
                 auto [mx2, my2] = w.getCursorPos();
+                auto inside = [&](const std::array<float, 4> &r) {
+                    return mx2 >= r[0] && mx2 <= r[0] + r[2] && my2 >= r[1] && my2 <= r[1] + r[3];
+                };
+                if (settingsOpen)
+                {
+                    for (int i = 0; i < 4; ++i)
+                    {
+                        if (!inside(setRows[i])) continue;
+                        act();
+                        settingsSel = i;
+                        if (i == 0) cfg.grid = !cfg.grid;
+                        if (i == 1) cfg.labels = !cfg.labels;
+                        if (i >= 2)
+                        {
+                            dragSlider = i;
+                            const auto &t = setSliders[i];
+                            const float f2 = std::clamp(
+                                (static_cast<float>(mx2) - t[0]) / std::max(1.0f, t[2]), 0.0f,
+                                1.0f);
+                            if (i == 2) cfg.fillOpacity = 0.20f + 0.80f * f2;
+                            else cfg.uiScaleMul = 0.75f + 0.75f * f2;
+                        }
+                        presenter.setGridVisible(cfg.grid);
+                        presenter.setFillOpacity(cfg.fillOpacity);
+                        return;
+                    }
+                    return; // clicks under an open settings page never pan
+                }
+                for (size_t i = 0; i < zoomRects.size(); ++i)
+                {
+                    if (!inside(zoomRects[i])) continue;
+                    act();
+                    markInput();
+                    if (i == 0) targetWpp *= 1.5;
+                    else if (i == 1) targetWpp /= 1.5;
+                    else targetStretch = 1.0; // 1:1 aspect reset
+                    viewAnimating = true;
+                    viewportDirty = true;
+                    return;
+                }
+                if (editing && inside(barRect))
+                {
+                    // click positions the caret inside the spotlight bar
+                    size_t best = editBuffer.size();
+                    float bestD = 1e9f;
+                    for (size_t k2 = 0; k2 <= editBuffer.size(); ++k2)
+                    {
+                        const float px2 =
+                            barTextX + overlay.textWidth(editBuffer.substr(0, k2), 1.08f);
+                        const float d2 = std::abs(px2 - static_cast<float>(mx2));
+                        if (d2 < bestD)
+                        {
+                            bestD = d2;
+                            best = k2;
+                        }
+                    }
+                    editPos = best;
+                    act();
+                    return;
+                }
                 for (size_t i = 0; i < capsuleRects.size(); ++i)
                 {
                     const auto &r = capsuleRects[i];
@@ -1124,6 +1320,11 @@ int main(int argc, char **argv)
                     panVy = dragVy;
                     dragVx = dragVy = 0.0;
                 }
+                if (!dragging && dragSlider >= 0)
+                {
+                    dragSlider = -1;
+                    saveCfg();
+                }
             }
         });
 
@@ -1131,34 +1332,66 @@ int main(int argc, char **argv)
         mouseX = cx;
         mouseY = cy;
         act();
+        if (dragSlider >= 0)
+        {
+            const auto &t = setSliders[dragSlider];
+            const float f2 = std::clamp(
+                (static_cast<float>(cx) - t[0]) / std::max(1.0f, t[2]), 0.0f, 1.0f);
+            if (dragSlider == 2) cfg.fillOpacity = 0.20f + 0.80f * f2;
+            else cfg.uiScaleMul = 0.75f + 0.75f * f2;
+            presenter.setFillOpacity(cfg.fillOpacity);
+            return;
+        }
         if (!dragging) return;
         const double dx = cx - lastX, dy = cy - lastY;
         lastX = cx;
         lastY = cy;
-        vp.centerX -= dx * vp.worldPerPixel;
-        vp.centerY += dy * vp.worldPerPixel; // cursor y is down, world y is up
-        targetCx -= dx * vp.worldPerPixel;   // keep an in-flight zoom's target in step
-        targetCy += dy * vp.worldPerPixel;
+        vp.centerX -= dx * vp.wppX();
+        vp.centerY += dy * vp.wppY(); // cursor y is down, world y is up
+        targetCx -= dx * vp.wppX();   // keep an in-flight zoom's target in step
+        targetCy += dy * vp.wppY();
         const auto nowD = std::chrono::steady_clock::now();
         const double ddt =
             std::max(1e-4, std::chrono::duration<double>(nowD - lastDragT).count());
         lastDragT = nowD;
-        dragVx = 0.6 * dragVx + 0.4 * (-dx * vp.worldPerPixel / ddt);
-        dragVy = 0.6 * dragVy + 0.4 * (dy * vp.worldPerPixel / ddt);
+        dragVx = 0.6 * dragVx + 0.4 * (-dx * vp.wppX() / ddt);
+        dragVy = 0.6 * dragVy + 0.4 * (dy * vp.wppY() / ddt);
         viewportDirty = true;
         markInput();
     });
 
     window.scrollEvent.setCallback([&](glfw::Window &w, double, double yoff) {
         // zoom moves the TARGET (anchored at the cursor); the render loop
-        // glides toward it -- rapid scrolls accumulate into one smooth ride
+        // glides toward it. Plain scroll = uniform; Ctrl = y-axis only;
+        // Shift = x-axis only (anisotropic stretch, ratio capped 1/8..8).
         auto [cx, cy] = w.getCursorPos();
-        const double worldX = targetCx + (cx - fbW * 0.5) * targetWpp;
-        const double worldY = targetCy - (cy - fbH * 0.5) * targetWpp;
+        const bool ctrl = w.getKey(glfw::KeyCode::LeftControl) || w.getKey(glfw::KeyCode::RightControl);
+        const bool shift = w.getKey(glfw::KeyCode::LeftShift) || w.getKey(glfw::KeyCode::RightShift);
         const double factor = std::pow(1.1, -yoff);
-        targetWpp *= factor;
-        targetCx = worldX - (cx - fbW * 0.5) * targetWpp;
-        targetCy = worldY + (cy - fbH * 0.5) * targetWpp;
+        const double tWppY = targetWpp * targetStretch;
+        const double worldX = targetCx + (cx - fbW * 0.5) * targetWpp;
+        const double worldY = targetCy - (cy - fbH * 0.5) * tWppY;
+        if (ctrl && !shift)
+        {
+            const double ns = std::clamp(targetStretch * factor, 0.125, 8.0);
+            targetStretch = ns;
+            targetCy = worldY + (cy - fbH * 0.5) * targetWpp * targetStretch;
+        }
+        else if (shift && !ctrl)
+        {
+            // keep wppY constant: stretch absorbs the x change (within caps)
+            const double ns = std::clamp(targetStretch / factor, 0.125, 8.0);
+            const double applied = targetStretch / ns; // actual x factor honored
+            targetWpp *= applied;
+            targetStretch = ns;
+            targetCx = worldX - (cx - fbW * 0.5) * targetWpp;
+        }
+        else
+        {
+            targetWpp *= factor;
+            targetCx = worldX - (cx - fbW * 0.5) * targetWpp;
+            targetCy = worldY + (cy - fbH * 0.5) * targetWpp * targetStretch;
+        }
         viewAnimating = true;
         viewportDirty = true;
         act();
@@ -1288,6 +1521,7 @@ int main(int argc, char **argv)
             {
                 targetCx = targetCy = 0.0; // fly home, eased
                 targetWpp = 16.0 / fbW;
+                targetStretch = 1.0;
                 viewAnimating = true;
                 viewportDirty = true;
                 markInput();
@@ -1389,6 +1623,7 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
     glass.resize(fbW, fbH);
     overlay.resize(fbW, fbH);
     Viewport vp{0.0, 0.0, 16.0 / fbW, fbW, fbH};
+    vp.yStretch = gSelftestStretch;
 
     // semicolon-separated formulas land in successive relation slots
     std::vector<std::shared_ptr<const Relation>> rels;
@@ -1420,7 +1655,7 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
         (void)presenter.renderFrame(vp, present, /*uploadBudget=*/64);
         drawAxisNumbers(overlay, vp, fbW, fbH, 18.0f * s, 1.0f);
         drawUi(overlay, glass, fbW, fbH, s, {formula}, 0, /*editing=*/false, "", 0, "", 1.0f,
-               0.0f, false, nullptr);
+               0.0f, false, nullptr, nullptr, nullptr, nullptr);
         if (debug)
         {
             engine.debugTiles(vp, dbgTiles);

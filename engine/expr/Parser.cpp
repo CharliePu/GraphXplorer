@@ -181,6 +181,48 @@ private:
         return base;
     }
 
+    bool nextIsFunctionName()
+    {
+        size_t p2 = pos;
+        while (p2 < s.size() && std::isspace(static_cast<unsigned char>(s[p2]))) ++p2;
+        if (p2 >= s.size() ||
+            !(std::isalpha(static_cast<unsigned char>(s[p2])) || s[p2] == '_'))
+            return false;
+        size_t e2 = p2;
+        while (e2 < s.size() &&
+               (std::isalnum(static_cast<unsigned char>(s[e2])) || s[e2] == '_'))
+            ++e2;
+        static constexpr std::string_view names[] = {"sin",  "cos",  "tan", "asin", "acos",
+                                                     "atan", "log",  "ln",  "exp",  "sqrt",
+                                                     "abs"};
+        const std::string_view nm = s.substr(p2, e2 - p2);
+        for (const std::string_view n2 : names)
+            if (nm == n2) return true;
+        return false;
+    }
+
+    // Function argument without parentheses: an implicit product of pow-terms
+    // that stops before the next function name or operator --
+    // sin 2x == sin(2x), sin x cos x == sin(x)*cos(x), sin x + 1 == sin(x)+1.
+    std::unique_ptr<Node> parseFnArg()
+    {
+        auto term = parsePow();
+        for (;;)
+        {
+            skipWs();
+            if (pos < s.size() &&
+                (std::isalpha(static_cast<unsigned char>(s[pos])) || s[pos] == '_' ||
+                 std::isdigit(static_cast<unsigned char>(s[pos])) || s[pos] == '.' ||
+                 s[pos] == '('))
+            {
+                if (nextIsFunctionName()) break;
+                term = makeBinary(NodeKind::Mul, std::move(term), parsePow());
+            }
+            else break;
+        }
+        return term;
+    }
+
     std::unique_ptr<Node> parsePrimary()
     {
         skipWs();
@@ -261,7 +303,7 @@ private:
                 if (!accept(")")) fail("missing ')' after function argument");
                 return makeUnary(it->second, std::move(arg));
             }
-            fail("function '" + name + "' needs parentheses");
+            return makeUnary(it->second, parseFnArg()); // sin x, sin 2x, ...
         }
         // a non-function name followed by '(' is an implicit product: x(x+1)
 

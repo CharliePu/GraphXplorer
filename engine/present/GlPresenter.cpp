@@ -23,7 +23,7 @@ out vec3 vUv;
 out vec3 vUvFrom;
 out float vFade;
 out float vFlat; // >=0: flat coverage value; <0: sample the texture
-out vec3 vColor;
+out vec4 vColor;
 void main(){
     vec2 p = mix(iNdc.xy, iNdc.zw, corner);
     gl_Position = vec4(p, 0.0, 1.0);
@@ -31,7 +31,7 @@ void main(){
     vUvFrom = vec3(mix(iUvFrom.xy, iUvFrom.zw, corner), max(iMisc.y, 0.0));
     vFade = iMisc.z;
     vFlat = iMisc.x < 0.0 ? iMisc.w : -1.0;
-    vColor = iColor.rgb;
+    vColor = iColor;
 })";
 
 const char *kTileFs = R"(#version 330 core
@@ -39,7 +39,7 @@ in vec3 vUv;
 in vec3 vUvFrom;
 in float vFade;
 in float vFlat;
-in vec3 vColor;
+in vec4 vColor;
 out vec4 frag;
 uniform sampler2DArray tiles;     // the bucket's own-content array
 uniform sampler2DArray tilesFrom; // the bucket's crossfade-source array
@@ -49,7 +49,7 @@ void main(){
     // translucent quads would dip mid-fade; mixing coverages is exact.
     if (vFade < 1.0) c = mix(texture(tilesFrom, vUvFrom).r, c, vFade);
     if (c <= 0.0015) discard;
-    frag = vec4(vColor, c);
+    frag = vec4(vColor.rgb, c * vColor.a);
 })";
 
 const char *kLineVs = R"(#version 330 core
@@ -331,6 +331,15 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
     int criticalLeft = 64;
     const int nArr = static_cast<int>(tileArrays_.size());
     for (auto &b : buckets_) b.clear();
+    bool multi = false;
+    for (const PresentTile &t : tiles)
+        if (t.slot > 0)
+        {
+            multi = true;
+            break;
+        }
+    const float fillOpacity = multi ? 0.55f : 1.0f;
+
     for (const PresentTile &t : tiles)
     {
         Inst inst{};
@@ -339,7 +348,9 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         inst.color[0] = pal[0];
         inst.color[1] = pal[1];
         inst.color[2] = pal[2];
-        inst.color[3] = 1.0f;
+        // translucent region fills once several relations are shown, so
+        // overlaps BLEND; equality bands keep full strength (thin lines)
+        inst.color[3] = t.equality ? 1.0f : fillOpacity;
         float u0 = 0, v0 = 0, u1 = 1, v1 = 1;
         int ownArr = 0, fadeArr = -1; // bucket key (flat tiles land in (0,0))
 

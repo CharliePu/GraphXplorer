@@ -77,7 +77,7 @@ private:
     uint64_t frame_{0};
     int holeTiles_{0};
     bool gridVisible_{true};
-    float fillOpacity_{0.55f}; // multi-relation region-fill opacity
+    float fillOpacity_{0.66f}; // region-fill wash opacity
     float chromeWake_{1.0f};
     float pxScale_{1.0f};
     double uploadMs_{0.0};

@@ -64,6 +64,23 @@ Interval operator-(const Interval &a); // unary negate
 Interval ipow(const Interval &base, long long n);
 Interval pow(const Interval &base, const Interval &exp);
 Interval iabs(const Interval &a);
+// step / piecewise primitives: floor and ceil flag the contained jump via
+// `disc` (sound: proofs are blocked across it); sign flags the jump at 0.
+// min/max are continuous (no disc beyond the operands').
+Interval ifloor(const Interval &a);
+Interval iceil(const Interval &a);
+Interval isign(const Interval &a);
+Interval imin(const Interval &a, const Interval &b);
+Interval imax(const Interval &a, const Interval &b);
+
+// hull of two enclosures (for subgradient enclosures at min/max kinks)
+[[nodiscard]] inline Interval ihull(const Interval &a, const Interval &b)
+{
+    Interval r{a.lo < b.lo ? a.lo : b.lo, a.hi > b.hi ? a.hi : b.hi};
+    r.disc = a.disc || b.disc;
+    r.undef = a.undef || b.undef;
+    return r;
+}
 
 // transcendentals (outward-rounded, periodic extrema handled exactly)
 Interval sin(const Interval &a);

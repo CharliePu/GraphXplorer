@@ -192,9 +192,10 @@ private:
         while (e2 < s.size() &&
                (std::isalnum(static_cast<unsigned char>(s[e2])) || s[e2] == '_'))
             ++e2;
-        static constexpr std::string_view names[] = {"sin",  "cos",  "tan", "asin", "acos",
-                                                     "atan", "log",  "ln",  "exp",  "sqrt",
-                                                     "abs"};
+        static constexpr std::string_view names[] = {"sin",   "cos",  "tan",  "asin", "acos",
+                                                     "atan",  "log",  "ln",   "exp",  "sqrt",
+                                                     "abs",   "floor", "ceil", "sign", "min",
+                                                     "max"};
         const std::string_view nm = s.substr(p2, e2 - p2);
         for (const std::string_view n2 : names)
             if (nm == n2) return true;
@@ -287,11 +288,24 @@ private:
         }
         const std::string name{s.substr(start, pos - start)};
 
+        // two-argument functions: min(a, b), max(a, b)
+        if (name == "min" || name == "max")
+        {
+            skipWs();
+            if (!accept("(")) fail("'" + name + "' needs parentheses: " + name + "(a, b)");
+            auto a1 = parseOr();
+            if (!accept(",")) fail("'" + name + "' takes two arguments: " + name + "(a, b)");
+            auto a2 = parseOr();
+            if (!accept(")")) fail("missing ')' after " + name + " arguments");
+            return makeBinary(name == "min" ? NodeKind::Min : NodeKind::Max, std::move(a1),
+                              std::move(a2));
+        }
         static const std::unordered_map<std::string, NodeKind> fns{
-            {"sin", NodeKind::Sin},   {"cos", NodeKind::Cos},   {"tan", NodeKind::Tan},
-            {"asin", NodeKind::Asin}, {"acos", NodeKind::Acos}, {"atan", NodeKind::Atan},
-            {"log", NodeKind::Log},   {"ln", NodeKind::Log},    {"exp", NodeKind::Exp},
-            {"sqrt", NodeKind::Sqrt}, {"abs", NodeKind::Abs}};
+            {"sin", NodeKind::Sin},    {"cos", NodeKind::Cos},   {"tan", NodeKind::Tan},
+            {"asin", NodeKind::Asin},  {"acos", NodeKind::Acos}, {"atan", NodeKind::Atan},
+            {"log", NodeKind::Log},    {"ln", NodeKind::Log},    {"exp", NodeKind::Exp},
+            {"sqrt", NodeKind::Sqrt},  {"abs", NodeKind::Abs},   {"floor", NodeKind::Floor},
+            {"ceil", NodeKind::Ceil},  {"sign", NodeKind::Sign}};
         const auto it = fns.find(name);
         if (it != fns.end())
         {

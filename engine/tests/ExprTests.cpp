@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "expr/Relation.h"
+#include "solve/Solver.h"
 
 using namespace gxr;
 
@@ -158,4 +159,41 @@ TEST_CASE("functions apply without parentheses", "[expr]")
     agree("y = sin x cos x", "y = sin(x)*cos(x)");
     agree("y > sin x + 1", "y > sin(x) + 1");
     agree("y > sqrt x^2", "y > sqrt(x^2)");
+}
+
+TEST_CASE("floor/ceil/sign/min/max: values match std and jumps are never proven across",
+          "[expr]")
+{
+    EvalScratch s;
+    auto agree = [&](const std::string &a, const std::string &b) {
+        std::string e1, e2;
+        auto ra = Relation::parse(a, e1);
+        auto rb = Relation::parse(b, e2);
+        REQUIRE(ra.has_value());
+        REQUIRE(rb.has_value());
+        for (double x : {-2.5, -1.0, -0.3, 0.0, 0.7, 1.5, 3.2})
+            for (double y : {-1.2, 0.4, 2.0})
+                REQUIRE(ra->pointInside(x, y, s) == rb->pointInside(x, y, s));
+    };
+    agree("y < min(x, 2 - x)", "y < x && y < 2 - x"); // exact logical equivalent
+    agree("y < max(x, -x)", "y < x || y < -x");
+    agree("y >= ceil(x)", "y >= -floor(-x)");
+
+    // spot values
+    std::string err;
+    auto rs = Relation::parse("y < sign(x)", err);
+    REQUIRE(rs.has_value());
+    REQUIRE(rs->pointInside(2.0, 0.5, s));        // sign=1
+    REQUIRE_FALSE(rs->pointInside(2.0, 1.5, s));
+    REQUIRE_FALSE(rs->pointInside(-2.0, -0.5, s)); // sign=-1
+
+    // SOUNDNESS: a box straddling the jump at x=1 must classify Mixed for
+    // y < floor(x) (false left of the jump, true right of it at y in (0,1)):
+    // the disc flag must block any uniform proof across the jump.
+    auto rl = Relation::parse("y < floor(x)", err);
+    REQUIRE(rl.has_value());
+    REQUIRE(classifyRegion(*rl, WorldRect{0.9, 0.2, 1.1, 0.8}, s) == NodeClass::Mixed);
+    // and away from jumps the proof machinery still works
+    REQUIRE(classifyRegion(*rl, WorldRect{1.2, 0.2, 1.8, 0.8}, s) == NodeClass::UniformTrue);
+    REQUIRE(classifyRegion(*rl, WorldRect{0.2, 0.2, 0.8, 0.8}, s) == NodeClass::UniformFalse);
 }

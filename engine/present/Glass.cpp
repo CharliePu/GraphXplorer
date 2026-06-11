@@ -41,6 +41,7 @@ uniform vec4 rect;     // x, y, w, h in GL pixels (origin bottom-left)
 uniform float radius;
 uniform vec2 fbSize;
 uniform sampler2D blurTex;
+uniform float panelAlpha;
 void main(){
     vec2 p = gl_FragCoord.xy;
     vec2 c = rect.xy + rect.zw * 0.5;
@@ -55,8 +56,8 @@ void main(){
     vec3 glass = frost * 0.40 + vec3(0.060, 0.072, 0.104) * 0.74;
     glass += vec3((1.0 - smoothstep(0.0, 2.4, abs(d + 1.3))) * 0.075); // rim light
 
-    float alpha = max(aPanel, aShadow * (1.0 - aPanel));
-    vec3 rgb = glass * (aPanel / max(alpha, 1e-4)); // shadow contributes black
+    float alpha = max(aPanel, aShadow * (1.0 - aPanel)) * panelAlpha;
+    vec3 rgb = glass * (aPanel / max(max(aPanel, aShadow * (1.0 - aPanel)), 1e-4));
     frag = vec4(rgb, alpha);
 })";
 
@@ -100,6 +101,7 @@ Glass::Glass()
     uRadius_ = glGetUniformLocation(panelProg_, "radius");
     uFbSize_ = glGetUniformLocation(panelProg_, "fbSize");
     uPanelTex_ = glGetUniformLocation(panelProg_, "blurTex");
+    uPanelAlpha_ = glGetUniformLocation(panelProg_, "panelAlpha");
 
     glGenVertexArrays(1, &vao_);
     glGenBuffers(1, &vbo_);
@@ -185,7 +187,7 @@ void Glass::capture()
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 
-void Glass::panel(float x, float y, float w, float h, float radius)
+void Glass::panel(float x, float y, float w, float h, float radius, float alpha)
 {
     // top-left pixel coords -> GL bottom-left
     const float gx = x, gy = static_cast<float>(fbH_) - y - h;
@@ -201,6 +203,7 @@ void Glass::panel(float x, float y, float w, float h, float radius)
     glUniform1f(uRadius_, radius);
     glUniform2f(uFbSize_, static_cast<float>(fbW_), static_cast<float>(fbH_));
     glUniform1i(uPanelTex_, 0);
+    glUniform1f(uPanelAlpha_, alpha);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, tex_[0]);
     glBindVertexArray(vao_);

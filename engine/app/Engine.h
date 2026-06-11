@@ -29,6 +29,7 @@ struct PresentTile
     CoverageTilePtr cov; // texture to sample (own tile, or an ancestor for fallback); null if flat
     int slot{0};        // relation slot index (selects the fill color)
     bool equality{false}; // curve band (always full-strength) vs region fill
+    bool closed{false};   // closed inequality (>=, <=): boundary renders as a line
     int level{0};
     bool fallback{false};
     TileState state{TileState::Missing};
@@ -200,6 +201,7 @@ private:
     {
         uint64_t epoch{0};
         bool equality{false};
+        bool closed{false};
     };
     std::atomic<std::shared_ptr<const std::vector<SlotInfo>>> currentSlots_;
 

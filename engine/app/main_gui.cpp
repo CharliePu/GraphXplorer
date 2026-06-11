@@ -223,11 +223,12 @@ void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
     // ---- shortcuts flyover (?) ----
     if (helpOpen)
     {
-        const char *lines[] = {"Enter      edit relation",   "Tab        next relation",
-                               "N / X      add / delete",    "1-6        presets",
-                               "S          settings",        "P          screenshot",
-                               "D          debug overlay",   "R          home",
-                               "?          close this"};
+        const char *lines[] = {"Enter        edit relation", "Tab          next relation",
+                               "N / X        add / delete",  "1-6          presets",
+                               "ctrl+scroll  stretch y axis", "shift+scroll stretch x axis",
+                               "S            settings",      "P            screenshot",
+                               "D            debug overlay", "R            home",
+                               "?            close this"};
         const int n = static_cast<int>(sizeof(lines) / sizeof(lines[0]));
         const float lw = 320.0f * s, lh2 = ui.lineHeight(0.84f) + 6 * s;
         const float ph = 24.0f * s * 2 + lh2 * static_cast<float>(n);

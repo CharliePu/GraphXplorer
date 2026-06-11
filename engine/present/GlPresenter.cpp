@@ -483,7 +483,8 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
             multi = true;
             break;
         }
-    const float fillOpacity = multi ? fillOpacity_ : 1.0f;
+    (void)multi;
+    const float fillOpacity = fillOpacity_; // Lumen: fills are ALWAYS a deep wash
 
     for (const PresentTile &t : tiles)
     {

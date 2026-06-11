@@ -48,22 +48,20 @@ std::shared_ptr<const Relation> parseOrNull(const std::string &src)
     return std::make_shared<const Relation>(std::move(*r));
 }
 
-// Showcase presets (keys 1-6): each one leans on a renderer capability at its
-// limit. 1: the signature wall -- smooth curve degrading into the exact
-// analytic-measure gray (explicit 1-D fast path). 2: 2-D oscillation
-// checkerboard; zoom OUT and the moire converges to stable gray, zoom in and
-// greedy proofs carve exact regions. 3: ripple rings densifying to gray with
-// interval-proved cores. 4: an implicit curve WEB -- the marching-squares
-// vector strokes at full stretch. 5: the topologist's sine curve -- infinitely
-// accumulating oscillation at x=0, sound at every zoom forever. 6: the same
-// wall as 1 but with the structure detection DEFEATED (+y*0): the full
-// pathological 2-D path, the formula the responsiveness contract is measured
-// against -- pan and zoom into the gray and it must never lag.
+// Showcase presets (keys 1-6), each leaning on a renderer capability at its
+// limit. 1: the signature wall (curve degrading into the exact analytic-
+// measure gray). 2: min() interference of a lattice and a hyperbolic field.
+// 3: floor() staircase with parabolic arcs -- the jumps render DISCONNECTED
+// (the sound disc flag suppresses fake vertical connectors). 4: the implicit
+// curve web, written with implicit multiplication. 5: the topologist's sine
+// curve (infinite oscillation at x=0). 6: the wall with structure detection
+// DEFEATED (+y*0): the pathological 2-D path the responsiveness contract is
+// measured against.
 const char *kPresets[] = {
     "y > sin(2^x)",
-    "sin(x*y) > 0",
-    "sin(x^2 + y^2) > 0",
-    "sin(x)*sin(y) = sin(x*y)",
+    "min(sin x + sin y, cos(x y)) > 0",
+    "y = floor(x) + (x - floor(x))^2",
+    "sin x sin y = sin(x y)",
     "y < sin(1/x)",
     "y > sin(2^x) + y*0",
 };
@@ -99,6 +97,72 @@ void roundedRect(Overlay &ui, float x, float y, float w, float h, float r,
     ui.fillRect(x, y + r, w, h - 2 * r, c);
 }
 
+// Pretty math for DISPLAY-mode formulas: '^' exponents render raised and
+// small (x^2 reads as x squared), '*' renders as a centered dot. Editing
+// always shows the raw source so caret indexes stay 1:1 with the buffer.
+// Returns the pen x after the run; draw=false only measures.
+float prettyRun(Overlay &ui, const std::string &t, size_t from, size_t to, float x, float y,
+                float scale, const std::array<float, 4> &col, bool draw)
+{
+    float pen = x;
+    size_t i = from;
+    while (i < to)
+    {
+        const char c = t[i];
+        if (c == '^' && scale > 0.45f)
+        {
+            ++i;
+            const float subScale = scale * 0.66f;
+            const float raise = ui.lineHeight(scale) * 0.28f;
+            if (i < to && t[i] == '(')
+            {
+                int depth = 1;
+                size_t b2 = i + 1;
+                while (b2 < to && depth != 0)
+                {
+                    depth += t[b2] == '(' ? 1 : t[b2] == ')' ? -1 : 0;
+                    ++b2;
+                }
+                const size_t inner = b2 - (depth == 0 ? 1 : 0);
+                pen = prettyRun(ui, t, i + 1, inner, pen, y - raise, subScale, col, draw);
+                i = b2;
+            }
+            else
+            {
+                size_t b2 = i;
+                while (b2 < to &&
+                       (std::isalnum(static_cast<unsigned char>(t[b2])) || t[b2] == '.'))
+                    ++b2;
+                pen = prettyRun(ui, t, i, b2, pen, y - raise, subScale, col, draw);
+                i = b2;
+            }
+            continue;
+        }
+        if (c == '*')
+        {
+            const float d2 = std::max(1.5f, ui.lineHeight(scale) * 0.09f);
+            if (draw)
+                ui.fillRect(pen + d2 * 1.5f, y + ui.lineHeight(scale) * 0.44f, d2 * 1.5f,
+                            d2 * 1.5f, col);
+            pen += d2 * 4.5f;
+            ++i;
+            continue;
+        }
+        size_t j = i;
+        while (j < to && t[j] != '^' && t[j] != '*') ++j;
+        const std::string seg = t.substr(i, j - i);
+        if (draw) ui.text(pen, y, seg, scale, col);
+        pen += ui.textWidth(seg, scale);
+        i = j;
+    }
+    return pen;
+}
+
+float prettyWidth(Overlay &ui, const std::string &t, float scale)
+{
+    return prettyRun(ui, t, 0, t.size(), 0.0f, 0.0f, scale, {}, false);
+}
+
 void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
            const std::vector<std::string> &formulas, size_t selected, bool editing,
            const std::string &edit, size_t editPos, const std::string &status, float wake,
@@ -121,7 +185,10 @@ void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
     float total = 0;
     for (size_t i = 0; i < formulas.size(); ++i)
     {
-        capW[i] = ui.textWidth(formulas[i], capScale) + padX * 2 + dot + 6 * s;
+        const bool ed0 = editing && i == selected;
+        const float tw0 =
+            ed0 ? ui.textWidth(edit, capScale) : prettyWidth(ui, formulas[i], capScale);
+        capW[i] = tw0 + padX * 2 + dot + 6 * s;
         total += capW[i] + (i ? gap : 0);
     }
     float cx0 = std::max(12.0f * s, (w - total) * 0.5f);
@@ -147,10 +214,11 @@ void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
             const float a = rowAlpha * (sel ? 1.0f : 0.62f);
             roundedRect(ui, x + padX, capY + capH * 0.5f - dot * 0.5f, dot, dot, dot * 0.5f,
                         {pal[0], pal[1], pal[2], a});
-            ui.text(x + padX + dot + 6 * s, capY + (capH - ui.lineHeight(capScale)) * 0.5f + 1,
-                    formulas[i], capScale,
-                    sel ? std::array<float, 4>{0.88f, 0.90f, 0.94f, a}
-                        : std::array<float, 4>{0.60f, 0.63f, 0.69f, a});
+            prettyRun(ui, formulas[i], 0, formulas[i].size(), x + padX + dot + 6 * s,
+                      capY + (capH - ui.lineHeight(capScale)) * 0.5f + 1, capScale,
+                      sel ? std::array<float, 4>{0.88f, 0.90f, 0.94f, a}
+                          : std::array<float, 4>{0.60f, 0.63f, 0.69f, a},
+                      true);
             x += capW[i] + gap;
         }
     }
@@ -174,7 +242,11 @@ void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
                     {pal[0], pal[1], pal[2], k});
         if (barRect) *barRect = {bx, by, bw, bh};
         if (barTextX) *barTextX = tx + 8 * s;
-        ui.text(tx + 8 * s, ty, shown, tScale, {0.92f, 0.94f, 0.97f, k});
+        if (editing)
+            ui.text(tx + 8 * s, ty, shown, tScale, {0.92f, 0.94f, 0.97f, k});
+        else
+            prettyRun(ui, shown, 0, shown.size(), tx + 8 * s, ty, tScale,
+                      {0.92f, 0.94f, 0.97f, k}, true);
         if (editing)
         {
             const std::string prefix = shown.substr(0, std::min(editPos, shown.size()));

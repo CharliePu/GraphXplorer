@@ -76,6 +76,11 @@ void emit(const Node &n, Program &p)
     case NodeKind::Log: unary(Op::Log); return;
     case NodeKind::Exp: unary(Op::Exp); return;
     case NodeKind::Sqrt: unary(Op::Sqrt); return;
+    case NodeKind::Floor: unary(Op::Floor); return;
+    case NodeKind::Ceil: unary(Op::Ceil); return;
+    case NodeKind::Sign: unary(Op::Sign); return;
+    case NodeKind::Min: binary(Op::Min); return;
+    case NodeKind::Max: binary(Op::Max); return;
     case NodeKind::Add: binary(Op::Add); return;
     case NodeKind::Sub: binary(Op::Sub); return;
     case NodeKind::Mul: binary(Op::Mul); return;
@@ -122,6 +127,11 @@ double Program::evalPoint(double x, double y, std::vector<double> &st) const
         case Op::Log: st.back() = std::log(st.back()); break;
         case Op::Exp: st.back() = std::exp(st.back()); break;
         case Op::Sqrt: st.back() = std::sqrt(st.back()); break;
+        case Op::Floor: st.back() = std::floor(st.back()); break;
+        case Op::Ceil: st.back() = std::ceil(st.back()); break;
+        case Op::Sign:
+            st.back() = st.back() > 0.0 ? 1.0 : st.back() < 0.0 ? -1.0 : st.back();
+            break;
         case Op::IPow: st.back() = std::pow(st.back(), in.imm); break;
         default:
         {
@@ -130,6 +140,8 @@ double Program::evalPoint(double x, double y, std::vector<double> &st) const
             double &a = st.back();
             switch (in.op)
             {
+            case Op::Min: a = std::min(a, b); break;
+            case Op::Max: a = std::max(a, b); break;
             case Op::Add: a = a + b; break;
             case Op::Sub: a = a - b; break;
             case Op::Mul: a = a * b; break;
@@ -283,6 +295,28 @@ void Program::evalPointBatch(const double *xs, const double *ys, double *out, in
                 if (sp - 1 < 64) cflag[sp - 1] = false;
                 break;
             }
+            case Op::Floor:
+            {
+                double *r = row(sp - 1);
+                for (int i = 0; i < pw; ++i) r[i] = std::floor(r[i]);
+                if (sp - 1 < 64) cflag[sp - 1] = false;
+                break;
+            }
+            case Op::Ceil:
+            {
+                double *r = row(sp - 1);
+                for (int i = 0; i < pw; ++i) r[i] = std::ceil(r[i]);
+                if (sp - 1 < 64) cflag[sp - 1] = false;
+                break;
+            }
+            case Op::Sign:
+            {
+                double *r = row(sp - 1);
+                for (int i = 0; i < pw; ++i)
+                    r[i] = r[i] > 0.0 ? 1.0 : r[i] < 0.0 ? -1.0 : r[i];
+                if (sp - 1 < 64) cflag[sp - 1] = false;
+                break;
+            }
             case Op::IPow:
             {
                 double *r = row(sp - 1);
@@ -316,6 +350,12 @@ void Program::evalPointBatch(const double *xs, const double *ys, double *out, in
                     break;
                 case Op::Mul:
                     for (int i = 0; i < pw; ++i) a[i] = a[i] * b[i];
+                    break;
+                case Op::Min:
+                    for (int i = 0; i < pw; ++i) a[i] = std::min(a[i], b[i]);
+                    break;
+                case Op::Max:
+                    for (int i = 0; i < pw; ++i) a[i] = std::max(a[i], b[i]);
                     break;
                 case Op::Div:
                     for (int i = 0; i < pw; ++i) a[i] = a[i] / b[i];
@@ -408,6 +448,9 @@ Interval Program::evalInterval(const Interval &x, const Interval &y, std::vector
         case Op::Log: st.back() = log(st.back()); break;
         case Op::Exp: st.back() = exp(st.back()); break;
         case Op::Sqrt: st.back() = sqrt(st.back()); break;
+        case Op::Floor: st.back() = ifloor(st.back()); break;
+        case Op::Ceil: st.back() = iceil(st.back()); break;
+        case Op::Sign: st.back() = isign(st.back()); break;
         case Op::IPow: st.back() = ipow(st.back(), static_cast<long long>(in.imm)); break;
         default:
         {
@@ -421,6 +464,8 @@ Interval Program::evalInterval(const Interval &x, const Interval &y, std::vector
             case Op::Mul: a = a * b; break;
             case Op::Div: a = a / b; break;
             case Op::Pow: a = pow(a, b); break;
+            case Op::Min: a = imin(a, b); break;
+            case Op::Max: a = imax(a, b); break;
             case Op::Less: a = cmpLess(a, b); break;
             case Op::LessEq: a = cmpLessEq(a, b); break;
             case Op::Greater: a = cmpGreater(a, b); break;
@@ -562,6 +607,22 @@ Jet Program::evalJet(const Interval &x, const Interval &y, std::vector<Jet> &st)
             a.v = ipow(a.v, n);
             break;
         }
+        case Op::Floor:
+        case Op::Ceil:
+        case Op::Sign:
+        {
+            // Piecewise-constant: derivative 0 almost everywhere; the jumps
+            // are reported by the value interval's disc flag, which soundly
+            // blocks any uniform proof across them -- so a zero gradient is a
+            // sound mean-value enclosure on every jump-free box.
+            Jet &a = st.back();
+            a.v = in.op == Op::Floor ? ifloor(a.v)
+                  : in.op == Op::Ceil ? iceil(a.v)
+                                      : isign(a.v);
+            a.dx = Interval{0.0, 0.0};
+            a.dy = Interval{0.0, 0.0};
+            break;
+        }
         default:
         {
             Jet b = st.back();
@@ -574,6 +635,26 @@ Jet Program::evalJet(const Interval &x, const Interval &y, std::vector<Jet> &st)
                 a.dx = a.dx + b.dx;
                 a.dy = a.dy + b.dy;
                 break;
+            case Op::Min:
+            case Op::Max:
+            {
+                const bool useMin = in.op == Op::Min;
+                const bool aWins = useMin ? a.v.hi < b.v.lo : a.v.lo > b.v.hi;
+                const bool bWins = useMin ? b.v.hi < a.v.lo : b.v.lo > a.v.hi;
+                a.v = useMin ? imin(a.v, b.v) : imax(a.v, b.v);
+                if (bWins)
+                {
+                    a.dx = b.dx;
+                    a.dy = b.dy;
+                }
+                else if (!aWins)
+                {
+                    // kink region: the subgradient hull encloses both branches
+                    a.dx = ihull(a.dx, b.dx);
+                    a.dy = ihull(a.dy, b.dy);
+                }
+                break;
+            }
             case Op::Sub:
                 a.v = a.v - b.v;
                 a.dx = a.dx - b.dx;

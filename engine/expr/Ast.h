@@ -27,6 +27,11 @@ enum class NodeKind
     Log,
     Exp,
     Sqrt,
+    Floor,
+    Ceil,
+    Sign,
+    Min,
+    Max,
     // relational / logical (truth-valued)
     Less,
     LessEq,

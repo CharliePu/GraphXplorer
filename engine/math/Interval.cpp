@@ -111,6 +111,52 @@ Interval operator/(const Interval &a, const Interval &b)
     return sanitize(rdown(lo), rup(hi), a.disc || b.disc);
 }
 
+// floor/ceil are exact on doubles: no outward rounding needed. The jump the
+// box may contain is reported via `disc`, which soundly blocks uniform
+// proofs across it (same contract as tan poles / division by zero).
+Interval ifloor(const Interval &a)
+{
+    if (a.undef) return Interval::undefined();
+    Interval r{std::floor(a.lo), std::floor(a.hi)};
+    r.disc = a.disc || r.lo != r.hi;
+    return r;
+}
+
+Interval iceil(const Interval &a)
+{
+    if (a.undef) return Interval::undefined();
+    Interval r{std::ceil(a.lo), std::ceil(a.hi)};
+    r.disc = a.disc || r.lo != r.hi;
+    return r;
+}
+
+Interval isign(const Interval &a)
+{
+    if (a.undef) return Interval::undefined();
+    if (a.lo > 0.0) return Interval{1.0, 1.0, a.disc};
+    if (a.hi < 0.0) return Interval{-1.0, -1.0, a.disc};
+    // contains 0: attained values within {-1, 0, 1}
+    Interval r{a.lo < 0.0 ? -1.0 : 0.0, a.hi > 0.0 ? 1.0 : 0.0};
+    r.disc = a.disc || a.lo < 0.0 || a.hi > 0.0; // jump at 0 inside the box
+    return r;
+}
+
+Interval imin(const Interval &a, const Interval &b)
+{
+    if (a.undef || b.undef) return Interval::undefined();
+    Interval r{a.lo < b.lo ? a.lo : b.lo, a.hi < b.hi ? a.hi : b.hi};
+    r.disc = a.disc || b.disc;
+    return r;
+}
+
+Interval imax(const Interval &a, const Interval &b)
+{
+    if (a.undef || b.undef) return Interval::undefined();
+    Interval r{a.lo > b.lo ? a.lo : b.lo, a.hi > b.hi ? a.hi : b.hi};
+    r.disc = a.disc || b.disc;
+    return r;
+}
+
 Interval iabs(const Interval &a)
 {
     if (a.undef) return a;

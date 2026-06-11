@@ -4,6 +4,14 @@
 #define GLFW_INCLUDE_NONE
 #include <glad/glad.h>
 #include <glfwpp/glfwpp.h>
+#ifdef _WIN32
+#define GLFW_EXPOSE_NATIVE_WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <GLFW/glfw3.h>
+#include <GLFW/glfw3native.h>
+#include <dwmapi.h>
+#endif
 
 #include "app/Engine.h"
 #include "image/Png.h"
@@ -325,7 +333,8 @@ void drawDebug(Overlay &ui, Glass &glass, float s, const Viewport &vp, int fbW, 
 // Numeric tick labels along the X and Y axes, matching the presenter's adaptive
 // grid spacing. Labels ride the axis but clamp to the screen edge when the axis
 // scrolls off, so coordinates stay readable while panning/zooming.
-void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH, float barH)
+void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH, float barH,
+                    float wake)
 {
     if (!ui.ok()) return;
     const double cx = vp.centerX, cy = vp.centerY, wpp = vp.worldPerPixel;
@@ -374,8 +383,9 @@ void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH, float ba
     }
     const int decimals = decimalsFor(lstep);
     auto fmt = [&](double v) { return fmtStep(v, decimals); };
-    const std::array<float, 4> fg{0.95f, 0.97f, 1.0f, 1.0f};
-    const std::array<float, 4> bg{0.03f, 0.03f, 0.05f, 0.9f};
+    const float wk = 0.25f + 0.75f * wake; // labels sleep with the rest of the chrome
+    const std::array<float, 4> fg{0.62f, 0.64f, 0.69f, 0.95f * wk};
+    const std::array<float, 4> bg{0.03f, 0.03f, 0.05f, 0.75f * wk};
     // Draw each label with a 1px dark outline so it stays legible over both the
     // bright (true) fill and the dark (false) background it straddles on the axis.
     auto label = [&](float x, float y, const std::string &s) {
@@ -498,6 +508,15 @@ int main(int argc, char **argv)
     float dpiScale = std::get<0>(window.getContentScale());
     if (!(dpiScale >= 0.5f && dpiScale <= 4.0f)) dpiScale = 1.0f;
     Overlay overlay(findFont(), static_cast<int>(22.0f * dpiScale + 0.5f));
+#ifdef _WIN32
+    if (HWND hwnd = glfwGetWin32Window(static_cast<GLFWwindow *>(window)))
+    {
+        BOOL dark = TRUE;
+        DwmSetWindowAttribute(hwnd, 20, &dark, sizeof dark);
+        int backdrop = 2;
+        DwmSetWindowAttribute(hwnd, 38, &backdrop, sizeof backdrop);
+    }
+#endif
 
     auto [fbW, fbH] = window.getFramebufferSize();
     presenter.resize(fbW, fbH);
@@ -561,6 +580,15 @@ int main(int argc, char **argv)
     bool viewAnimating = false;
     float selAnim = 0.0f; // eased selection-highlight row
     auto animPrev = std::chrono::steady_clock::now();
+
+    // sleeping chrome: attention eases grid/labels/HUD between wake and rest
+    float wakeK = 1.0f;
+    auto lastActivity = std::chrono::steady_clock::now();
+    auto act = [&]() { lastActivity = std::chrono::steady_clock::now(); };
+    // pan release-inertia (world units/s), fed by recent drag velocity
+    double panVx = 0.0, panVy = 0.0;
+    double dragVx = 0.0, dragVy = 0.0;
+    auto lastDragT = std::chrono::steady_clock::now();
 
     // formula editing state
     bool editing = false;
@@ -725,6 +753,28 @@ int main(int argc, char **argv)
             selAnim += (selTarget - selAnim) *
                        static_cast<float>(1.0 - std::exp(-adt / 0.045));
             if (std::abs(selAnim - selTarget) < 0.004f) selAnim = selTarget;
+
+            // pan inertia: glide after a flick, with exponential friction
+            if (!dragging && (std::abs(panVx) > 1e-9 || std::abs(panVy) > 1e-9))
+            {
+                vp.centerX += panVx * adt;
+                vp.centerY += panVy * adt;
+                targetCx = vp.centerX;
+                targetCy = vp.centerY;
+                const double f = std::exp(-adt / 0.18);
+                panVx *= f;
+                panVy *= f;
+                if (std::hypot(panVx, panVy) < vp.worldPerPixel * 3.0) panVx = panVy = 0.0;
+                viewportDirty = true;
+            }
+
+            // sleeping chrome: ease toward rest after ~2.5s of stillness
+            const double idleFor =
+                std::chrono::duration<double>(nowA - lastActivity).count();
+            const float wakeTarget = idleFor > 2.5 ? 0.0f : 1.0f;
+            wakeK += (wakeTarget - wakeK) * static_cast<float>(1.0 - std::exp(-adt / 0.30));
+            if (std::abs(wakeK - wakeTarget) < 0.005f) wakeK = wakeTarget;
+            presenter.setChrome(wakeK, dpiScale);
         }
         const bool vpChangedThisFrame = viewportDirty;
 
@@ -768,7 +818,7 @@ int main(int argc, char **argv)
         if (pendingUploads > 0) finalRender = false;
         if (presenter.activeFades() > 0) finalRender = false; // crossfades still animating
         const auto tOverlay0 = SClock::now();
-        if (cfg.labels) drawAxisNumbers(overlay, vp, fbW, fbH, 18.0f * uiS());
+        if (cfg.labels) drawAxisNumbers(overlay, vp, fbW, fbH, 18.0f * uiS(), wakeK);
         drawUi(overlay, glass, fbW, fbH, uiS(), formulas, selected, selAnim, editing, editBuffer,
                editPos, status);
         {
@@ -974,16 +1024,30 @@ int main(int argc, char **argv)
         [&](glfw::Window &w, glfw::MouseButton b, glfw::MouseButtonState s, glfw::ModifierKeyBit) {
             if (b == glfw::MouseButton::Left)
             {
+                const bool was = dragging;
                 dragging = (s == glfw::MouseButtonState::Press);
                 auto [cx, cy] = w.getCursorPos();
                 lastX = cx;
                 lastY = cy;
+                act();
+                if (dragging)
+                {
+                    panVx = panVy = dragVx = dragVy = 0.0;
+                    lastDragT = std::chrono::steady_clock::now();
+                }
+                else if (was)
+                {
+                    panVx = dragVx; // release: glide
+                    panVy = dragVy;
+                    dragVx = dragVy = 0.0;
+                }
             }
         });
 
     window.cursorPosEvent.setCallback([&](glfw::Window &, double cx, double cy) {
         mouseX = cx;
         mouseY = cy;
+        act();
         if (!dragging) return;
         const double dx = cx - lastX, dy = cy - lastY;
         lastX = cx;
@@ -992,6 +1056,12 @@ int main(int argc, char **argv)
         vp.centerY += dy * vp.worldPerPixel; // cursor y is down, world y is up
         targetCx -= dx * vp.worldPerPixel;   // keep an in-flight zoom's target in step
         targetCy += dy * vp.worldPerPixel;
+        const auto nowD = std::chrono::steady_clock::now();
+        const double ddt =
+            std::max(1e-4, std::chrono::duration<double>(nowD - lastDragT).count());
+        lastDragT = nowD;
+        dragVx = 0.6 * dragVx + 0.4 * (-dx * vp.worldPerPixel / ddt);
+        dragVy = 0.6 * dragVy + 0.4 * (dy * vp.worldPerPixel / ddt);
         viewportDirty = true;
         markInput();
     });
@@ -1008,6 +1078,7 @@ int main(int argc, char **argv)
         targetCy = worldY + (cy - fbH * 0.5) * targetWpp;
         viewAnimating = true;
         viewportDirty = true;
+        act();
         markInput();
     });
 
@@ -1186,8 +1257,10 @@ int main(int argc, char **argv)
         else if (finalRender)
             glfw::waitEvents();
         else if (presenter.activeFades() > 0 || viewAnimating ||
+                 std::abs(panVx) > 1e-12 || std::abs(panVy) > 1e-12 ||
+                 (wakeK > 0.0f && wakeK < 1.0f) ||
                  std::abs(selAnim - static_cast<float>(selected)) > 0.004f)
-            glfw::waitEvents(0.006); // crossfades / view & UI animations
+            glfw::waitEvents(0.006); // crossfades / view & UI animations / glide
         else
             glfw::waitEvents(0.05);
         pendingWaitMs = msSince(w0); // includes event-callback dispatch time
@@ -1261,7 +1334,7 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
         glfw::pollEvents();
         engine.buildPresent(vp, present);
         (void)presenter.renderFrame(vp, present, /*uploadBudget=*/64);
-        drawAxisNumbers(overlay, vp, fbW, fbH, 18.0f * s);
+        drawAxisNumbers(overlay, vp, fbW, fbH, 18.0f * s, 1.0f);
         drawUi(overlay, glass, fbW, fbH, s, {formula}, 0, 0.0f, /*editing=*/false, "", 0, "");
         if (debug)
         {

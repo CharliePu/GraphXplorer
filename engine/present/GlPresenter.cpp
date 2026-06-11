@@ -61,6 +61,43 @@ out vec4 frag;
 uniform vec4 color;
 void main(){ frag = color; })";
 
+// ---- bloom chain: bright-pass -> separable blur -> additive composite ----
+const char *kTriVs = R"(#version 330 core
+layout(location=0) in vec2 pos;
+out vec2 vUv;
+void main(){ vUv = pos * 0.5 + 0.5; gl_Position = vec4(pos, 0.0, 1.0); })";
+
+const char *kBrightFs = R"(#version 330 core
+in vec2 vUv;
+out vec4 frag;
+uniform sampler2D tex;
+void main(){
+    vec3 c = texture(tex, vUv).rgb;
+    float l = dot(c, vec3(0.299, 0.587, 0.114));
+    frag = vec4(c * smoothstep(0.55, 0.80, l), 1.0);
+})";
+
+const char *kBloomBlurFs = R"(#version 330 core
+in vec2 vUv;
+out vec4 frag;
+uniform sampler2D tex;
+uniform vec2 dir;
+void main(){
+    vec3 c = texture(tex, vUv).rgb * 0.2270270;
+    c += texture(tex, vUv + dir * 1.3846154).rgb * 0.3162162;
+    c += texture(tex, vUv - dir * 1.3846154).rgb * 0.3162162;
+    c += texture(tex, vUv + dir * 3.2307692).rgb * 0.0702703;
+    c += texture(tex, vUv - dir * 3.2307692).rgb * 0.0702703;
+    frag = vec4(c, 1.0);
+})";
+
+const char *kBloomAddFs = R"(#version 330 core
+in vec2 vUv;
+out vec4 frag;
+uniform sampler2D tex;
+uniform float k;
+void main(){ frag = vec4(texture(tex, vUv).rgb * k, 1.0); })";
+
 constexpr int kWantLayers = 8192;     // 8192 x 64x64 R8 = 32 MB, allocated once
 constexpr double kUploadMsBudget = 3.0; // per-frame time budget for normal uploads
 constexpr double kFadeMs = 120.0;       // refinement crossfade duration
@@ -135,6 +172,94 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
 
+    // bloom: programs, fullscreen triangle, quarter-res ping-pong targets
+    brightProg_ = compile(kTriVs, kBrightFs);
+    blurProg_ = compile(kTriVs, kBloomBlurFs);
+    addProg_ = compile(kTriVs, kBloomAddFs);
+    uBrightTex_ = glGetUniformLocation(brightProg_, "tex");
+    uBlurTex_ = glGetUniformLocation(blurProg_, "tex");
+    uBlurDir_ = glGetUniformLocation(blurProg_, "dir");
+    uAddTex_ = glGetUniformLocation(addProg_, "tex");
+    uAddK_ = glGetUniformLocation(addProg_, "k");
+    constexpr float tri[6] = {-1, -1, 3, -1, -1, 3};
+    glGenVertexArrays(1, &triVao_);
+    glGenBuffers(1, &triVbo_);
+    glBindVertexArray(triVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, triVbo_);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(tri), tri, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
+    glGenFramebuffers(2, bloomFbo_);
+    glGenTextures(2, bloomTex_);
+    makeBloomTargets();
+
+    glBindVertexArray(0);
+}
+
+void GlPresenter::makeBloomTargets()
+{
+    bw_ = std::max(1, fbW_ / 4);
+    bh_ = std::max(1, fbH_ / 4);
+    for (int i = 0; i < 2; ++i)
+    {
+        glBindTexture(GL_TEXTURE_2D, bloomTex_[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, bw_, bh_, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, bloomTex_[i],
+                               0);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+// The light: snapshot the scene, keep what shines, blur it, add it back.
+// Curves render as near-white cores; this pass gives them the tinted halo
+// (and the dense-measure wash a soft luminous mist). ~0.2 ms at quarter res,
+// and it only runs on frames that were being rendered anyway.
+void GlPresenter::bloomPass()
+{
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bloomFbo_[0]);
+    glBlitFramebuffer(0, 0, fbW_, fbH_, 0, 0, bw_, bh_, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+
+    glDisable(GL_BLEND);
+    glViewport(0, 0, bw_, bh_);
+    glBindVertexArray(triVao_);
+    glActiveTexture(GL_TEXTURE0);
+
+    glUseProgram(brightProg_);
+    glUniform1i(uBrightTex_, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[1]);
+    glBindTexture(GL_TEXTURE_2D, bloomTex_[0]);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    glUseProgram(blurProg_);
+    glUniform1i(uBlurTex_, 0);
+    for (int it = 0; it < 2; ++it)
+    {
+        glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[0]);
+        glBindTexture(GL_TEXTURE_2D, bloomTex_[1]);
+        glUniform2f(uBlurDir_, 1.0f / static_cast<float>(bw_), 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[1]);
+        glBindTexture(GL_TEXTURE_2D, bloomTex_[0]);
+        glUniform2f(uBlurDir_, 0.0f, 1.0f / static_cast<float>(bh_));
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, fbW_, fbH_);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE); // additive: light adds
+    glUseProgram(addProg_);
+    glUniform1i(uAddTex_, 0);
+    glUniform1f(uAddK_, 0.65f);
+    glBindTexture(GL_TEXTURE_2D, bloomTex_[1]);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glBindVertexArray(0);
 }
 
@@ -143,6 +268,13 @@ GlPresenter::~GlPresenter()
     for (unsigned int tex : tileArrays_) glDeleteTextures(1, &tex);
     glDeleteProgram(tileProgram_);
     glDeleteProgram(lineProgram_);
+    glDeleteProgram(brightProg_);
+    glDeleteProgram(blurProg_);
+    glDeleteProgram(addProg_);
+    glDeleteVertexArrays(1, &triVao_);
+    glDeleteBuffers(1, &triVbo_);
+    glDeleteFramebuffers(2, bloomFbo_);
+    glDeleteTextures(2, bloomTex_);
     glDeleteVertexArrays(1, &quadVao_);
     glDeleteBuffers(1, &quadVbo_);
     glDeleteBuffers(1, &instVbo_);
@@ -189,6 +321,7 @@ void GlPresenter::resize(int fbWidth, int fbHeight)
 {
     fbW_ = std::max(1, fbWidth);
     fbH_ = std::max(1, fbHeight);
+    makeBloomTargets();
 }
 
 int GlPresenter::ensureSlot(const CoverageTilePtr &cov, int &budget, int &criticalLeft,
@@ -286,7 +419,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                              std::chrono::steady_clock::now().time_since_epoch())
                              .count();
     glViewport(0, 0, fbW_, fbH_);
-    glClearColor(0.047f, 0.055f, 0.075f, 1.0f);
+    glClearColor(0.039f, 0.043f, 0.055f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -300,30 +433,41 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         const double mag = std::pow(10.0, std::floor(std::log10(std::max(rawStep, 1e-300))));
         const double norm = rawStep / mag;
         const double step = (norm < 2.0 ? 1.0 : norm < 5.0 ? 2.0 : 5.0) * mag;
+        // dot lattice instead of ruled lines: quieter, instrument-like; it
+        // brightens when the user is active and sleeps when they are not
+        auto pushDot = [&](double x, double y) {
+            float a, b;
+            worldToNdc(vp, fbW_, fbH_, x, y, a, b);
+            verts.insert(verts.end(), {a, b});
+        };
+        int guard = 0;
+        for (double x = std::ceil(wb.x0 / step) * step; x <= wb.x1 && guard < 400; x += step, ++guard)
+        {
+            int g2 = 0;
+            for (double y = std::ceil(wb.y0 / step) * step; y <= wb.y1 && g2 < 400; y += step, ++g2)
+                pushDot(x, y);
+        }
+        const size_t dotCount = verts.size() / 2;
         auto pushLine = [&](double x0, double y0, double x1, double y1) {
             float a, b, c, d;
             worldToNdc(vp, fbW_, fbH_, x0, y0, a, b);
             worldToNdc(vp, fbW_, fbH_, x1, y1, c, d);
             verts.insert(verts.end(), {a, b, c, d});
         };
-        int guard = 0;
-        for (double x = std::ceil(wb.x0 / step) * step; x <= wb.x1 && guard < 400; x += step, ++guard)
-            pushLine(x, wb.y0, x, wb.y1);
-        for (double y = std::ceil(wb.y0 / step) * step; y <= wb.y1 && guard < 800; y += step, ++guard)
-            pushLine(wb.x0, y, wb.x1, y);
-        const size_t gridCount = verts.size() / 2;
         pushLine(0, wb.y0, 0, wb.y1);
         pushLine(wb.x0, 0, wb.x1, 0);
 
+        const float wk = 0.35f + 0.65f * chromeWake_;
         glUseProgram(lineProgram_);
         glBindVertexArray(lineVao_);
         glBindBuffer(GL_ARRAY_BUFFER, lineVbo_);
         glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts.size() * sizeof(float)),
                      verts.data(), GL_DYNAMIC_DRAW);
-        glUniform4f(uLineColor_, 0.55f, 0.62f, 0.75f, 0.085f);
-        glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(gridCount));
-        glUniform4f(uLineColor_, 0.72f, 0.78f, 0.90f, 0.34f);
-        glDrawArrays(GL_LINES, static_cast<GLsizei>(gridCount), 4);
+        glPointSize(std::max(1.5f, 1.2f * pxScale_));
+        glUniform4f(uLineColor_, 0.66f, 0.68f, 0.72f, 0.16f * wk);
+        glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(dotCount));
+        glUniform4f(uLineColor_, 0.74f, 0.76f, 0.80f, 0.26f * wk);
+        glDrawArrays(GL_LINES, static_cast<GLsizei>(dotCount), 4);
     }
 
     // ---- coverage tiles: build per-(array,fadeArray) instance buckets, then
@@ -346,9 +490,21 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         Inst inst{};
         inst.misc[2] = 1.0f; // fade: steady state
         const float *pal = kRelationPalette[t.slot & 7];
-        inst.color[0] = pal[0];
-        inst.color[1] = pal[1];
-        inst.color[2] = pal[2];
+        if (t.equality)
+        {
+            // near-white core: the bloom halo carries the hue
+            inst.color[0] = pal[0] + (1.0f - pal[0]) * 0.60f;
+            inst.color[1] = pal[1] + (1.0f - pal[1]) * 0.60f;
+            inst.color[2] = pal[2] + (1.0f - pal[2]) * 0.60f;
+        }
+        else
+        {
+            // region fills wear a DEEP wash of the hue (below the bloom
+            // threshold, richer than a pale alpha-tint)
+            inst.color[0] = pal[0] * 0.62f;
+            inst.color[1] = pal[1] * 0.62f;
+            inst.color[2] = pal[2] * 0.62f;
+        }
         // translucent region fills once several relations are shown, so
         // overlaps BLEND; equality bands keep full strength (thin lines)
         inst.color[3] = t.equality ? 1.0f : fillOpacity;
@@ -578,6 +734,8 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         }
         glActiveTexture(GL_TEXTURE0);
     }
+
+    bloomPass();
 
     evictSlots(frame_);
     if (lastShown_.size() > 16384) lastShown_.clear();

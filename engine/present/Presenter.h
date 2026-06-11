@@ -10,15 +10,17 @@ namespace gxr
 {
 // Per-slot fill colors, shared by the compositor and the UI's formula-list
 // swatches so they always agree. Indexed by PresentTile.slot (mod 8).
+// Lumen grade: desaturated jewel tones -- region fills wear these as a wash;
+// equality cores render near-white and the bloom halo carries the hue.
 inline constexpr float kRelationPalette[8][3] = {
-    {0.00f, 0.55f, 0.98f}, // blue
-    {1.00f, 0.62f, 0.18f}, // amber
-    {0.30f, 0.85f, 0.45f}, // green
-    {0.95f, 0.35f, 0.75f}, // magenta
-    {0.25f, 0.85f, 0.90f}, // cyan
-    {0.95f, 0.40f, 0.30f}, // red
-    {0.75f, 0.65f, 1.00f}, // lavender
-    {0.95f, 0.90f, 0.40f}, // yellow
+    {0.56f, 0.66f, 0.77f}, // steel blue
+    {0.79f, 0.63f, 0.42f}, // brass
+    {0.61f, 0.72f, 0.60f}, // sage
+    {0.79f, 0.60f, 0.65f}, // dusty rose
+    {0.66f, 0.64f, 0.79f}, // smoke lavender
+    {0.79f, 0.54f, 0.42f}, // copper
+    {0.58f, 0.73f, 0.73f}, // mist cyan
+    {0.62f, 0.63f, 0.67f}, // pewter
 };
 
 // Abstraction over the GPU presentation backend. This is the Vulkan-ready seam:

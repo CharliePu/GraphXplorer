@@ -139,3 +139,23 @@ TEST_CASE("implicit multiplication parses like every real grapher", "[expr]")
     std::string err;
     REQUIRE_FALSE(Relation::parse("y > zq", err).has_value()); // unknown ident still fails
 }
+
+TEST_CASE("functions apply without parentheses", "[expr]")
+{
+    EvalScratch s;
+    auto agree = [&](const std::string &a, const std::string &b) {
+        std::string e1, e2;
+        auto ra = Relation::parse(a, e1);
+        auto rb = Relation::parse(b, e2);
+        REQUIRE(ra.has_value());
+        REQUIRE(rb.has_value());
+        for (double x : {-1.7, 0.3, 2.1})
+            for (double y : {-0.9, 1.4})
+                REQUIRE(ra->pointInside(x, y, s) == rb->pointInside(x, y, s));
+    };
+    agree("y > sin x", "y > sin(x)");
+    agree("y > sin 2x", "y > sin(2*x)");
+    agree("y = sin x cos x", "y = sin(x)*cos(x)");
+    agree("y > sin x + 1", "y > sin(x) + 1");
+    agree("y > sqrt x^2", "y > sqrt(x^2)");
+}

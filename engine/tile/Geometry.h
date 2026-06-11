@@ -1,6 +1,7 @@
 #ifndef GXR_TILE_GEOMETRY_H
 #define GXR_TILE_GEOMETRY_H
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 
@@ -19,26 +20,35 @@ struct WorldRect
 };
 
 // The visible window: world center, scale (world units per screen pixel), and
-// screen size in pixels. The mapping is uniform (same scale on both axes).
+// screen size in pixels.
 struct Viewport
 {
     double centerX{0.0};
     double centerY{0.0};
-    double worldPerPixel{0.01};
+    double worldPerPixel{0.01}; // X-axis world-per-pixel
     int pxW{800};
     int pxH{800};
+    // Anisotropic axis stretch: wppY = worldPerPixel * yStretch. The QUADTREE
+    // stays square -- anisotropy is purely a view transform. Tiles solve at
+    // the FINER axis (activeLevel below), so the stretched axis never loses
+    // resolution; the compressed axis is merely supersampled. The app caps
+    // the ratio (<= 8x) to bound the extra tile cost.
+    double yStretch{1.0};
+
+    [[nodiscard]] double wppX() const { return worldPerPixel; }
+    [[nodiscard]] double wppY() const { return worldPerPixel * yStretch; }
 
     [[nodiscard]] WorldRect worldBounds() const
     {
-        const double hw = 0.5 * worldPerPixel * pxW;
-        const double hh = 0.5 * worldPerPixel * pxH;
+        const double hw = 0.5 * wppX() * pxW;
+        const double hh = 0.5 * wppY() * pxH;
         return {centerX - hw, centerY - hh, centerX + hw, centerY + hh};
     }
 
-    // pyramid level whose tiles are ~1:1 with screen pixels
+    // pyramid level whose tiles are ~1:1 with screen pixels on the FINER axis
     [[nodiscard]] int activeLevel() const
     {
-        return static_cast<int>(std::lround(std::log2(worldPerPixel)));
+        return static_cast<int>(std::lround(std::log2(std::min(wppX(), wppY()))));
     }
 };
 

@@ -286,7 +286,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                              std::chrono::steady_clock::now().time_since_epoch())
                              .count();
     glViewport(0, 0, fbW_, fbH_);
-    glClearColor(0.07f, 0.07f, 0.09f, 1.0f);
+    glClearColor(0.047f, 0.055f, 0.075f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -319,9 +319,9 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         glBindBuffer(GL_ARRAY_BUFFER, lineVbo_);
         glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts.size() * sizeof(float)),
                      verts.data(), GL_DYNAMIC_DRAW);
-        glUniform4f(uLineColor_, 0.18f, 0.18f, 0.21f, 1.0f);
+        glUniform4f(uLineColor_, 0.55f, 0.62f, 0.75f, 0.055f);
         glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(gridCount));
-        glUniform4f(uLineColor_, 0.40f, 0.40f, 0.45f, 1.0f);
+        glUniform4f(uLineColor_, 0.72f, 0.78f, 0.90f, 0.28f);
         glDrawArrays(GL_LINES, static_cast<GLsizei>(gridCount), 4);
     }
 

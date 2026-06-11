@@ -7,6 +7,7 @@
 
 #include "app/Engine.h"
 #include "image/Png.h"
+#include "present/Glass.h"
 #include "present/GlPresenter.h"
 #include "present/Overlay.h"
 
@@ -79,57 +80,92 @@ std::string findFont()
     return "font/FiraCode-Regular.ttf";
 }
 
-// Draw the on-screen UI: the formula LIST (one row per relation slot, swatch
-// in the slot fill color, selected row highlighted, editable with a caret),
-// a status line, and a help bar.
-float uiBarH(size_t rows) { return 12.0f + 26.0f * static_cast<float>(rows < 1 ? 1 : rows); }
+// Floating-card UI. The formula list is a rounded panel in the top-left
+// (one row per relation, slot-color accent bar, selected row tinted, inline
+// caret + parse error); a slim hint pill sits bottom-center. Rounded corners
+// are the classic two-rect notch trick -- no new Overlay primitives.
+void roundedRect(Overlay &ui, float x, float y, float w, float h, float r,
+                 const std::array<float, 4> &c)
+{
+    ui.fillRect(x + r, y, w - 2 * r, h, c);
+    ui.fillRect(x, y + r, w, h - 2 * r, c);
+}
 
-void drawUi(Overlay &ui, int fbW, int fbH, const std::vector<std::string> &formulas,
-           size_t selected, bool editing, const std::string &edit, size_t editPos,
-           const std::string &status)
+float uiBarH(size_t) { return 18.0f; } // axis labels only avoid the very top edge
+
+void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH,
+           const std::vector<std::string> &formulas, size_t selected, bool editing,
+           const std::string &edit, size_t editPos, const std::string &status)
 {
     if (!ui.ok()) return;
-    ui.begin();
     const float w = static_cast<float>(fbW), h = static_cast<float>(fbH);
-    constexpr float rowH = 26.0f;
-    const float barH = uiBarH(formulas.size());
+    constexpr float rowH = 30.0f, pad = 10.0f, textScale = 0.92f;
 
-    ui.fillRect(0, 0, w, barH, {0.05f, 0.05f, 0.08f, 0.86f});
+    // --- formula card (frosted glass) ---
+    float cardW = 300.0f;
     for (size_t i = 0; i < formulas.size(); ++i)
     {
-        const float y = 8.0f + rowH * static_cast<float>(i);
+        const std::string &s = (editing && i == selected) ? edit : formulas[i];
+        cardW = std::max(cardW, ui.textWidth(s, textScale) + 52.0f);
+    }
+    cardW = std::min(cardW, w - 24.0f);
+    const bool showStatus = !status.empty();
+    const float cardH =
+        pad * 2 + rowH * static_cast<float>(formulas.size()) + (showStatus ? 20.0f : 0.0f);
+
+    // hint pill geometry first, so both panels frost from one capture
+    const float hintScale = 0.72f;
+    std::string hint = editing
+        ? "Enter apply    Esc cancel"
+        : "Tab select    Enter edit    N new    X delete    1-6 presets    D debug    R reset";
+    float tw = ui.textWidth(hint, hintScale);
+    if (tw + 28.0f > w - 24.0f)
+    {
+        hint = editing ? "Enter ok   Esc" : "Tab   Enter   N   X   1-6   D   R";
+        tw = ui.textWidth(hint, hintScale);
+    }
+    const float pillW = std::min(tw + 28.0f, w - 24.0f), pillH = 26.0f;
+    const float px = (w - pillW) * 0.5f, py = h - 40.0f;
+
+    glass.capture();
+    glass.panel(12, 12, cardW, cardH, 12.0f);
+    glass.panel(px, py, pillW, pillH, pillH * 0.5f);
+
+    ui.begin();
+    for (size_t i = 0; i < formulas.size(); ++i)
+    {
+        const float y = 12 + pad + rowH * static_cast<float>(i);
         const bool sel = i == selected;
         const bool ed = editing && sel;
-        if (sel) ui.fillRect(6, y - 2, w - 12, rowH - 2, {0.16f, 0.20f, 0.30f, ed ? 0.9f : 0.55f});
         const float *pal = kRelationPalette[i & 7];
-        ui.fillRect(12, y + 4, 14, 14, {pal[0], pal[1], pal[2], 1.0f});
+        if (sel)
+            roundedRect(ui, 18, y - 1, cardW - 12, rowH - 4, 4,
+                        {1.0f, 1.0f, 1.0f, ed ? 0.10f : 0.06f});
+        // slot-color accent bar
+        ui.fillRect(22, y + 4, 3, rowH - 14, {pal[0], pal[1], pal[2], sel ? 1.0f : 0.75f});
         const std::string &shown = ed ? edit : formulas[i];
-        const std::array<float, 4> fcol = ed ? std::array<float, 4>{1.0f, 0.92f, 0.55f, 1.0f}
-                                             : std::array<float, 4>{0.88f, 0.94f, 1.0f, 1.0f};
-        ui.text(36, y, shown, 0.92f, fcol);
+        const std::array<float, 4> fcol = ed ? std::array<float, 4>{0.98f, 0.99f, 1.0f, 1.0f}
+                                          : sel ? std::array<float, 4>{0.88f, 0.92f, 0.98f, 1.0f}
+                                                : std::array<float, 4>{0.62f, 0.67f, 0.76f, 1.0f};
+        ui.text(36, y + 2, shown, textScale, fcol);
         if (ed)
         {
             const std::string prefix = shown.substr(0, std::min(editPos, shown.size()));
-            const float cx = 36.0f + ui.textWidth(prefix, 0.92f) + 1.0f;
-            ui.fillRect(cx, y - 1, 2, 22, fcol);
+            const float cx = 36.0f + ui.textWidth(prefix, textScale) + 1.0f;
+            ui.fillRect(cx, y + 1, 2, 20, {pal[0], pal[1], pal[2], 1.0f});
         }
     }
+    if (showStatus)
+        ui.text(24, 12 + pad + rowH * static_cast<float>(formulas.size()) + 2, status, 0.72f,
+                {1.0f, 0.48f, 0.48f, 1.0f});
 
-    // status (e.g. parse error)
-    if (!status.empty())
-        ui.text(14, barH + 6, status, 0.82f, {1.0f, 0.5f, 0.5f, 1.0f});
-
-    // bottom help bar
-    ui.fillRect(0, h - 28, w, 28, {0.05f, 0.05f, 0.08f, 0.82f});
-    const std::string help = "drag pan   scroll zoom   [Tab] select   [Enter] edit   [N]ew   "
-                             "[X] delete   [1-6] presets   [D] debug   [R] reset   [Esc] quit";
-    ui.text(14, h - 23, help, 0.78f, {0.66f, 0.72f, 0.84f, 1.0f});
+    ui.text(px + 14.0f, py + 5.0f, hint, hintScale, {0.62f, 0.67f, 0.77f, 1.0f});
 }
 
 // Debug overlay: visible tiles outlined and coloured by solve state, plus an
 // info panel (fps, level, viewport, tile/store/job counts, frame-latency
 // attribution) and a legend.
-void drawDebug(Overlay &ui, const Viewport &vp, int fbW, int fbH,
+void drawDebug(Overlay &ui, Glass &glass, const Viewport &vp, int fbW, int fbH,
               const std::vector<DebugTile> &tiles, size_t storeSize, unsigned long long jobs,
               double fps, double frameMs, int holes, const char *perf1 = nullptr,
               const char *perf2 = nullptr)
@@ -157,9 +193,10 @@ void drawDebug(Overlay &ui, const Viewport &vp, int fbW, int fbH,
         ui.rectOutline(x, top, tw, th, 1.0f, c);
     }
 
-    // info panel (top-right)
-    const float pw = 430, ph = perf1 ? 296 : 206, px = fbW - pw - 10, py = 50;
-    ui.fillRect(px, py, pw, ph, {0.04f, 0.04f, 0.06f, 0.88f});
+    // info panel (top-right, frosted)
+    const float pw = 430, ph = perf1 ? 296 : 206, px = fbW - pw - 14, py = 14;
+    glass.panel(px, py, pw, ph, 12.0f);
+    ui.begin(); // glass switched programs; re-arm the overlay batch state
     const std::array<float, 4> tc{0.85f, 0.9f, 1.0f, 1.0f};
     float ty = py + 8;
     char buf[160];
@@ -214,7 +251,7 @@ void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH, float ba
     auto syTop = [&](double wy) { return fbH * 0.5 - (wy - cy) / wpp; };
 
     ui.begin();
-    const float sc = 0.82f;
+    const float sc = 0.74f;
     const float lh = ui.lineHeight(sc);
 
     auto fmtStep = [&](double v, int decimals) -> std::string {
@@ -346,10 +383,12 @@ int main(int argc, char **argv)
     // Wake the (possibly blocked) main thread when a worker publishes a tile.
     Engine engine(tilePx, 0, [] { glfw::postEmptyEvent(); });
     GlPresenter presenter(tilePx);
+    Glass glass;
     Overlay overlay(findFont(), 22);
 
     auto [fbW, fbH] = window.getFramebufferSize();
     presenter.resize(fbW, fbH);
+    glass.resize(fbW, fbH);
     overlay.resize(fbW, fbH);
 
     Viewport vp{0.0, 0.0, 16.0 / fbW, fbW, fbH}; // initial span ~[-8,8]
@@ -546,7 +585,7 @@ int main(int argc, char **argv)
         if (presenter.activeFades() > 0) finalRender = false; // crossfades still animating
         const auto tOverlay0 = SClock::now();
         drawAxisNumbers(overlay, vp, fbW, fbH, uiBarH(formulas.size()));
-        drawUi(overlay, fbW, fbH, formulas, selected, editing, editBuffer, editPos, status);
+        drawUi(overlay, glass, fbW, fbH, formulas, selected, editing, editBuffer, editPos, status);
         if (showDebug)
         {
             engine.debugTiles(vp, dbgTiles);
@@ -569,7 +608,7 @@ int main(int argc, char **argv)
             else
                 std::snprintf(p1, sizeof p1, "worst2s: n/a");
             std::snprintf(p2, sizeof p2, "input->present %.1f ms", inLast);
-            drawDebug(overlay, vp, fbW, fbH, dbgTiles, engine.storeSize(), engine.jobsCompleted(), fps,
+            drawDebug(overlay, glass, vp, fbW, fbH, dbgTiles, engine.storeSize(), engine.jobsCompleted(), fps,
                       frameMs, holes, p1, p2);
         }
         st.overlay = msSince(tOverlay0);
@@ -692,7 +731,8 @@ int main(int argc, char **argv)
     window.framebufferSizeEvent.setCallback([&](glfw::Window &, int w, int h) {
         fbW = std::max(1, w);
         fbH = std::max(1, h);
-        presenter.resize(fbW, fbH); // stores size; glViewport is set each renderFrame
+        presenter.resize(fbW, fbH);
+    glass.resize(fbW, fbH); // stores size; glViewport is set each renderFrame
         overlay.resize(fbW, fbH);
         vp.pxW = fbW;
         vp.pxH = fbH;
@@ -920,9 +960,11 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
     constexpr int tilePx = 64;
     Engine engine(tilePx);
     GlPresenter presenter(tilePx);
+    Glass glass;
     Overlay overlay(findFont(), 22);
     auto [fbW, fbH] = window.getFramebufferSize();
     presenter.resize(fbW, fbH);
+    glass.resize(fbW, fbH);
     overlay.resize(fbW, fbH);
     Viewport vp{0.0, 0.0, 16.0 / fbW, fbW, fbH};
 
@@ -954,11 +996,11 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
         glfw::pollEvents();
         engine.buildPresent(vp, present);
         (void)presenter.renderFrame(vp, present, /*uploadBudget=*/64);
-        drawUi(overlay, fbW, fbH, {formula}, 0, /*editing=*/false, "", 0, "");
+        drawUi(overlay, glass, fbW, fbH, {formula}, 0, /*editing=*/false, "", 0, "");
         if (debug)
         {
             engine.debugTiles(vp, dbgTiles);
-            drawDebug(overlay, vp, fbW, fbH, dbgTiles, engine.storeSize(), engine.jobsCompleted(),
+            drawDebug(overlay, glass, vp, fbW, fbH, dbgTiles, engine.storeSize(), engine.jobsCompleted(),
                       120.0, 8.0, /*holes=*/0);
         }
         window.swapBuffers();
@@ -1004,6 +1046,7 @@ int runReproGl(const std::string &prefix)
     constexpr int tilePx = 64;
     Engine engine(tilePx, 0, [] { glfw::postEmptyEvent(); });
     GlPresenter presenter(tilePx);
+    Glass glass;
     auto rel = parseOrNull("y > sin(2^x)");
     if (!rel) return 1;
     engine.setRelation(rel);
@@ -1011,6 +1054,7 @@ int runReproGl(const std::string &prefix)
     auto sz0 = window.getFramebufferSize();
     int fbW = std::get<0>(sz0), fbH = std::get<1>(sz0);
     presenter.resize(fbW, fbH);
+    glass.resize(fbW, fbH);
     Viewport vp{0.0, 0.0, 8.0 / fbW, fbW, fbH};
 
     std::vector<PresentTile> present;
@@ -1131,6 +1175,7 @@ int runReproGl(const std::string &prefix)
         fbW = std::get<0>(s);
         fbH = std::get<1>(s);
         presenter.resize(fbW, fbH);
+    glass.resize(fbW, fbH);
         vp.pxW = fbW;
         vp.pxH = fbH;
     };

@@ -55,6 +55,7 @@ target_link_libraries(gxrepro_prio PRIVATE GxEngine)
 find_package(Freetype REQUIRED)
 add_executable(GraphXplorer
         ${CMAKE_CURRENT_SOURCE_DIR}/app/main_gui.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/present/Glass.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/present/GlPresenter.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/present/Overlay.cpp)
 target_include_directories(GraphXplorer PRIVATE ${CMAKE_SOURCE_DIR}/include)

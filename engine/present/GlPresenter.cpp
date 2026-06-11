@@ -320,9 +320,9 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         glBindBuffer(GL_ARRAY_BUFFER, lineVbo_);
         glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts.size() * sizeof(float)),
                      verts.data(), GL_DYNAMIC_DRAW);
-        glUniform4f(uLineColor_, 0.55f, 0.62f, 0.75f, 0.055f);
+        glUniform4f(uLineColor_, 0.55f, 0.62f, 0.75f, 0.085f);
         glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(gridCount));
-        glUniform4f(uLineColor_, 0.72f, 0.78f, 0.90f, 0.28f);
+        glUniform4f(uLineColor_, 0.72f, 0.78f, 0.90f, 0.34f);
         glDrawArrays(GL_LINES, static_cast<GLsizei>(gridCount), 4);
     }
 

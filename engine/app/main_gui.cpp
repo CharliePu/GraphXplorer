@@ -109,8 +109,17 @@ void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
     }
     cardW = std::min(cardW, w - 24.0f * s);
     const bool showStatus = !status.empty();
-    const float cardH =
-        pad * 2 + rowH * static_cast<float>(formulas.size()) + (showStatus ? 20.0f * s : 0.0f);
+    // clamp the card to the window; rows SCROLL so the selected one stays
+    // visible (a tall list on a small hi-dpi window must not overflow)
+    const float maxCardH = h - 100.0f * s;
+    size_t maxRows = static_cast<size_t>(
+        std::max(1.0f, (maxCardH - pad * 2 - (showStatus ? 20.0f * s : 0.0f)) / rowH));
+    const size_t rows = std::min(formulas.size(), maxRows);
+    size_t firstRow = 0;
+    if (formulas.size() > rows && selected >= rows)
+        firstRow = std::min(selected - rows + 1, formulas.size() - rows);
+    const float cardH = pad * 2 + rowH * static_cast<float>(rows) +
+                        (showStatus ? 20.0f * s : 0.0f);
 
     // hint pill geometry first, so both panels frost from one capture
     const float hintScale = 0.72f;
@@ -121,6 +130,11 @@ void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
     if (tw + 28.0f * s > w - 24.0f * s)
     {
         hint = editing ? "Enter ok   Esc" : "Tab   Enter   N   X   1-6   S   D";
+        tw = ui.textWidth(hint, hintScale);
+    }
+    if (tw + 28.0f * s > w - 24.0f * s)
+    {
+        hint = editing ? "Enter / Esc" : "Tab  Enter  N  X";
         tw = ui.textWidth(hint, hintScale);
     }
     const float pillW = std::min(tw + 28.0f * s, w - 24.0f * s), pillH = 26.0f * s;
@@ -134,14 +148,15 @@ void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
     // selection highlight glides between rows (selAnim eases toward selected)
     if (!formulas.empty())
     {
-        const float hy = 12 * s + pad + rowH * selAnim - 1;
+        const float hy = 12 * s + pad + rowH * (selAnim - static_cast<float>(firstRow)) - 1;
         const bool ed = editing;
-        roundedRect(ui, 18 * s, hy, cardW - 12 * s, rowH - 4 * s, 4 * s,
-                    {1.0f, 1.0f, 1.0f, ed ? 0.10f : 0.06f});
+        if (hy > 12 * s && hy < 12 * s + cardH - rowH * 0.5f)
+            roundedRect(ui, 18 * s, hy, cardW - 12 * s, rowH - 4 * s, 4 * s,
+                        {1.0f, 1.0f, 1.0f, ed ? 0.10f : 0.06f});
     }
-    for (size_t i = 0; i < formulas.size(); ++i)
+    for (size_t i = firstRow; i < firstRow + rows && i < formulas.size(); ++i)
     {
-        const float y = 12 * s + pad + rowH * static_cast<float>(i);
+        const float y = 12 * s + pad + rowH * static_cast<float>(i - firstRow);
         const bool sel = i == selected;
         const bool ed = editing && sel;
         const float *pal = kRelationPalette[i & 7];
@@ -159,9 +174,12 @@ void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
             ui.fillRect(cx, y + 1 * s, 2 * s, 20 * s, {pal[0], pal[1], pal[2], 1.0f});
         }
     }
+    if (firstRow > 0) ui.text(cardW - 8 * s, 14 * s, "^", 0.7f, {0.6f, 0.65f, 0.75f, 0.8f});
+    if (firstRow + rows < formulas.size())
+        ui.text(cardW - 8 * s, 12 * s + cardH - 16 * s, "v", 0.7f, {0.6f, 0.65f, 0.75f, 0.8f});
     if (showStatus)
-        ui.text(24 * s, 12 * s + pad + rowH * static_cast<float>(formulas.size()) + 2 * s, status,
-                0.72f, {1.0f, 0.48f, 0.48f, 1.0f});
+        ui.text(24 * s, 12 * s + pad + rowH * static_cast<float>(rows) + 2 * s, status, 0.72f,
+                {1.0f, 0.48f, 0.48f, 1.0f});
 
     ui.text(px + 14.0f * s, py + 5.0f * s, hint, hintScale, {0.62f, 0.67f, 0.77f, 1.0f});
 }
@@ -262,14 +280,17 @@ void drawDebug(Overlay &ui, Glass &glass, float s, const Viewport &vp, int fbW, 
         ui.rectOutline(x, top, tw, th, 1.0f, c);
     }
 
-    // info panel (top-right, frosted)
-    const float pw = 430 * s, ph = (perf1 ? 296 : 206) * s, px = fbW - pw - 14 * s, py = 14 * s;
+    // info panel (top-right, frosted; clamped so small windows are not swallowed)
+    const float pw = std::min(430 * s, fbW - 28.0f * s);
+    const float ph = std::min((perf1 ? 296 : 206) * s, fbH - 60.0f * s);
+    const float px = fbW - pw - 14 * s, py = 14 * s;
     glass.panel(px, py, pw, ph, 12.0f * s);
     ui.begin(); // glass switched programs; re-arm the overlay batch state
     const std::array<float, 4> tc{0.85f, 0.9f, 1.0f, 1.0f};
     float ty = py + 8 * s;
     char buf[160];
     auto line = [&](const char *str) {
+        if (ty + ui.lineHeight(0.8f) > py + ph - 6 * s) return; // clip to the panel
         ui.text(px + 12 * s, ty, str, 0.8f, tc);
         ty += ui.lineHeight(0.8f) + 2 * s;
     };
@@ -291,6 +312,7 @@ void drawDebug(Overlay &ui, Glass &glass, float s, const Viewport &vp, int fbW, 
     if (perf2) line(perf2); // freshest input->present age
     ty += 6;
     auto legend = [&](std::array<float, 4> col, const char *lbl) {
+        if (ty + ui.lineHeight(0.8f) > py + ph - 6 * s) return;
         ui.fillRect(px + 12 * s, ty + 2 * s, 12 * s, 12 * s, col);
         ui.text(px + 30, ty, lbl, 0.78f, tc);
         ty += 19;
@@ -408,7 +430,9 @@ void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH, float ba
 
 // Render the live GL pipeline headlessly to a PNG (validates context, shaders,
 // tile-texture upload and compositing end-to-end). Usage: --selftest out.png [formula]
-int runSelftest(const std::string &outPng, const std::string &formula, bool debug);
+float gSelftestScale = 0.0f; // 0 = use the window content scale
+int runSelftest(const std::string &outPng, const std::string &formula, bool debug,
+                int W, int H);
 // Drive the REAL render loop offscreen through small -> maximize -> zoom-out and
 // save a framebuffer readback after each settles. Validates the resize + texture
 // upload path (the GL side of the maximize-then-zoom-out bug). Usage: --reprogl prefix
@@ -420,8 +444,24 @@ int main(int argc, char **argv)
     {
         const std::string out = argc >= 3 ? argv[2] : "selftest.png";
         const std::string f = argc >= 4 ? argv[3] : kPresets[0];
-        const bool dbg = argc >= 5 && std::string(argv[4]) == "debug";
-        return runSelftest(out, f, dbg);
+        bool dbg = false;
+        int W = 512, H = 512;
+        for (int i = 5; i <= argc; ++i) // optional: debug and/or WxH in either order
+        {
+            if (i - 1 >= 4 && argv[i - 1])
+            {
+                const std::string a = argv[i - 1];
+                if (a == "debug") dbg = true;
+                else if (const size_t xPos = a.find('x'); xPos != std::string::npos)
+                {
+                    W = std::max(64, std::atoi(a.substr(0, xPos).c_str()));
+                    H = std::max(64, std::atoi(a.substr(xPos + 1).c_str()));
+                    if (const size_t at = a.find('@'); at != std::string::npos)
+                        gSelftestScale = static_cast<float>(std::atof(a.substr(at + 1).c_str()));
+                }
+            }
+        }
+        return runSelftest(out, f, dbg, W, H);
     }
     if (argc >= 2 && std::string(argv[1]) == "--reprogl")
     {
@@ -488,6 +528,32 @@ int main(int argc, char **argv)
     bool settingsOpen = false;
     int settingsSel = 0;
     auto uiS = [&]() { return dpiScale * cfg.uiScaleMul; };
+#ifdef GXR_ASSET_DIR
+    const std::string cfgPath = std::string(GXR_ASSET_DIR) + "/out/gx_settings.ini";
+#else
+    const std::string cfgPath = "out/gx_settings.ini";
+#endif
+    {
+        std::ifstream in(cfgPath);
+        std::string k;
+        double v;
+        while (in >> k >> v)
+        {
+            if (k == "grid") cfg.grid = v != 0;
+            else if (k == "labels") cfg.labels = v != 0;
+            else if (k == "fillOpacity")
+                cfg.fillOpacity = std::clamp(static_cast<float>(v), 0.20f, 1.00f);
+            else if (k == "uiScale")
+                cfg.uiScaleMul = std::clamp(static_cast<float>(v), 0.75f, 1.50f);
+        }
+        presenter.setGridVisible(cfg.grid);
+        presenter.setFillOpacity(cfg.fillOpacity);
+    }
+    auto saveCfg = [&]() {
+        std::ofstream o(cfgPath, std::ios::trunc);
+        o << "grid " << (cfg.grid ? 1 : 0) << "\nlabels " << (cfg.labels ? 1 : 0)
+          << "\nfillOpacity " << cfg.fillOpacity << "\nuiScale " << cfg.uiScaleMul << "\n";
+    };
 
     // eased view animation: scroll/reset move TARGETS; the loop glides vp
     // toward them (smooth zoom, fly-home), exponential approach in log space.
@@ -713,8 +779,11 @@ int main(int argc, char **argv)
             std::snprintf(cbuf, sizeof cbuf, "%.6g, %.6g", wx, wy);
             const float cs = uiS();
             const float cw = overlay.textWidth(cbuf, 0.72f);
-            overlay.text(fbW - cw - 16 * cs, fbH - 40 * cs + 5 * cs, cbuf, 0.72f,
-                         {0.50f, 0.55f, 0.65f, 0.9f});
+            const float rx = fbW - cw - 16 * cs;
+            // hide rather than collide with the centered hint pill on narrow windows
+            if (rx > fbW * 0.5f + 260 * cs * 0.5f + 8 * cs)
+                overlay.text(rx, fbH - 40 * cs + 5 * cs, cbuf, 0.72f,
+                             {0.50f, 0.55f, 0.65f, 0.9f});
         }
         if (settingsOpen) drawSettings(overlay, glass, fbW, fbH, uiS(), cfg, settingsSel);
         if (showDebug)
@@ -954,6 +1023,7 @@ int main(int argc, char **argv)
                 if (press && (key == K::Escape || key == K::S))
                 {
                     settingsOpen = false;
+                    saveCfg();
                     return;
                 }
                 if (key == K::Up) settingsSel = (settingsSel + 3) % 4;
@@ -1126,7 +1196,8 @@ int main(int argc, char **argv)
     return 0;
 }
 
-int runSelftest(const std::string &outPng, const std::string &formula, bool debug)
+int runSelftest(const std::string &outPng, const std::string &formula, bool debug,
+                int W, int H)
 {
     auto glfwLib = glfw::init();
     glfw::WindowHints{
@@ -1138,7 +1209,7 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
         .apply();
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE); // offscreen
 
-    const int W = 512, H = 512;
+
     glfw::Window window(W, H, "selftest");
     glfw::makeContextCurrent(window);
     glfw::swapInterval(0);
@@ -1152,7 +1223,10 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
     Engine engine(tilePx);
     GlPresenter presenter(tilePx);
     Glass glass;
-    Overlay overlay(findFont(), 22);
+    float s = gSelftestScale;
+    if (s <= 0.0f) s = std::get<0>(window.getContentScale());
+    if (!(s >= 0.5f && s <= 4.0f)) s = 1.0f;
+    Overlay overlay(findFont(), static_cast<int>(22.0f * s + 0.5f));
     auto [fbW, fbH] = window.getFramebufferSize();
     presenter.resize(fbW, fbH);
     glass.resize(fbW, fbH);
@@ -1187,12 +1261,12 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
         glfw::pollEvents();
         engine.buildPresent(vp, present);
         (void)presenter.renderFrame(vp, present, /*uploadBudget=*/64);
-        drawUi(overlay, glass, fbW, fbH, 1.0f, {formula}, 0, 0.0f, /*editing=*/false, "", 0,
-               "");
+        drawAxisNumbers(overlay, vp, fbW, fbH, 18.0f * s);
+        drawUi(overlay, glass, fbW, fbH, s, {formula}, 0, 0.0f, /*editing=*/false, "", 0, "");
         if (debug)
         {
             engine.debugTiles(vp, dbgTiles);
-            drawDebug(overlay, glass, 1.0f, vp, fbW, fbH, dbgTiles, engine.storeSize(),
+            drawDebug(overlay, glass, s, vp, fbW, fbH, dbgTiles, engine.storeSize(),
                       engine.jobsCompleted(), 120.0, 8.0, /*holes=*/0);
         }
         window.swapBuffers();

@@ -91,81 +91,150 @@ void roundedRect(Overlay &ui, float x, float y, float w, float h, float r,
     ui.fillRect(x, y + r, w, h - 2 * r, c);
 }
 
-float uiBarH(size_t) { return 18.0f; } // axis labels only avoid the very top edge
-
-void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH,
-           const std::vector<std::string> &formulas, size_t selected, bool editing,
-           const std::string &edit, size_t editPos, const std::string &status)
+void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
+           const std::vector<std::string> &formulas, size_t selected, float selAnim,
+           bool editing, const std::string &edit, size_t editPos, const std::string &status)
 {
     if (!ui.ok()) return;
     const float w = static_cast<float>(fbW), h = static_cast<float>(fbH);
-    constexpr float rowH = 30.0f, pad = 10.0f, textScale = 0.92f;
+    const float rowH = 30.0f * s, pad = 10.0f * s;
+    constexpr float textScale = 0.92f;
 
     // --- formula card (frosted glass) ---
-    float cardW = 300.0f;
+    float cardW = 300.0f * s;
     for (size_t i = 0; i < formulas.size(); ++i)
     {
-        const std::string &s = (editing && i == selected) ? edit : formulas[i];
-        cardW = std::max(cardW, ui.textWidth(s, textScale) + 52.0f);
+        const std::string &str = (editing && i == selected) ? edit : formulas[i];
+        cardW = std::max(cardW, ui.textWidth(str, textScale) + 52.0f * s);
     }
-    cardW = std::min(cardW, w - 24.0f);
+    cardW = std::min(cardW, w - 24.0f * s);
     const bool showStatus = !status.empty();
     const float cardH =
-        pad * 2 + rowH * static_cast<float>(formulas.size()) + (showStatus ? 20.0f : 0.0f);
+        pad * 2 + rowH * static_cast<float>(formulas.size()) + (showStatus ? 20.0f * s : 0.0f);
 
     // hint pill geometry first, so both panels frost from one capture
     const float hintScale = 0.72f;
     std::string hint = editing
         ? "Enter apply    Esc cancel"
-        : "Tab select    Enter edit    N new    X delete    1-6 presets    D debug    R reset";
+        : "Tab select    Enter edit    N new    X delete    1-6 presets    S settings    D debug";
     float tw = ui.textWidth(hint, hintScale);
-    if (tw + 28.0f > w - 24.0f)
+    if (tw + 28.0f * s > w - 24.0f * s)
     {
-        hint = editing ? "Enter ok   Esc" : "Tab   Enter   N   X   1-6   D   R";
+        hint = editing ? "Enter ok   Esc" : "Tab   Enter   N   X   1-6   S   D";
         tw = ui.textWidth(hint, hintScale);
     }
-    const float pillW = std::min(tw + 28.0f, w - 24.0f), pillH = 26.0f;
-    const float px = (w - pillW) * 0.5f, py = h - 40.0f;
+    const float pillW = std::min(tw + 28.0f * s, w - 24.0f * s), pillH = 26.0f * s;
+    const float px = (w - pillW) * 0.5f, py = h - 40.0f * s;
 
     glass.capture();
-    glass.panel(12, 12, cardW, cardH, 12.0f);
+    glass.panel(12 * s, 12 * s, cardW, cardH, 12.0f * s);
     glass.panel(px, py, pillW, pillH, pillH * 0.5f);
 
     ui.begin();
+    // selection highlight glides between rows (selAnim eases toward selected)
+    if (!formulas.empty())
+    {
+        const float hy = 12 * s + pad + rowH * selAnim - 1;
+        const bool ed = editing;
+        roundedRect(ui, 18 * s, hy, cardW - 12 * s, rowH - 4 * s, 4 * s,
+                    {1.0f, 1.0f, 1.0f, ed ? 0.10f : 0.06f});
+    }
     for (size_t i = 0; i < formulas.size(); ++i)
     {
-        const float y = 12 + pad + rowH * static_cast<float>(i);
+        const float y = 12 * s + pad + rowH * static_cast<float>(i);
         const bool sel = i == selected;
         const bool ed = editing && sel;
         const float *pal = kRelationPalette[i & 7];
-        if (sel)
-            roundedRect(ui, 18, y - 1, cardW - 12, rowH - 4, 4,
-                        {1.0f, 1.0f, 1.0f, ed ? 0.10f : 0.06f});
-        // slot-color accent bar
-        ui.fillRect(22, y + 4, 3, rowH - 14, {pal[0], pal[1], pal[2], sel ? 1.0f : 0.75f});
+        ui.fillRect(22 * s, y + 4 * s, 3 * s, rowH - 14 * s,
+                    {pal[0], pal[1], pal[2], sel ? 1.0f : 0.75f});
         const std::string &shown = ed ? edit : formulas[i];
         const std::array<float, 4> fcol = ed ? std::array<float, 4>{0.98f, 0.99f, 1.0f, 1.0f}
                                           : sel ? std::array<float, 4>{0.88f, 0.92f, 0.98f, 1.0f}
                                                 : std::array<float, 4>{0.62f, 0.67f, 0.76f, 1.0f};
-        ui.text(36, y + 2, shown, textScale, fcol);
+        ui.text(36 * s, y + 2 * s, shown, textScale, fcol);
         if (ed)
         {
             const std::string prefix = shown.substr(0, std::min(editPos, shown.size()));
-            const float cx = 36.0f + ui.textWidth(prefix, textScale) + 1.0f;
-            ui.fillRect(cx, y + 1, 2, 20, {pal[0], pal[1], pal[2], 1.0f});
+            const float cx = 36.0f * s + ui.textWidth(prefix, textScale) + 1.0f;
+            ui.fillRect(cx, y + 1 * s, 2 * s, 20 * s, {pal[0], pal[1], pal[2], 1.0f});
         }
     }
     if (showStatus)
-        ui.text(24, 12 + pad + rowH * static_cast<float>(formulas.size()) + 2, status, 0.72f,
-                {1.0f, 0.48f, 0.48f, 1.0f});
+        ui.text(24 * s, 12 * s + pad + rowH * static_cast<float>(formulas.size()) + 2 * s, status,
+                0.72f, {1.0f, 0.48f, 0.48f, 1.0f});
 
-    ui.text(px + 14.0f, py + 5.0f, hint, hintScale, {0.62f, 0.67f, 0.77f, 1.0f});
+    ui.text(px + 14.0f * s, py + 5.0f * s, hint, hintScale, {0.62f, 0.67f, 0.77f, 1.0f});
+}
+
+// ---- Settings page: a frosted panel of widget rows (toggles + sliders),
+// keyboard-driven: Up/Down select, Left/Right adjust, S or Esc closes. ----
+struct AppSettings
+{
+    bool grid = true;
+    bool labels = true;
+    float fillOpacity = 0.55f;
+    float uiScaleMul = 1.0f;
+};
+
+void drawSettings(Overlay &ui, Glass &glass, int fbW, int fbH, float s, const AppSettings &cfg,
+                 int sel)
+{
+    if (!ui.ok()) return;
+    const float w = static_cast<float>(fbW), h = static_cast<float>(fbH);
+    const float pw = 380 * s, rowH = 40 * s, titleH = 46 * s;
+    const float ph = titleH + rowH * 4 + 14 * s;
+    const float x = (w - pw) * 0.5f, y = (h - ph) * 0.5f;
+    glass.panel(x, y, pw, ph, 14 * s);
+
+    ui.begin();
+    ui.text(x + 20 * s, y + 12 * s, "Settings", 1.0f, {0.92f, 0.95f, 1.0f, 1.0f});
+
+    const char *names[4] = {"Grid", "Axis labels", "Fill opacity", "UI scale"};
+    for (int i = 0; i < 4; ++i)
+    {
+        const float ry = y + titleH + rowH * static_cast<float>(i);
+        if (i == sel)
+            roundedRect(ui, x + 8 * s, ry, pw - 16 * s, rowH - 6 * s, 5 * s,
+                        {1.0f, 1.0f, 1.0f, 0.07f});
+        const bool on = i == sel;
+        ui.text(x + 20 * s, ry + 8 * s, names[i], 0.85f,
+                on ? std::array<float, 4>{0.92f, 0.95f, 1.0f, 1.0f}
+                   : std::array<float, 4>{0.62f, 0.67f, 0.76f, 1.0f});
+
+        const float vx = x + pw - 150 * s;
+        if (i <= 1) // toggle widget
+        {
+            const bool v = i == 0 ? cfg.grid : cfg.labels;
+            const float tx = x + pw - 66 * s, ty = ry + 9 * s, twW = 44 * s, twH = 20 * s;
+            roundedRect(ui, tx, ty, twW, twH, twH * 0.5f,
+                        v ? std::array<float, 4>{0.00f, 0.45f, 0.85f, 0.9f}
+                          : std::array<float, 4>{1.0f, 1.0f, 1.0f, 0.12f});
+            const float knob = twH - 6 * s;
+            roundedRect(ui, v ? tx + twW - knob - 3 * s : tx + 3 * s, ty + 3 * s, knob, knob,
+                        knob * 0.5f, {0.95f, 0.97f, 1.0f, 1.0f});
+        }
+        else // slider widget
+        {
+            const float v01 = i == 2 ? (cfg.fillOpacity - 0.20f) / 0.80f
+                                     : (cfg.uiScaleMul - 0.75f) / 0.75f;
+            const float tx = vx, ty = ry + 17 * s, twW = 96 * s;
+            ui.fillRect(tx, ty, twW, 4 * s, {1.0f, 1.0f, 1.0f, 0.14f});
+            ui.fillRect(tx, ty, twW * std::clamp(v01, 0.0f, 1.0f), 4 * s,
+                        {0.00f, 0.55f, 0.98f, 0.95f});
+            const float kx = tx + twW * std::clamp(v01, 0.0f, 1.0f) - 4 * s;
+            roundedRect(ui, kx, ty - 5 * s, 8 * s, 14 * s, 3 * s, {0.95f, 0.97f, 1.0f, 1.0f});
+            char buf[16];
+            std::snprintf(buf, sizeof buf, i == 2 ? "%.0f%%" : "%.2fx",
+                          i == 2 ? cfg.fillOpacity * 100.0f : cfg.uiScaleMul);
+            ui.text(x + pw - 46 * s, ry + 8 * s, buf, 0.72f, {0.62f, 0.67f, 0.76f, 1.0f});
+        }
+    }
 }
 
 // Debug overlay: visible tiles outlined and coloured by solve state, plus an
 // info panel (fps, level, viewport, tile/store/job counts, frame-latency
 // attribution) and a legend.
-void drawDebug(Overlay &ui, Glass &glass, const Viewport &vp, int fbW, int fbH,
+void drawDebug(Overlay &ui, Glass &glass, float s, const Viewport &vp, int fbW, int fbH,
               const std::vector<DebugTile> &tiles, size_t storeSize, unsigned long long jobs,
               double fps, double frameMs, int holes, const char *perf1 = nullptr,
               const char *perf2 = nullptr)
@@ -194,15 +263,15 @@ void drawDebug(Overlay &ui, Glass &glass, const Viewport &vp, int fbW, int fbH,
     }
 
     // info panel (top-right, frosted)
-    const float pw = 430, ph = perf1 ? 296 : 206, px = fbW - pw - 14, py = 14;
-    glass.panel(px, py, pw, ph, 12.0f);
+    const float pw = 430 * s, ph = (perf1 ? 296 : 206) * s, px = fbW - pw - 14 * s, py = 14 * s;
+    glass.panel(px, py, pw, ph, 12.0f * s);
     ui.begin(); // glass switched programs; re-arm the overlay batch state
     const std::array<float, 4> tc{0.85f, 0.9f, 1.0f, 1.0f};
-    float ty = py + 8;
+    float ty = py + 8 * s;
     char buf[160];
-    auto line = [&](const char *s) {
-        ui.text(px + 12, ty, s, 0.8f, tc);
-        ty += ui.lineHeight(0.8f) + 2;
+    auto line = [&](const char *str) {
+        ui.text(px + 12 * s, ty, str, 0.8f, tc);
+        ty += ui.lineHeight(0.8f) + 2 * s;
     };
     std::snprintf(buf, sizeof buf, "fps %.0f    frame %.1f ms", fps, frameMs);
     line(buf);
@@ -222,7 +291,7 @@ void drawDebug(Overlay &ui, Glass &glass, const Viewport &vp, int fbW, int fbH,
     if (perf2) line(perf2); // freshest input->present age
     ty += 6;
     auto legend = [&](std::array<float, 4> col, const char *lbl) {
-        ui.fillRect(px + 12, ty + 2, 12, 12, col);
+        ui.fillRect(px + 12 * s, ty + 2 * s, 12 * s, 12 * s, col);
         ui.text(px + 30, ty, lbl, 0.78f, tc);
         ty += 19;
     };
@@ -384,7 +453,11 @@ int main(int argc, char **argv)
     Engine engine(tilePx, 0, [] { glfw::postEmptyEvent(); });
     GlPresenter presenter(tilePx);
     Glass glass;
-    Overlay overlay(findFont(), 22);
+    // DPI-aware UI: bake the glyph atlas at the monitor content scale; every
+    // UI metric multiplies by uiS() (content scale x the Settings multiplier).
+    float dpiScale = std::get<0>(window.getContentScale());
+    if (!(dpiScale >= 0.5f && dpiScale <= 4.0f)) dpiScale = 1.0f;
+    Overlay overlay(findFont(), static_cast<int>(22.0f * dpiScale + 0.5f));
 
     auto [fbW, fbH] = window.getFramebufferSize();
     presenter.resize(fbW, fbH);
@@ -407,7 +480,21 @@ int main(int argc, char **argv)
 
     bool dragging = false;
     double lastX = 0, lastY = 0;
+    double mouseX = 0, mouseY = 0; // latest cursor (screen px) for the readout
+    bool wantScreenshot = false;
     bool viewportDirty = false;
+
+    AppSettings cfg;
+    bool settingsOpen = false;
+    int settingsSel = 0;
+    auto uiS = [&]() { return dpiScale * cfg.uiScaleMul; };
+
+    // eased view animation: scroll/reset move TARGETS; the loop glides vp
+    // toward them (smooth zoom, fly-home), exponential approach in log space.
+    double targetWpp = vp.worldPerPixel, targetCx = vp.centerX, targetCy = vp.centerY;
+    bool viewAnimating = false;
+    float selAnim = 0.0f; // eased selection-highlight row
+    auto animPrev = std::chrono::steady_clock::now();
 
     // formula editing state
     bool editing = false;
@@ -542,6 +629,37 @@ int main(int argc, char **argv)
         st.t = std::chrono::duration<double, std::milli>(fT0 - appT0).count();
         st.wait = pendingWaitMs;
         pendingWaitMs = -1.0; // callback-driven frames log wait = -1
+
+        // ---- animation step (smooth zoom / fly-home / selection glide) ----
+        {
+            const auto nowA = std::chrono::steady_clock::now();
+            const double adt =
+                std::clamp(std::chrono::duration<double>(nowA - animPrev).count(), 0.0, 0.05);
+            animPrev = nowA;
+            if (viewAnimating)
+            {
+                const double k = 1.0 - std::exp(-adt / 0.055);
+                const double lw = std::log(vp.worldPerPixel) +
+                                  (std::log(targetWpp) - std::log(vp.worldPerPixel)) * k;
+                vp.worldPerPixel = std::exp(lw);
+                vp.centerX += (targetCx - vp.centerX) * k;
+                vp.centerY += (targetCy - vp.centerY) * k;
+                if (std::abs(std::log(vp.worldPerPixel / targetWpp)) < 5e-4 &&
+                    std::abs(targetCx - vp.centerX) < vp.worldPerPixel * 0.2 &&
+                    std::abs(targetCy - vp.centerY) < vp.worldPerPixel * 0.2)
+                {
+                    vp.worldPerPixel = targetWpp;
+                    vp.centerX = targetCx;
+                    vp.centerY = targetCy;
+                    viewAnimating = false;
+                }
+                viewportDirty = true;
+            }
+            const float selTarget = static_cast<float>(selected);
+            selAnim += (selTarget - selAnim) *
+                       static_cast<float>(1.0 - std::exp(-adt / 0.045));
+            if (std::abs(selAnim - selTarget) < 0.004f) selAnim = selTarget;
+        }
         const bool vpChangedThisFrame = viewportDirty;
 
         if (viewportDirty)
@@ -584,8 +702,21 @@ int main(int argc, char **argv)
         if (pendingUploads > 0) finalRender = false;
         if (presenter.activeFades() > 0) finalRender = false; // crossfades still animating
         const auto tOverlay0 = SClock::now();
-        drawAxisNumbers(overlay, vp, fbW, fbH, uiBarH(formulas.size()));
-        drawUi(overlay, glass, fbW, fbH, formulas, selected, editing, editBuffer, editPos, status);
+        if (cfg.labels) drawAxisNumbers(overlay, vp, fbW, fbH, 18.0f * uiS());
+        drawUi(overlay, glass, fbW, fbH, uiS(), formulas, selected, selAnim, editing, editBuffer,
+               editPos, status);
+        {
+            // live cursor coordinates (a plotter staple), bottom-right, quiet
+            const double wx = vp.centerX + (mouseX - fbW * 0.5) * vp.worldPerPixel;
+            const double wy = vp.centerY - (mouseY - fbH * 0.5) * vp.worldPerPixel;
+            char cbuf[64];
+            std::snprintf(cbuf, sizeof cbuf, "%.6g, %.6g", wx, wy);
+            const float cs = uiS();
+            const float cw = overlay.textWidth(cbuf, 0.72f);
+            overlay.text(fbW - cw - 16 * cs, fbH - 40 * cs + 5 * cs, cbuf, 0.72f,
+                         {0.50f, 0.55f, 0.65f, 0.9f});
+        }
+        if (settingsOpen) drawSettings(overlay, glass, fbW, fbH, uiS(), cfg, settingsSel);
         if (showDebug)
         {
             engine.debugTiles(vp, dbgTiles);
@@ -608,7 +739,7 @@ int main(int argc, char **argv)
             else
                 std::snprintf(p1, sizeof p1, "worst2s: n/a");
             std::snprintf(p2, sizeof p2, "input->present %.1f ms", inLast);
-            drawDebug(overlay, glass, vp, fbW, fbH, dbgTiles, engine.storeSize(), engine.jobsCompleted(), fps,
+            drawDebug(overlay, glass, uiS(), vp, fbW, fbH, dbgTiles, engine.storeSize(), engine.jobsCompleted(), fps,
                       frameMs, holes, p1, p2);
         }
         st.overlay = msSince(tOverlay0);
@@ -656,6 +787,15 @@ int main(int argc, char **argv)
         }
         if (doSwap)
         {
+            if (wantScreenshot)
+            {
+                static int shotN = 0;
+                const std::string path =
+                    outDir + "/screenshot_" + std::to_string(++shotN) + ".png";
+                saveFramebuffer(fbW, fbH, path);
+                status = "saved " + path;
+                wantScreenshot = false;
+            }
             const auto tSwap0 = std::chrono::steady_clock::now();
             window.swapBuffers();
             const double swapMs =
@@ -773,24 +913,31 @@ int main(int argc, char **argv)
         });
 
     window.cursorPosEvent.setCallback([&](glfw::Window &, double cx, double cy) {
+        mouseX = cx;
+        mouseY = cy;
         if (!dragging) return;
         const double dx = cx - lastX, dy = cy - lastY;
         lastX = cx;
         lastY = cy;
         vp.centerX -= dx * vp.worldPerPixel;
         vp.centerY += dy * vp.worldPerPixel; // cursor y is down, world y is up
+        targetCx -= dx * vp.worldPerPixel;   // keep an in-flight zoom's target in step
+        targetCy += dy * vp.worldPerPixel;
         viewportDirty = true;
         markInput();
     });
 
     window.scrollEvent.setCallback([&](glfw::Window &w, double, double yoff) {
+        // zoom moves the TARGET (anchored at the cursor); the render loop
+        // glides toward it -- rapid scrolls accumulate into one smooth ride
         auto [cx, cy] = w.getCursorPos();
-        const double worldX = vp.centerX + (cx - fbW * 0.5) * vp.worldPerPixel;
-        const double worldY = vp.centerY - (cy - fbH * 0.5) * vp.worldPerPixel;
+        const double worldX = targetCx + (cx - fbW * 0.5) * targetWpp;
+        const double worldY = targetCy - (cy - fbH * 0.5) * targetWpp;
         const double factor = std::pow(1.1, -yoff);
-        vp.worldPerPixel *= factor;
-        vp.centerX = worldX - (cx - fbW * 0.5) * vp.worldPerPixel;
-        vp.centerY = worldY + (cy - fbH * 0.5) * vp.worldPerPixel;
+        targetWpp *= factor;
+        targetCx = worldX - (cx - fbW * 0.5) * targetWpp;
+        targetCy = worldY + (cy - fbH * 0.5) * targetWpp;
+        viewAnimating = true;
         viewportDirty = true;
         markInput();
     });
@@ -801,6 +948,37 @@ int main(int argc, char **argv)
             const bool press = action == glfw::KeyState::Press;
             const bool held = press || action == glfw::KeyState::Repeat;
 
+            if (settingsOpen)
+            {
+                if (!held) return;
+                if (press && (key == K::Escape || key == K::S))
+                {
+                    settingsOpen = false;
+                    return;
+                }
+                if (key == K::Up) settingsSel = (settingsSel + 3) % 4;
+                if (key == K::Down) settingsSel = (settingsSel + 1) % 4;
+                const int dir = key == K::Right ? 1 : key == K::Left ? -1 : 0;
+                if (dir != 0)
+                {
+                    switch (settingsSel)
+                    {
+                    case 0: if (press) cfg.grid = !cfg.grid; break;
+                    case 1: if (press) cfg.labels = !cfg.labels; break;
+                    case 2:
+                        cfg.fillOpacity =
+                            std::clamp(cfg.fillOpacity + 0.05f * static_cast<float>(dir), 0.20f, 1.00f);
+                        break;
+                    case 3:
+                        cfg.uiScaleMul =
+                            std::clamp(cfg.uiScaleMul + 0.125f * static_cast<float>(dir), 0.75f, 1.50f);
+                        break;
+                    }
+                    presenter.setGridVisible(cfg.grid);
+                    presenter.setFillOpacity(cfg.fillOpacity);
+                }
+                return;
+            }
             if (editing)
             {
                 editPos = std::min(editPos, editBuffer.size());
@@ -884,10 +1062,22 @@ int main(int argc, char **argv)
             }
             if (key == K::R)
             {
-                vp.centerX = vp.centerY = 0.0;
-                vp.worldPerPixel = 16.0 / fbW;
+                targetCx = targetCy = 0.0; // fly home, eased
+                targetWpp = 16.0 / fbW;
+                viewAnimating = true;
                 viewportDirty = true;
                 markInput();
+                return;
+            }
+            if (key == K::S)
+            {
+                settingsOpen = true;
+                settingsSel = 0;
+                return;
+            }
+            if (key == K::P)
+            {
+                wantScreenshot = true; // captured at end of this frame
                 return;
             }
             if (key == K::D)
@@ -925,8 +1115,9 @@ int main(int argc, char **argv)
             glfw::waitEvents(0.004); // settle window: keep re-checking the fence/realloc
         else if (finalRender)
             glfw::waitEvents();
-        else if (presenter.activeFades() > 0)
-            glfw::waitEvents(0.008); // crossfades animate at display cadence
+        else if (presenter.activeFades() > 0 || viewAnimating ||
+                 std::abs(selAnim - static_cast<float>(selected)) > 0.004f)
+            glfw::waitEvents(0.006); // crossfades / view & UI animations
         else
             glfw::waitEvents(0.05);
         pendingWaitMs = msSince(w0); // includes event-callback dispatch time
@@ -996,12 +1187,13 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
         glfw::pollEvents();
         engine.buildPresent(vp, present);
         (void)presenter.renderFrame(vp, present, /*uploadBudget=*/64);
-        drawUi(overlay, glass, fbW, fbH, {formula}, 0, /*editing=*/false, "", 0, "");
+        drawUi(overlay, glass, fbW, fbH, 1.0f, {formula}, 0, 0.0f, /*editing=*/false, "", 0,
+               "");
         if (debug)
         {
             engine.debugTiles(vp, dbgTiles);
-            drawDebug(overlay, glass, vp, fbW, fbH, dbgTiles, engine.storeSize(), engine.jobsCompleted(),
-                      120.0, 8.0, /*holes=*/0);
+            drawDebug(overlay, glass, 1.0f, vp, fbW, fbH, dbgTiles, engine.storeSize(),
+                      engine.jobsCompleted(), 120.0, 8.0, /*holes=*/0);
         }
         window.swapBuffers();
         std::this_thread::sleep_for(std::chrono::milliseconds(5));

@@ -292,6 +292,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     // ---- grid + axes ----
+    if (gridVisible_)
     {
         std::vector<float> verts;
         const WorldRect wb = vp.worldBounds();
@@ -338,7 +339,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
             multi = true;
             break;
         }
-    const float fillOpacity = multi ? 0.55f : 1.0f;
+    const float fillOpacity = multi ? fillOpacity_ : 1.0f;
 
     for (const PresentTile &t : tiles)
     {

@@ -41,6 +41,9 @@ public:
     // Crossfades animating last frame: while >0 the caller must keep rendering
     // (~8ms cadence) so refinement upgrades melt in instead of popping.
     [[nodiscard]] int activeFades() const { return fadesActive_; }
+    // user settings (wired from the Settings page)
+    void setGridVisible(bool v) { gridVisible_ = v; }
+    void setFillOpacity(float a) { fillOpacity_ = a; }
     // atlas occupancy diagnostics
     [[nodiscard]] size_t residentLayers() const { return layers_.size(); }
     [[nodiscard]] size_t freeLayers() const { return freeLayers_.size(); }
@@ -67,6 +70,8 @@ private:
     int fbW_{1}, fbH_{1};
     uint64_t frame_{0};
     int holeTiles_{0};
+    bool gridVisible_{true};
+    float fillOpacity_{0.55f}; // multi-relation region-fill opacity
     double uploadMs_{0.0};
     int uploads_{0};
     int drawnTiles_{0};

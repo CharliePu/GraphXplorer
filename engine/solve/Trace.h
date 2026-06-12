@@ -22,8 +22,11 @@ struct TraceHit
     double y{0.0};
 };
 
+// `reachPx`: how far (screen px) the search may wander from the cursor.
+// Hover uses the default; dragging a pinned point along the curve passes a
+// generous reach so the point keeps following a distant cursor.
 TraceHit traceCurve(const Relation &rel, double cursorX, double cursorY, double wppX,
-                    double wppY, EvalScratch &scratch);
+                    double wppY, EvalScratch &scratch, double reachPx = 26.0);
 }
 
 #endif // GXR_SOLVE_TRACE_H

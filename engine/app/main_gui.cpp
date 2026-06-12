@@ -114,6 +114,24 @@ void fillDisc(Overlay &ui, float cx, float cy, float r, const std::array<float, 
     }
 }
 
+void drawValueChip(Overlay &ui, Glass &glass, int fbW, float cs, float px, float py,
+                   const char *text, bool certified)
+{
+    const float tw = ui.textWidth(text, 0.74f);
+    const float w = tw + 26.0f * cs;
+    const float minX = 8.0f * cs;
+    const float maxX = std::max(minX, static_cast<float>(fbW) - w - 8.0f * cs);
+    const float x = std::clamp(px - w * 0.5f, minX, maxX);
+    float y = py - 40.0f * cs;
+    if (y < 8.0f * cs) y = py + 18.0f * cs;
+    glass.panel(x, y, w, 26.0f * cs, 13.0f * cs, 0.97f);
+    ui.begin(); // glass.panel binds its own program before the chip text
+    const float th = ui.lineHeight(0.74f);
+    ui.text(x + (w - tw) * 0.5f, y + (26.0f * cs - th) * 0.5f, text, 0.74f,
+                 certified ? std::array<float, 4>{0.90f, 0.93f, 0.97f, 1.0f}
+                           : std::array<float, 4>{0.66f, 0.70f, 0.76f, 1.0f});
+}
+
 // Pretty math for DISPLAY-mode formulas: '^' exponents render raised and
 // small (x^2 reads as x squared), '*' renders as a centered dot. Editing
 // always shows the raw source so caret indexes stay 1:1 with the buffer.
@@ -899,6 +917,7 @@ int main(int argc, char **argv)
     std::printf("GraphXplorer: %s\n", formulas[0].c_str());
 
     bool dragging = false;
+    bool curveDrag = false;
     char dragParam = 0;                // parameter slider being scrubbed (0 = none)
     std::array<float, 2> paramTrack{}; // that slider's track x / width
     bool pinActive = false;            // click-pinned trace value (world-anchored)
@@ -1240,16 +1259,7 @@ int main(int argc, char **argv)
                     fillDisc(overlay, pxs, pys, 1.6f * cs, {0.98f, 0.99f, 1.0f, 1.0f});
                     char pb[80];
                     std::snprintf(pb, sizeof pb, "%.8g, %.8g", pinWx, pinWy);
-                    const float pw = overlay.textWidth(pb, 0.74f);
-                    float lx = pxs + 12 * cs, ly = pys - 26 * cs;
-                    lx = std::min(lx, fbW - pw - 18 * cs);
-                    ly = std::max(ly, 6.0f * cs);
-                    roundedRect(overlay, lx - 7 * cs, ly - 3 * cs, pw + 14 * cs,
-                                overlay.lineHeight(0.74f) + 6 * cs, 7 * cs,
-                                {0.055f, 0.065f, 0.095f, 0.85f});
-                    overlay.text(lx, ly, pb, 0.74f,
-                                 pinCert ? std::array<float, 4>{0.85f, 0.89f, 0.95f, 0.97f}
-                                         : std::array<float, 4>{0.66f, 0.70f, 0.76f, 0.9f});
+                    drawValueChip(overlay, glass, fbW, cs, pxs, pys, pb, pinCert);
                 }
             }
             char cbuf[80];
@@ -1598,12 +1608,39 @@ int main(int argc, char **argv)
             }
             if (b == glfw::MouseButton::Left)
             {
-                const bool was = dragging;
-                dragging = (s == glfw::MouseButtonState::Press);
                 auto [cx, cy] = w.getCursorPos();
                 lastX = cx;
                 lastY = cy;
                 act();
+                if (s == glfw::MouseButtonState::Press && frameTrace.traced)
+                {
+                    const float sxp = static_cast<float>(
+                        fbW * 0.5 + (frameTrace.x - vp.centerX) / vp.wppX());
+                    const float syp = static_cast<float>(
+                        fbH * 0.5 - (frameTrace.y - vp.centerY) / vp.wppY());
+                    if (std::hypot(cx - sxp, cy - syp) <= 14.0 * uiS())
+                    {
+                        curveDrag = true;
+                        dragging = false;
+                        pinActive = true;
+                        pinWx = frameTrace.x;
+                        pinWy = frameTrace.y;
+                        pinCert = frameTrace.certified;
+                        pressMx = cx;
+                        pressMy = cy;
+                        pressTrace = frameTrace;
+                        panVx = panVy = dragVx = dragVy = 0.0;
+                        markInput();
+                        return;
+                    }
+                }
+                if (s != glfw::MouseButtonState::Press && curveDrag)
+                {
+                    curveDrag = false;
+                    return;
+                }
+                const bool was = dragging;
+                dragging = (s == glfw::MouseButtonState::Press);
                 if (dragging)
                 {
                     panVx = panVy = dragVx = dragVy = 0.0;
@@ -1660,6 +1697,30 @@ int main(int argc, char **argv)
         if (dragParam != 0)
         {
             applyParamDrag(static_cast<float>(cx));
+            return;
+        }
+        if (curveDrag)
+        {
+            if (selected < rels.size() && rels[selected] &&
+                (rels[selected]->isEquality() || rels[selected]->isClosedInequality()))
+            {
+                // Main thread only: GLFW delivers cursor callbacks on the UI thread.
+                static EvalScratch dragTraceScratch;
+                const double wx = vp.centerX + (cx - fbW * 0.5) * vp.wppX();
+                const double wyc = vp.centerY - (cy - fbH * 0.5) * vp.wppY();
+                TraceHit th = traceCurve(*rels[selected], wx, wyc, vp.wppX(), vp.wppY(),
+                                         dragTraceScratch, 240.0);
+                if (th.traced)
+                {
+                    pinActive = true;
+                    pinWx = th.x;
+                    pinWy = th.y;
+                    pinCert = th.certified;
+                    frameTrace = th;
+                }
+            }
+            act();
+            markInput();
             return;
         }
         if (!dragging) return;
@@ -2006,13 +2067,7 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
                     {0.98f, 0.99f, 1.0f, th.certified ? 1.0f : 0.7f});
                 char pb[80];
                 std::snprintf(pb, sizeof pb, "%.8g, %.8g", th.x, th.y);
-                const float pw = overlay.textWidth(pb, 0.74f);
-                float lx = std::min(sxp + 12 * s, fbW - pw - 18 * s);
-                const float ly = std::max(syp - 26 * s, 6.0f * s);
-                roundedRect(overlay, lx - 7 * s, ly - 3 * s, pw + 14 * s,
-                            overlay.lineHeight(0.74f) + 6 * s, 7 * s,
-                            {0.055f, 0.065f, 0.095f, 0.85f});
-                overlay.text(lx, ly, pb, 0.74f, {0.85f, 0.89f, 0.95f, 0.97f});
+                drawValueChip(overlay, glass, fbW, s, sxp, syp, pb, th.certified);
             }
             if (f == 199) // settled: log the final hit for harness assertions
                 std::printf("selftest-trace: traced=%d certified=%d x=%.12g y=%.12g\n",

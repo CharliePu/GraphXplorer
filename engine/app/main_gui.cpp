@@ -1244,7 +1244,10 @@ int main(int argc, char **argv)
             const double qx = th.x, qy = th.y;
             const float cs = uiS();
             overlay.begin(); // glass panels may have left their program bound
-            if (traced)
+            // ONE marker on screen: while a pin exists, the pin IS the trace
+            // point (click elsewhere re-pins, drag moves it) -- the roaming
+            // hover dot would read as a second point.
+            if (traced && !pinActive)
             {
                 const float sxp = static_cast<float>(
                     fbW * 0.5 + (qx - vp.centerX) / vp.wppX());

@@ -127,6 +127,7 @@ const char *kBrightFs = R"(#version 330 core
 in vec2 vUv;
 out vec4 frag;
 uniform sampler2D tex;
+uniform sampler2D dens; // blurred scene: the local light neighborhood
 uniform float exposure;
 void main(){
     vec3 c = texture(tex, vUv).rgb;
@@ -134,7 +135,14 @@ void main(){
     // field from blowing out, the bloom must adapt with it -- otherwise a
     // uniformly-emissive screen re-fogs itself back to white.
     float l = dot(c, vec3(0.299, 0.587, 0.114)) * exposure;
-    frag = vec4(c * smoothstep(0.55, 1.30, l), 1.0);
+    // DENSITY-ADAPTIVE: a lone curve in darkness earns a generous halo; a
+    // dense field's light is already everywhere, and more halo only fogs
+    // it. The blurred scene is the local density -- judged RAW, not
+    // exposed: auto-exposure equalizes scenes by design, which would
+    // cancel exactly the sparse/dense contrast this term exists to read.
+    float nb = dot(texture(dens, vUv).rgb, vec3(0.299, 0.587, 0.114));
+    float sparse = min(1.8 / (1.0 + 1.4 * nb), 1.8);
+    frag = vec4(c * smoothstep(0.55, 1.30, l) * sparse, 1.0);
 })";
 
 const char *kBloomBlurFs = R"(#version 330 core
@@ -277,6 +285,7 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     tonemapProg_ = compile(kTriVs, kTonemapFs);
     uBrightTex_ = glGetUniformLocation(brightProg_, "tex");
     uBrExposure_ = glGetUniformLocation(brightProg_, "exposure");
+    uBrDens_ = glGetUniformLocation(brightProg_, "dens");
     uBlurTex_ = glGetUniformLocation(blurProg_, "tex");
     uBlurDir_ = glGetUniformLocation(blurProg_, "dir");
     uTmScene_ = glGetUniformLocation(tonemapProg_, "scene");
@@ -574,6 +583,10 @@ void GlPresenter::hdrPost()
     glUseProgram(brightProg_);
     glUniform1i(uBrightTex_, 0);
     glUniform1f(uBrExposure_, exposure_);
+    glUniform1i(uBrDens_, 1);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, bloomTex_[2]); // blurred scene = density
+    glActiveTexture(GL_TEXTURE0);
     glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[1]);
     glBindTexture(GL_TEXTURE_2D, bloomTex_[0]);
     glDrawArrays(GL_TRIANGLES, 0, 3);

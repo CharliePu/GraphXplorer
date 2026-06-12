@@ -112,13 +112,13 @@ private:
     unsigned int brightProg_{0}, blurProg_{0}, tonemapProg_{0}; // HDR chain
     unsigned int quadVao_{0}, quadVbo_{0}, instVbo_{0};
     unsigned int lineVao_{0}, lineVbo_{0};
-    unsigned int bloomFbo_[3] = {0, 0, 0};
-    unsigned int bloomTex_[3] = {0, 0, 0}; // [2] = blurred scene for local contrast
+    unsigned int bloomFbo_[4] = {0, 0, 0, 0};
+    unsigned int bloomTex_[4] = {0, 0, 0, 0}; // [2] = local contrast, [3] = wide density
     unsigned int sceneFbo_{0}, sceneTex_{0}; // full-res RGBA16F: the scene in HDR
     unsigned int expFbo_{0}, expTex_{0};     // 256^2 POT auto-exposure metering target
     unsigned int triVao_{0}, triVbo_{0};     // fullscreen triangle for post passes
     int bw_{1}, bh_{1};
-    int uBrightTex_{-1}, uBrExposure_{-1}, uBrDens_{-1}, uBlurTex_{-1}, uBlurDir_{-1};
+    int uBrightTex_{-1}, uBrExposure_{-1}, uBrDens_{-1}, uBrSoft_{-1}, uBlurTex_{-1}, uBlurDir_{-1};
     int uTmScene_{-1}, uTmBloom_{-1}, uTmExposure_{-1}, uTmGrain_{-1}, uTmVig_{-1},
         uTmBlurScene_{-1}, uTmFb_{-1};
     float exposure_{1.0f}, exposureTarget_{1.0f};

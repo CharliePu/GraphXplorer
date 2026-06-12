@@ -31,16 +31,19 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 using namespace gxr;
 
 namespace
 {
-std::shared_ptr<const Relation> parseOrNull(const std::string &src)
+std::shared_ptr<const Relation> parseOrNull(const std::string &src,
+                                            const std::unordered_map<char, double> *params = nullptr,
+                                            std::vector<char> *used = nullptr)
 {
     std::string err;
-    auto r = Relation::parse(src, err);
+    auto r = Relation::parse(src, err, params, used);
     if (!r)
     {
         std::fprintf(stderr, "parse error (%s): %s\n", src.c_str(), err.c_str());
@@ -100,7 +103,7 @@ void roundedRect(Overlay &ui, float x, float y, float w, float h, float r,
 
 // A filled disc (row-sliced). roundedRect degenerates to NOTHING at r = w/2
 // (both cross rects go zero-area) -- the trace marker needs a true dot.
-void dot(Overlay &ui, float cx, float cy, float r, const std::array<float, 4> &c)
+void fillDisc(Overlay &ui, float cx, float cy, float r, const std::array<float, 4> &c)
 {
     const int n = std::max(3, static_cast<int>(r * 2.0f + 0.5f));
     for (int i = 0; i < n; ++i)
@@ -182,11 +185,14 @@ void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
            const std::string &edit, size_t editPos, const std::string &status, float wake,
            float barK, bool helpOpen, std::vector<std::array<float, 4>> *capRects,
            std::vector<std::array<float, 4>> *zoomRects, std::array<float, 4> *barRect,
-           float *barTextX)
+           float *barTextX, const std::vector<char> *selParams = nullptr,
+           const std::unordered_map<char, double> *paramVals = nullptr,
+           std::vector<std::array<float, 5>> *paramZones = nullptr)
 {
     if (!ui.ok()) return;
     if (capRects) capRects->clear();
     if (zoomRects) zoomRects->clear();
+    if (paramZones) paramZones->clear();
     if (barRect) *barRect = {0, 0, 0, 0};
     const float w = static_cast<float>(fbW), h = static_cast<float>(fbH);
 
@@ -234,6 +240,47 @@ void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
                           : std::array<float, 4>{0.72f, 0.75f, 0.81f, a},
                       true);
             x += capW[i] + gap;
+        }
+    }
+
+    // ---- parameter tray: a slider per free letter in the SELECTED formula,
+    // floating above its capsule -- the formula's own chrome, no new region
+    if (selParams && paramVals && !selParams->empty() && rowAlpha > 0.02f && !editing)
+    {
+        const float rowH2 = 27.0f * s, trackW = 150.0f * s, padT = 12.0f * s;
+        const float trayW = trackW + 100.0f * s;
+        const float trayH = selParams->size() * rowH2 + padT * 2.0f - 7.0f * s;
+        float selCx = cx0 + (selected < capW.size() ? capW[selected] * 0.5f : 0.0f);
+        for (size_t i = 0; i < selected && i < capW.size(); ++i) selCx += capW[i] + gap;
+        const float tx0 = std::clamp(selCx - trayW * 0.5f, 12.0f * s, w - trayW - 12.0f * s);
+        const float ty0 = capY - trayH - 10.0f * s;
+        glass.panel(tx0, ty0, trayW, trayH, 13.0f * s, rowAlpha);
+        ui.begin();
+        const float *pal = kRelationPalette[selected & 7];
+        for (size_t i = 0; i < selParams->size(); ++i)
+        {
+            const char ch = (*selParams)[i];
+            const auto vit = paramVals->find(ch);
+            const double v = vit != paramVals->end() ? vit->second : 1.0;
+            const float ry = ty0 + padT + i * rowH2 - 5.0f * s;
+            const float cyMid = ry + ui.lineHeight(0.80f) * 0.5f;
+            const char nb[2] = {ch, 0};
+            ui.text(tx0 + 14.0f * s, ry, nb, 0.80f, {0.86f, 0.89f, 0.94f, rowAlpha});
+            const float trX = tx0 + 34.0f * s;
+            const float t =
+                static_cast<float>(std::clamp((v + 10.0) / 20.0, 0.0, 1.0));
+            ui.fillRect(trX, cyMid - 1.2f * s, trackW, 2.4f * s,
+                        {0.45f, 0.49f, 0.58f, 0.45f * rowAlpha});
+            ui.fillRect(trX, cyMid - 1.2f * s, trackW * t, 2.4f * s,
+                        {pal[0], pal[1], pal[2], 0.95f * rowAlpha});
+            fillDisc(ui, trX + trackW * t, cyMid, 5.0f * s, {0.95f, 0.97f, 1.0f, rowAlpha});
+            char vb[24];
+            std::snprintf(vb, sizeof vb, "%.3g", v);
+            ui.text(trX + trackW + 12.0f * s, ry, vb, 0.72f,
+                    {0.70f, 0.74f, 0.80f, rowAlpha});
+            if (paramZones)
+                paramZones->push_back({trX - 6.0f * s, ry - 4.0f * s, trackW + 12.0f * s,
+                                       rowH2, static_cast<float>(ch)});
         }
     }
 
@@ -707,11 +754,24 @@ int main(int argc, char **argv)
 
     Viewport vp{0.0, 0.0, 16.0 / fbW, fbW, fbH}; // initial span ~[-8,8]
     std::vector<std::string> formulas{argc >= 2 ? argv[1] : kPresets[0]};
-    auto rel0 = parseOrNull(formulas[0]);
+    // Free single-letter parameters: one global value table plus, per slot,
+    // the letters that slot referenced (its sliders). Scrubbing a slider
+    // re-parses only the slots that use the letter; setRelations
+    // pointer-diffing keeps every other slot's cache warm.
+    std::unordered_map<char, double> paramVals;
+    std::vector<std::vector<char>> slotParams;
+    auto parseSlot = [&](size_t i) -> std::shared_ptr<const Relation> {
+        if (slotParams.size() <= i) slotParams.resize(i + 1);
+        slotParams[i].clear();
+        auto r = parseOrNull(formulas[i], &paramVals, &slotParams[i]);
+        for (const char c2 : slotParams[i]) paramVals.try_emplace(c2, 1.0);
+        return r;
+    };
+    auto rel0 = parseSlot(0);
     if (!rel0)
     {
         formulas[0] = kPresets[0];
-        rel0 = parseOrNull(formulas[0]);
+        rel0 = parseSlot(0);
     }
     std::vector<std::shared_ptr<const Relation>> rels{rel0};
     size_t selected = 0;
@@ -720,6 +780,8 @@ int main(int argc, char **argv)
     std::printf("GraphXplorer: %s\n", formulas[0].c_str());
 
     bool dragging = false;
+    char dragParam = 0;                // parameter slider being scrubbed (0 = none)
+    std::array<float, 2> paramTrack{}; // that slider's track x / width
     double lastX = 0, lastY = 0;
     double mouseX = 0, mouseY = 0; // latest cursor (screen px) for the readout
     bool wantScreenshot = false;
@@ -731,6 +793,7 @@ int main(int argc, char **argv)
     float barTextX = 0.0f;
     std::array<float, 4> setRows[4]{};
     std::array<float, 4> setSliders[4]{};
+    std::vector<std::array<float, 5>> paramZones; // x,y,w,h + the letter
     int dragSlider = -1;
     AppSettings cfg;
     bool settingsOpen = false;
@@ -1030,7 +1093,8 @@ int main(int argc, char **argv)
         if (cfg.labels) drawAxisNumbers(overlay, vp, fbW, fbH, 18.0f * uiS(), wakeK);
         drawUi(overlay, glass, fbW, fbH, uiS(), formulas, selected, editing, editBuffer,
                editPos, status, wakeK, barK, helpOpen, &capsuleRects, &zoomRects, &barRect,
-               &barTextX);
+               &barTextX, selected < slotParams.size() ? &slotParams[selected] : nullptr,
+               &paramVals, &paramZones);
         {
             // live cursor coordinates -- and when hovering near the SELECTED
             // relation's curve (equality OR closed-inequality boundary), a
@@ -1057,8 +1121,8 @@ int main(int argc, char **argv)
                     fbH * 0.5 - (qy - vp.centerY) / vp.wppY());
                 const float *pal = kRelationPalette[selected & 7];
                 const float mA = certified ? 0.95f : 0.55f;
-                dot(overlay, sxp, syp, 5 * cs, {pal[0], pal[1], pal[2], mA});
-                dot(overlay, sxp, syp, 2 * cs,
+                fillDisc(overlay, sxp, syp, 5 * cs, {pal[0], pal[1], pal[2], mA});
+                fillDisc(overlay, sxp, syp, 2 * cs,
                     {0.98f, 0.99f, 1.0f, certified ? 1.0f : 0.7f});
             }
             char cbuf[80];
@@ -1268,6 +1332,29 @@ int main(int argc, char **argv)
         }
     });
 
+    // Scrub a parameter slider: write the value, re-parse ONLY the slots
+    // that reference the letter, hand the engine the new set. The epoch
+    // bump per tick is exactly a pan-storm: latest-wins, in-flight work
+    // aborts in <1 ms, coarse first-paint keeps the scrub live.
+    auto applyParamDrag = [&](float mx3) {
+        const float f3 =
+            std::clamp((mx3 - paramTrack[0]) / std::max(1.0f, paramTrack[1]), 0.0f, 1.0f);
+        paramVals[dragParam] = -10.0 + 20.0 * static_cast<double>(f3);
+        bool any = false;
+        for (size_t i2 = 0; i2 < formulas.size(); ++i2)
+        {
+            if (i2 >= slotParams.size()) continue;
+            bool uses = false;
+            for (const char c3 : slotParams[i2]) uses = uses || c3 == dragParam;
+            if (!uses) continue;
+            if (auto r3 = parseSlot(i2))
+            {
+                rels[i2] = r3;
+                any = true;
+            }
+        }
+        if (any) engine.setRelations(rels);
+    };
     window.mouseButtonEvent.setCallback(
         [&](glfw::Window &w, glfw::MouseButton b, glfw::MouseButtonState s, glfw::ModifierKeyBit) {
             if (b == glfw::MouseButton::Left && s == glfw::MouseButtonState::Press)
@@ -1334,6 +1421,17 @@ int main(int argc, char **argv)
                     act();
                     return;
                 }
+                for (const auto &z : paramZones)
+                {
+                    if (mx2 < z[0] || mx2 > z[0] + z[2] || my2 < z[1] || my2 > z[1] + z[3])
+                        continue;
+                    act();
+                    markInput();
+                    dragParam = static_cast<char>(z[4]);
+                    paramTrack = {z[0] + 6.0f * uiS(), z[2] - 12.0f * uiS()};
+                    applyParamDrag(static_cast<float>(mx2));
+                    return; // consumed: do not start a pan
+                }
                 for (size_t i = 0; i < capsuleRects.size(); ++i)
                 {
                     const auto &r = capsuleRects[i];
@@ -1397,6 +1495,7 @@ int main(int argc, char **argv)
                     dragSlider = -1;
                     saveCfg();
                 }
+                if (s != glfw::MouseButtonState::Press) dragParam = 0;
             }
         });
 
@@ -1412,6 +1511,11 @@ int main(int argc, char **argv)
             if (dragSlider == 2) cfg.fillOpacity = 0.20f + 0.80f * f2;
             else cfg.uiScaleMul = 0.75f + 0.75f * f2;
             presenter.setFillOpacity(cfg.fillOpacity);
+            return;
+        }
+        if (dragParam != 0)
+        {
+            applyParamDrag(static_cast<float>(cx));
             return;
         }
         if (!dragging) return;
@@ -1526,11 +1630,11 @@ int main(int argc, char **argv)
                 if (key == K::Enter || key == K::KeyPadEnter)
                 {
                     std::string err;
-                    auto parsed = Relation::parse(editBuffer, err);
+                    auto parsed = Relation::parse(editBuffer, err, &paramVals, nullptr);
                     if (parsed)
                     {
                         formulas[selected] = editBuffer;
-                        rels[selected] = std::make_shared<const Relation>(std::move(*parsed));
+                        rels[selected] = parseSlot(selected);
                         engine.setRelations(rels);
                         editing = false;
                         status.clear();
@@ -1571,7 +1675,7 @@ int main(int argc, char **argv)
             if (key == K::N && formulas.size() < 8)
             {
                 formulas.push_back("y = x");
-                rels.push_back(parseOrNull(formulas.back()));
+                rels.push_back(parseSlot(formulas.size() - 1));
                 selected = formulas.size() - 1;
                 engine.setRelations(rels);
                 editing = true; // a new row goes straight into edit
@@ -1584,6 +1688,8 @@ int main(int argc, char **argv)
             {
                 formulas.erase(formulas.begin() + static_cast<ptrdiff_t>(selected));
                 rels.erase(rels.begin() + static_cast<ptrdiff_t>(selected));
+                if (selected < slotParams.size())
+                    slotParams.erase(slotParams.begin() + static_cast<ptrdiff_t>(selected));
                 if (selected >= formulas.size()) selected = formulas.size() - 1;
                 engine.setRelations(rels);
                 status.clear();
@@ -1624,9 +1730,9 @@ int main(int argc, char **argv)
             else if (key == K::Six) idx = 5;
             if (idx >= 0)
             {
-                if (auto r = parseOrNull(kPresets[idx]))
+                formulas[selected] = kPresets[idx];
+                if (auto r = parseSlot(selected))
                 {
-                    formulas[selected] = kPresets[idx];
                     rels[selected] = r;
                     engine.setRelations(rels);
                     status.clear();
@@ -1699,6 +1805,8 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
     vp.yStretch = gSelftestStretch;
 
     // semicolon-separated formulas land in successive relation slots
+    std::unordered_map<char, double> selfPv;
+    std::vector<char> selfUsed; // slot-0 parameters: the tray renders in shots
     std::vector<std::shared_ptr<const Relation>> rels;
     size_t pos = 0;
     while (pos <= formula.size())
@@ -1708,8 +1816,11 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
             formula.substr(pos, semi == std::string::npos ? std::string::npos : semi - pos);
         if (part.find_first_not_of(" \t") != std::string::npos)
         {
-            auto r = parseOrNull(part);
+            std::vector<char> u2;
+            auto r = parseOrNull(part, &selfPv, &u2);
             if (!r) return 1;
+            if (rels.empty()) selfUsed = u2;
+            for (const char c2 : u2) selfPv.try_emplace(c2, 1.0);
             rels.push_back(std::move(r));
         }
         if (semi == std::string::npos) break;
@@ -1728,7 +1839,8 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
         (void)presenter.renderFrame(vp, present, /*uploadBudget=*/64);
         drawAxisNumbers(overlay, vp, fbW, fbH, 18.0f * s, 1.0f);
         drawUi(overlay, glass, fbW, fbH, s, {formula}, 0, /*editing=*/false, "", 0, "", 1.0f,
-               0.0f, false, nullptr, nullptr, nullptr, nullptr);
+               0.0f, false, nullptr, nullptr, nullptr, nullptr,
+               selfUsed.empty() ? nullptr : &selfUsed, &selfPv, nullptr);
         if (gSelftestCurX >= 0.0 && !rels.empty() && rels[0] &&
             (rels[0]->isEquality() || rels[0]->isClosedInequality()))
         {
@@ -1745,8 +1857,8 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
                     static_cast<float>(fbH * 0.5 - (th.y - vp.centerY) / vp.wppY());
                 const float *pal = kRelationPalette[0];
                 const float mA = th.certified ? 0.95f : 0.55f;
-                dot(overlay, sxp, syp, 5 * s, {pal[0], pal[1], pal[2], mA});
-                dot(overlay, sxp, syp, 2 * s,
+                fillDisc(overlay, sxp, syp, 5 * s, {pal[0], pal[1], pal[2], mA});
+                fillDisc(overlay, sxp, syp, 2 * s,
                     {0.98f, 0.99f, 1.0f, th.certified ? 1.0f : 0.7f});
             }
             if (f == 199) // settled: log the final hit for harness assertions

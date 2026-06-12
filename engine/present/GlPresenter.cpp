@@ -126,23 +126,33 @@ void main(){ vUv = pos * 0.5 + 0.5; gl_Position = vec4(pos, 0.0, 1.0); })";
 const char *kBrightFs = R"(#version 330 core
 in vec2 vUv;
 out vec4 frag;
-uniform sampler2D tex;
-uniform sampler2D dens; // blurred scene: the local light neighborhood
+uniform sampler2D tex;  // raw quarter scene (unused: kept for binding parity)
+uniform sampler2D dens; // wide-blurred scene: the light neighborhood
+uniform sampler2D soft; // once-blurred scene: the DE-ALIASED line signal
 uniform float exposure;
 void main(){
-    vec3 c = texture(tex, vUv).rgb;
-    // Threshold the EXPOSED luminance: when auto-exposure stops a dense
-    // field from blowing out, the bloom must adapt with it -- otherwise a
-    // uniformly-emissive screen re-fogs itself back to white.
-    float l = dot(c, vec3(0.299, 0.587, 0.114)) * exposure;
-    // DENSITY-ADAPTIVE: a lone curve in darkness earns a generous halo; a
-    // dense field's light is already everywhere, and more halo only fogs
-    // it. The blurred scene is the local density -- judged RAW, not
-    // exposed: auto-exposure equalizes scenes by design, which would
-    // cancel exactly the sparse/dense contrast this term exists to read.
+    // The bloom source is built ENTIRELY from the soft signal, so it carries
+    // no texel-frequency content -- the raw quarter scene aliases a thin
+    // line's per-texel coverage with its sub-texel phase (flat-tangent
+    // stretches concentrate into one texel row, slants split across two),
+    // and every prior knee/clamp on it beaded the glow along wavy lines.
+    // Renormalized (~2.6x) and UNION-capped, a line saturates to the same
+    // amplitude along its whole length: the halo varies only with the wide
+    // neighborhood (sparse breathes, dense stays crisp) and with area.
+    vec3 cs = texture(soft, vUv).rgb;
+    float ls = dot(cs, vec3(0.299, 0.587, 0.114));
     float nb = dot(texture(dens, vUv).rgb, vec3(0.299, 0.587, 0.114));
-    float sparse = min(1.8 / (1.0 + 1.4 * nb), 1.8);
-    frag = vec4(c * smoothstep(0.55, 1.30, l) * sparse, 1.0);
+    vec3 unit = cs / max(ls, 1e-4);
+    // SATURATED PRESENCE, not light quantity: where a wavy line runs flat,
+    // more length genuinely falls per area -- physical, but it beads the
+    // glow at the wave period, and no blur scale fully hides it. Saturating
+    // hard means every place that HAS line sources the same bloom; only the
+    // wide neighborhood (smooth by construction) modulates the halo.
+    float amp = smoothstep(0.05, 0.16, ls);
+    // QUADRATIC sparse falloff: the halo is a privilege of curves over
+    // darkness; any busy neighborhood forfeits it entirely
+    float sparse = 0.4 / (1.0 + 8.0 * nb * nb);
+    frag = vec4(unit * amp * sparse, 1.0);
 })";
 
 const char *kBloomBlurFs = R"(#version 330 core
@@ -286,6 +296,7 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     uBrightTex_ = glGetUniformLocation(brightProg_, "tex");
     uBrExposure_ = glGetUniformLocation(brightProg_, "exposure");
     uBrDens_ = glGetUniformLocation(brightProg_, "dens");
+    uBrSoft_ = glGetUniformLocation(brightProg_, "soft");
     uBlurTex_ = glGetUniformLocation(blurProg_, "tex");
     uBlurDir_ = glGetUniformLocation(blurProg_, "dir");
     uTmScene_ = glGetUniformLocation(tonemapProg_, "scene");
@@ -320,8 +331,8 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     glBufferData(GL_ARRAY_BUFFER, sizeof(tri), tri, GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
-    glGenFramebuffers(3, bloomFbo_);
-    glGenTextures(3, bloomTex_);
+    glGenFramebuffers(4, bloomFbo_);
+    glGenTextures(4, bloomTex_);
     makeBloomTargets();
 
     glBindVertexArray(0);
@@ -340,7 +351,7 @@ void GlPresenter::makeBloomTargets()
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindFramebuffer(GL_FRAMEBUFFER, sceneFbo_);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, sceneTex_, 0);
-    for (int i = 0; i < 3; ++i)
+    for (int i = 0; i < 4; ++i)
     {
         glBindTexture(GL_TEXTURE_2D, bloomTex_[i]);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, bw_, bh_, 0, GL_RGB, GL_HALF_FLOAT, nullptr);
@@ -369,8 +380,8 @@ GlPresenter::~GlPresenter()
     glDeleteTextures(1, &expTex_);
     glDeleteVertexArrays(1, &triVao_);
     glDeleteBuffers(1, &triVbo_);
-    glDeleteFramebuffers(3, bloomFbo_);
-    glDeleteTextures(3, bloomTex_);
+    glDeleteFramebuffers(4, bloomFbo_);
+    glDeleteTextures(4, bloomTex_);
     glDeleteVertexArrays(1, &quadVao_);
     glDeleteBuffers(1, &quadVbo_);
     glDeleteBuffers(1, &instVbo_);
@@ -579,13 +590,36 @@ void GlPresenter::hdrPost()
     glUniform2f(uBlurDir_, 0.0f, 1.0f / static_cast<float>(bh_));
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
+    // WIDE neighborhood for the excess-light judge: TWO more blur pairs, so
+    // a lone curve's own light spreads thin and cannot cancel itself out of
+    // its halo. [1] is only a temporary; the bright pass overwrites it.
+    glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[1]);
+    glBindTexture(GL_TEXTURE_2D, bloomTex_[2]);
+    glUniform2f(uBlurDir_, 1.0f / static_cast<float>(bw_), 0.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[3]);
+    glBindTexture(GL_TEXTURE_2D, bloomTex_[1]);
+    glUniform2f(uBlurDir_, 0.0f, 1.0f / static_cast<float>(bh_));
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[1]);
+    glBindTexture(GL_TEXTURE_2D, bloomTex_[3]);
+    glUniform2f(uBlurDir_, 1.0f / static_cast<float>(bw_), 0.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[3]);
+    glBindTexture(GL_TEXTURE_2D, bloomTex_[1]);
+    glUniform2f(uBlurDir_, 0.0f, 1.0f / static_cast<float>(bh_));
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
     // bright-pass + two blur iterations at quarter res
     glUseProgram(brightProg_);
     glUniform1i(uBrightTex_, 0);
     glUniform1f(uBrExposure_, exposure_);
     glUniform1i(uBrDens_, 1);
     glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, bloomTex_[2]); // blurred scene = density
+    glBindTexture(GL_TEXTURE_2D, bloomTex_[3]); // wide blurred scene = density
+    glUniform1i(uBrSoft_, 2);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, bloomTex_[2]); // soft scene = threshold judge
     glActiveTexture(GL_TEXTURE0);
     glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[1]);
     glBindTexture(GL_TEXTURE_2D, bloomTex_[0]);

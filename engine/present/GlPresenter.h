@@ -52,6 +52,14 @@ public:
         chromeWake_ = wake;
         pxScale_ = pxScale;
     }
+    // cursor lantern: luminous curves lean toward the pointer (fb px,
+    // bottom-left origin; strength 0 disables). Sleeps with the chrome.
+    void setLantern(float x, float y, float strength)
+    {
+        lanternX_ = x;
+        lanternY_ = y;
+        lanternK_ = strength;
+    }
     // auto-exposure still adapting? (the app keeps frames coming while true)
     [[nodiscard]] bool adapting() const
     {
@@ -119,7 +127,8 @@ private:
     int layersPerArray_{0};
     int slotCount_{0};
 
-    int uTiles_{-1}, uTilesFrom_{-1};
+    int uTiles_{-1}, uTilesFrom_{-1}, uLantern_{-1};
+    float lanternX_{-1e6f}, lanternY_{-1e6f}, lanternK_{0.0f};
     int uLineColor_{-1};
 
     // Per-instance record for the single instanced tile draw.

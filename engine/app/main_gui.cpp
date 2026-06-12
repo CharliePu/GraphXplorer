@@ -1047,6 +1047,8 @@ int main(int argc, char **argv)
             wakeK += (wakeTarget - wakeK) * static_cast<float>(1.0 - std::exp(-adt / 0.30));
             if (std::abs(wakeK - wakeTarget) < 0.005f) wakeK = wakeTarget;
             presenter.setChrome(wakeK, dpiScale);
+            presenter.setLantern(static_cast<float>(mouseX),
+                                 static_cast<float>(fbH) - static_cast<float>(mouseY), 0.45f);
         }
         const bool vpChangedThisFrame = viewportDirty;
 
@@ -1841,6 +1843,9 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
         drawUi(overlay, glass, fbW, fbH, s, {formula}, 0, /*editing=*/false, "", 0, "", 1.0f,
                0.0f, false, nullptr, nullptr, nullptr, nullptr,
                selfUsed.empty() ? nullptr : &selfUsed, &selfPv, nullptr);
+        if (gSelftestCurX >= 0.0)
+            presenter.setLantern(static_cast<float>(gSelftestCurX),
+                                 static_cast<float>(fbH - gSelftestCurY), 0.45f);
         if (gSelftestCurX >= 0.0 && !rels.empty() && rels[0] &&
             (rels[0]->isEquality() || rels[0]->isClosedInequality()))
         {

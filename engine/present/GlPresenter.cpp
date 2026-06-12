@@ -43,7 +43,10 @@ in vec4 vColor;
 out vec4 frag;
 uniform sampler2DArray tiles;     // the bucket's own-content array
 uniform sampler2DArray tilesFrom; // the bucket's crossfade-source array
+uniform vec3 lantern; // cursor x,y (fb px) + strength: light leans to the hand
 void main(){
+    vec2 ld = gl_FragCoord.xy - lantern.xy;
+    float lf = 1.0 + lantern.z * exp(-dot(ld, ld) / 24200.0); // sigma ~110px
     // R = region coverage; G = certified boundary band (closed inequalities)
     vec2 cb = (vFlat >= 0.0) ? vec2(vFlat, 0.0) : texture(tiles, vUv).rg;
     // Linear COVERAGE interpolation for crossfades: blending two stacked
@@ -66,7 +69,7 @@ void main(){
         // bloom glows in proportion, and auto-exposure keeps the frame
         // from blowing out.
         vec3 lineCol = mix(vColor.rgb, vec3(1.0), 0.85);
-        frag = vec4(lineCol * (0.85 + 1.9 * c), min(c * 1.45, 1.0));
+        frag = vec4(lineCol * (0.85 + 1.9 * c) * lf, min(c * 1.45, 1.0));
     } else if (vColor.a > 1.001) {
         // CLOSED inequality: hue wash + the boundary drawn from its OWN
         // certified band plane (G), by the same emission law as equalities:
@@ -79,7 +82,7 @@ void main(){
         float aOut = lineA + washA * (1.0 - lineA);
         if (aOut <= 0.0015) discard;
         vec3 lineCol = mix(vColor.rgb, vec3(1.0), 0.85);
-        vec3 col = lineCol * (0.85 + 1.9 * g) * lineA
+        vec3 col = lineCol * (0.85 + 1.9 * g) * lf * lineA
                  + vColor.rgb * 0.88 * washA * (1.0 - lineA);
         frag = vec4(col / max(aOut, 1e-4), aOut);
     } else {
@@ -180,6 +183,7 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     lineProgram_ = compile(kLineVs, kLineFs);
     uTiles_ = glGetUniformLocation(tileProgram_, "tiles");
     uTilesFrom_ = glGetUniformLocation(tileProgram_, "tilesFrom");
+    uLantern_ = glGetUniformLocation(tileProgram_, "lantern");
     uLineColor_ = glGetUniformLocation(lineProgram_, "color");
 
     // The tile atlas: enough R8 2D arrays for kWantLayers total slots (drivers
@@ -888,6 +892,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         for (const auto &b : buckets_) instUpload_.insert(instUpload_.end(), b.begin(), b.end());
         glUseProgram(tileProgram_);
         glUniform1i(uTiles_, 0);
+        glUniform3f(uLantern_, lanternX_, lanternY_, lanternK_ * chromeWake_);
         glUniform1i(uTilesFrom_, 1);
         glBindVertexArray(quadVao_);
         glBindBuffer(GL_ARRAY_BUFFER, instVbo_);

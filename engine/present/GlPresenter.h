@@ -46,6 +46,12 @@ public:
     // user settings (wired from the Settings page)
     void setGridVisible(bool v) { gridVisible_ = v; }
     void setFillOpacity(float a) { fillOpacity_ = a; }
+    // visual grade (wired from the Settings page)
+    void setGrade(float grainAmp, float vignetteStrength)
+    {
+        grainAmp_ = grainAmp;
+        vignette_ = vignetteStrength;
+    }
     // sleeping chrome: grid/axis brightness eases with user attention (0..1)
     void setChrome(float wake, float pxScale)
     {
@@ -94,6 +100,7 @@ private:
     int holeTiles_{0};
     bool gridVisible_{true};
     float fillOpacity_{0.66f}; // region-fill wash opacity
+    float grainAmp_{0.16f}, vignette_{0.11f};
     float chromeWake_{1.0f};
     float pxScale_{1.0f};
     double uploadMs_{0.0};
@@ -112,7 +119,8 @@ private:
     unsigned int triVao_{0}, triVbo_{0};     // fullscreen triangle for post passes
     int bw_{1}, bh_{1};
     int uBrightTex_{-1}, uBrExposure_{-1}, uBlurTex_{-1}, uBlurDir_{-1};
-    int uTmScene_{-1}, uTmBloom_{-1}, uTmExposure_{-1}, uTmBlurScene_{-1}, uTmFb_{-1};
+    int uTmScene_{-1}, uTmBloom_{-1}, uTmExposure_{-1}, uTmGrain_{-1}, uTmVig_{-1},
+        uTmBlurScene_{-1}, uTmFb_{-1};
     float exposure_{1.0f}, exposureTarget_{1.0f};
     double lastExpT_{0.0};
     void makeBloomTargets();

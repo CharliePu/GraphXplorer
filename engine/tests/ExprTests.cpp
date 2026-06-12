@@ -138,7 +138,7 @@ TEST_CASE("implicit multiplication parses like every real grapher", "[expr]")
     agree("y > 2 - x", "y > 2-x");               // '-' never starts an implicit term
 
     std::string err;
-    REQUIRE_FALSE(Relation::parse("y > zq", err).has_value()); // unknown ident still fails
+    REQUIRE_FALSE(Relation::parse("y > Zq", err).has_value()); // unknown ident still fails
 }
 
 TEST_CASE("functions apply without parentheses", "[expr]")

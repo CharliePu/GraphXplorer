@@ -6,11 +6,11 @@
 namespace gxr
 {
 TraceHit traceCurve(const Relation &rel, double cursorX, double cursorY, double wppX,
-                    double wppY, EvalScratch &scratch)
+                    double wppY, EvalScratch &scratch, double reachPx)
 {
     TraceHit hit;
     const double wppM = std::max(wppX, wppY);
-    const double reach = 26.0 * wppM; // stay local to the cursor
+    const double reach = reachPx * wppM; // stay local to the cursor
     // distance tolerance: a millionth of a pixel, floored at the ulp scale of
     // the coordinates so deep zooms (wpp ~ 1e-12) still converge
     auto tolD = [&](double x, double y) {

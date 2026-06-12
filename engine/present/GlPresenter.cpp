@@ -50,31 +50,30 @@ void main(){
     if (vFade < 1.0) c = mix(texture(tilesFrom, vUvFrom).r, c, vFade);
     if (c <= 0.0015) discard;
     if (vFlat >= 0.0) {
-        // FLAT uniform region: no texture to tap -- a proven-true interior of
-        // a closed inequality is pure wash (the rim lives in boundary tiles)
+        // FLAT uniform region: proven-true interior -- pure wash
         float aF = vColor.a > 1.001 ? vColor.a - 1.0 : vColor.a;
         vec3 cF = vColor.a > 1.001 ? vColor.rgb * 0.88 : vColor.rgb;
         frag = vec4(cF, c * aF);
         return;
     }
-    if (vColor.a > 1.001) {
-        // EQUALITY band, two regimes -- discriminated by LOCAL DENSITY, not
-        // per-pixel coverage (a lone line core and a 1px-spaced strand field
-        // share the same pixel value; only the neighborhood differs):
-        //  - sparse: white-hot core, alpha over-driven (GL clamps at 1)
-        //  - dense:  the relation's HUE wash, light mist -- never white slab
-        float dens = c;
-        vec2 t2 = vec2(2.0 / 64.0, 0.0);
-        dens += texture(tiles, vec3(vUv.xy + t2.xy, vUv.z)).r;
-        dens += texture(tiles, vec3(vUv.xy - t2.xy, vUv.z)).r;
-        dens += texture(tiles, vec3(vUv.xy + t2.yx, vUv.z)).r;
-        dens += texture(tiles, vec3(vUv.xy - t2.yx, vUv.z)).r;
-        float wash = smoothstep(0.45, 0.78, dens * 0.2);
+    if (vColor.a > 2.5) {
+        // EQUALITY band (marker a=3): one color at every density -- the
+        // white-mixed hue -- and EMISSION scales with per-pixel density.
+        // The scene is HDR: dense fields genuinely emit more light, the
+        // bloom glows in proportion, and auto-exposure keeps the frame
+        // from blowing out.
+        vec3 lineCol = mix(vColor.rgb, vec3(1.0), 0.85);
+        frag = vec4(lineCol * (0.85 + 1.9 * c), min(c * 1.45, 1.0));
+    } else if (vColor.a > 1.001) {
+        // CLOSED inequality: hue wash + a luminous boundary, carved from the
+        // fill's own AA transition (c in (0,1) exactly at the region edge)
+        float edge = pow(4.0 * c * (1.0 - c), 1.3);
         vec3 lineCol = mix(vColor.rgb, vec3(1.0), 0.85);
         vec3 washCol = vColor.rgb * 0.88;
-        float washA = vColor.a - 1.0; // encoded wash opacity
-        float aLine = min(c * 1.45, 1.0);
-        frag = vec4(mix(lineCol, washCol, wash), mix(aLine, washA, wash));
+        float washA = vColor.a - 1.0;
+        vec3 col = washCol * washA * c + lineCol * edge * 2.3;
+        float aOut = max(c * washA, min(edge * 1.5, 1.0));
+        frag = vec4(col / max(aOut, 1e-4), aOut);
     } else {
         frag = vec4(vColor.rgb, c * vColor.a);
     }
@@ -102,7 +101,7 @@ uniform sampler2D tex;
 void main(){
     vec3 c = texture(tex, vUv).rgb;
     float l = dot(c, vec3(0.299, 0.587, 0.114));
-    frag = vec4(c * smoothstep(0.38, 0.62, l), 1.0);
+    frag = vec4(c * smoothstep(0.85, 1.70, l), 1.0);
 })";
 
 const char *kBloomBlurFs = R"(#version 330 core
@@ -119,12 +118,16 @@ void main(){
     frag = vec4(c, 1.0);
 })";
 
-const char *kBloomAddFs = R"(#version 330 core
+const char *kTonemapFs = R"(#version 330 core
 in vec2 vUv;
 out vec4 frag;
-uniform sampler2D tex;
-uniform float k;
-void main(){ frag = vec4(texture(tex, vUv).rgb * k, 1.0); })";
+uniform sampler2D scene;
+uniform sampler2D bloom;
+uniform float exposure;
+void main(){
+    vec3 hdr = texture(scene, vUv).rgb + texture(bloom, vUv).rgb * 0.85;
+    frag = vec4(vec3(1.0) - exp(-hdr * exposure), 1.0);
+})";
 
 constexpr int kWantLayers = 8192;     // 8192 x 64x64 R8 = 32 MB, allocated once
 constexpr double kUploadMsBudget = 3.0; // per-frame time budget for normal uploads
@@ -203,12 +206,15 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     // bloom: programs, fullscreen triangle, quarter-res ping-pong targets
     brightProg_ = compile(kTriVs, kBrightFs);
     blurProg_ = compile(kTriVs, kBloomBlurFs);
-    addProg_ = compile(kTriVs, kBloomAddFs);
+    tonemapProg_ = compile(kTriVs, kTonemapFs);
     uBrightTex_ = glGetUniformLocation(brightProg_, "tex");
     uBlurTex_ = glGetUniformLocation(blurProg_, "tex");
     uBlurDir_ = glGetUniformLocation(blurProg_, "dir");
-    uAddTex_ = glGetUniformLocation(addProg_, "tex");
-    uAddK_ = glGetUniformLocation(addProg_, "k");
+    uTmScene_ = glGetUniformLocation(tonemapProg_, "scene");
+    uTmBloom_ = glGetUniformLocation(tonemapProg_, "bloom");
+    uTmExposure_ = glGetUniformLocation(tonemapProg_, "exposure");
+    glGenFramebuffers(1, &sceneFbo_);
+    glGenTextures(1, &sceneTex_);
     constexpr float tri[6] = {-1, -1, 3, -1, -1, 3};
     glGenVertexArrays(1, &triVao_);
     glGenBuffers(1, &triVbo_);
@@ -228,10 +234,19 @@ void GlPresenter::makeBloomTargets()
 {
     bw_ = std::max(1, fbW_ / 4);
     bh_ = std::max(1, fbH_ / 4);
+    // full-res HDR scene target
+    glBindTexture(GL_TEXTURE_2D, sceneTex_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, fbW_, fbH_, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindFramebuffer(GL_FRAMEBUFFER, sceneFbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, sceneTex_, 0);
     for (int i = 0; i < 2; ++i)
     {
         glBindTexture(GL_TEXTURE_2D, bloomTex_[i]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, bw_, bh_, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, bw_, bh_, 0, GL_RGB, GL_HALF_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -243,54 +258,6 @@ void GlPresenter::makeBloomTargets()
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-// The light: snapshot the scene, keep what shines, blur it, add it back.
-// Curves render as near-white cores; this pass gives them the tinted halo
-// (and the dense-measure wash a soft luminous mist). ~0.2 ms at quarter res,
-// and it only runs on frames that were being rendered anyway.
-void GlPresenter::bloomPass()
-{
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bloomFbo_[0]);
-    glBlitFramebuffer(0, 0, fbW_, fbH_, 0, 0, bw_, bh_, GL_COLOR_BUFFER_BIT, GL_LINEAR);
-
-    glDisable(GL_BLEND);
-    glViewport(0, 0, bw_, bh_);
-    glBindVertexArray(triVao_);
-    glActiveTexture(GL_TEXTURE0);
-
-    glUseProgram(brightProg_);
-    glUniform1i(uBrightTex_, 0);
-    glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[1]);
-    glBindTexture(GL_TEXTURE_2D, bloomTex_[0]);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-
-    glUseProgram(blurProg_);
-    glUniform1i(uBlurTex_, 0);
-    for (int it = 0; it < 2; ++it)
-    {
-        glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[0]);
-        glBindTexture(GL_TEXTURE_2D, bloomTex_[1]);
-        glUniform2f(uBlurDir_, 1.0f / static_cast<float>(bw_), 0.0f);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-        glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[1]);
-        glBindTexture(GL_TEXTURE_2D, bloomTex_[0]);
-        glUniform2f(uBlurDir_, 0.0f, 1.0f / static_cast<float>(bh_));
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-    }
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, fbW_, fbH_);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_ONE, GL_ONE); // additive: light adds
-    glUseProgram(addProg_);
-    glUniform1i(uAddTex_, 0);
-    glUniform1f(uAddK_, 0.95f);
-    glBindTexture(GL_TEXTURE_2D, bloomTex_[1]);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glBindVertexArray(0);
-}
-
 GlPresenter::~GlPresenter()
 {
     for (unsigned int tex : tileArrays_) glDeleteTextures(1, &tex);
@@ -298,7 +265,9 @@ GlPresenter::~GlPresenter()
     glDeleteProgram(lineProgram_);
     glDeleteProgram(brightProg_);
     glDeleteProgram(blurProg_);
-    glDeleteProgram(addProg_);
+    glDeleteProgram(tonemapProg_);
+    glDeleteFramebuffers(1, &sceneFbo_);
+    glDeleteTextures(1, &sceneTex_);
     glDeleteVertexArrays(1, &triVao_);
     glDeleteBuffers(1, &triVbo_);
     glDeleteFramebuffers(2, bloomFbo_);
@@ -433,6 +402,77 @@ void GlPresenter::evictSlots(uint64_t frame)
     }
 }
 
+// The light, measured: bloom from the HDR scene (emission already scales
+// with curve density), a mean-luminance probe driving AUTO-EXPOSURE, and a
+// filmic tonemap to the backbuffer. A screen full of dense light adapts
+// down smoothly instead of clipping to white; a dark screen opens up.
+void GlPresenter::hdrPost()
+{
+    // HDR scene -> quarter res
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, sceneFbo_);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bloomFbo_[0]);
+    glBlitFramebuffer(0, 0, fbW_, fbH_, 0, 0, bw_, bh_, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+
+    // auto-exposure: mean scene luminance via the quarter mip chain
+    glBindTexture(GL_TEXTURE_2D, bloomTex_[0]);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    int top = 0;
+    for (int m = std::max(bw_, bh_); m > 1; m >>= 1) ++top;
+    float avg[3] = {0.05f, 0.05f, 0.05f};
+    glGetTexImage(GL_TEXTURE_2D, top, GL_RGB, GL_FLOAT, avg);
+    const float lum = 0.299f * avg[0] + 0.587f * avg[1] + 0.114f * avg[2];
+    exposureTarget_ = std::clamp(0.42f / (lum + 0.20f), 0.50f, 1.45f);
+    const auto nowS = std::chrono::steady_clock::now().time_since_epoch();
+    const double nowT = std::chrono::duration<double>(nowS).count();
+    const double dt = lastExpT_ > 0.0 ? std::min(nowT - lastExpT_, 0.1) : 0.016;
+    lastExpT_ = nowT;
+    exposure_ += (exposureTarget_ - exposure_) *
+                 static_cast<float>(1.0 - std::exp(-dt / 0.45));
+    if (!adapting()) exposure_ = exposureTarget_;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); // no mip sampling later
+
+    // bright-pass + two blur iterations at quarter res
+    glDisable(GL_BLEND);
+    glViewport(0, 0, bw_, bh_);
+    glBindVertexArray(triVao_);
+    glActiveTexture(GL_TEXTURE0);
+    glUseProgram(brightProg_);
+    glUniform1i(uBrightTex_, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[1]);
+    glBindTexture(GL_TEXTURE_2D, bloomTex_[0]);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glUseProgram(blurProg_);
+    glUniform1i(uBlurTex_, 0);
+    for (int it = 0; it < 2; ++it)
+    {
+        glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[0]);
+        glBindTexture(GL_TEXTURE_2D, bloomTex_[1]);
+        glUniform2f(uBlurDir_, 1.0f / static_cast<float>(bw_), 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[1]);
+        glBindTexture(GL_TEXTURE_2D, bloomTex_[0]);
+        glUniform2f(uBlurDir_, 0.0f, 1.0f / static_cast<float>(bh_));
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+
+    // tonemap (scene + bloom) * exposure -> backbuffer
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, fbW_, fbH_);
+    glUseProgram(tonemapProg_);
+    glUniform1i(uTmScene_, 0);
+    glUniform1i(uTmBloom_, 1);
+    glUniform1f(uTmExposure_, exposure_);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, sceneTex_);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, bloomTex_[1]);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glActiveTexture(GL_TEXTURE0);
+    glBindVertexArray(0);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+}
+
 int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> &tiles,
                              int uploadBudget)
 {
@@ -446,6 +486,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
     const double nowMs = std::chrono::duration<double, std::milli>(
                              std::chrono::steady_clock::now().time_since_epoch())
                              .count();
+    glBindFramebuffer(GL_FRAMEBUFFER, sceneFbo_); // scene renders in HDR
     glViewport(0, 0, fbW_, fbH_);
     glClearColor(0.043f, 0.047f, 0.060f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -548,7 +589,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         // (>=, <=) take it -- closed fills get an automatic white-hot rim at
         // the boundary (the local-density transition) and hue mist inside,
         // which is exactly the "boundary line" a closed inequality promises.
-        inst.color[3] = t.equality ? 1.60f
+        inst.color[3] = t.equality ? 3.0f
                         : t.closed ? 1.0f + fillOpacity
                                    : fillOpacity;
         float u0 = 0, v0 = 0, u1 = 1, v1 = 1;
@@ -778,7 +819,7 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         glActiveTexture(GL_TEXTURE0);
     }
 
-    bloomPass();
+    hdrPost();
 
     evictSlots(frame_);
     if (lastShown_.size() > 16384) lastShown_.clear();

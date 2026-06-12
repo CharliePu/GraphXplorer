@@ -1657,7 +1657,7 @@ int main(int argc, char **argv)
             glfw::waitEvents(0.004); // settle window: keep re-checking the fence/realloc
         else if (finalRender)
             glfw::waitEvents();
-        else if (presenter.activeFades() > 0 || viewAnimating ||
+        else if (presenter.activeFades() > 0 || viewAnimating || presenter.adapting() ||
                  std::abs(panVx) > 1e-12 || std::abs(panVy) > 1e-12 ||
                  (wakeK > 0.0f && wakeK < 1.0f) ||
                  std::abs(barK - (editing ? 1.0f : 0.0f)) > 0.0015f ||

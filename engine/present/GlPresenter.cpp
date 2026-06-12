@@ -44,12 +44,14 @@ out vec4 frag;
 uniform sampler2DArray tiles;     // the bucket's own-content array
 uniform sampler2DArray tilesFrom; // the bucket's crossfade-source array
 void main(){
-    float c = (vFlat >= 0.0) ? vFlat : texture(tiles, vUv).r;
+    // R = region coverage; G = certified boundary band (closed inequalities)
+    vec2 cb = (vFlat >= 0.0) ? vec2(vFlat, 0.0) : texture(tiles, vUv).rg;
     // Linear COVERAGE interpolation for crossfades: blending two stacked
-    // translucent quads would dip mix-fade; mixing coverages is exact.
-    if (vFade < 1.0) c = mix(texture(tilesFrom, vUvFrom).r, c, vFade);
-    if (c <= 0.0015) discard;
+    // translucent quads would dip mid-fade; mixing coverages is exact.
+    if (vFade < 1.0) cb = mix(texture(tilesFrom, vUvFrom).rg, cb, vFade);
+    float c = cb.r;
     if (vFlat >= 0.0) {
+        if (c <= 0.0015) discard;
         // FLAT uniform region: proven-true interior -- pure wash
         float aF = vColor.a > 1.001 ? vColor.a - 1.0 : vColor.a;
         vec3 cF = vColor.a > 1.001 ? vColor.rgb * 0.88 : vColor.rgb;
@@ -57,6 +59,7 @@ void main(){
         return;
     }
     if (vColor.a > 2.5) {
+        if (c <= 0.0015) discard;
         // EQUALITY band (marker a=3): one color at every density -- the
         // white-mixed hue -- and EMISSION scales with per-pixel density.
         // The scene is HDR: dense fields genuinely emit more light, the
@@ -65,16 +68,22 @@ void main(){
         vec3 lineCol = mix(vColor.rgb, vec3(1.0), 0.85);
         frag = vec4(lineCol * (0.85 + 1.9 * c), min(c * 1.45, 1.0));
     } else if (vColor.a > 1.001) {
-        // CLOSED inequality: hue wash + a luminous boundary, carved from the
-        // fill's own AA transition (c in (0,1) exactly at the region edge)
-        float edge = pow(4.0 * c * (1.0 - c), 1.3);
+        // CLOSED inequality: hue wash + the boundary drawn from its OWN
+        // certified band plane (G), by the same emission law as equalities:
+        // a >= boundary IS the = line, plus the fill. (Reconstructing the
+        // line from the region raster was tried and starves wherever the
+        // boundary hugs a tile edge -- y >= 0 lives BETWEEN two rasters.)
+        float g = cb.g;
+        float lineA = min(g * 1.45, 1.0);
+        float washA = (vColor.a - 1.0) * c;
+        float aOut = lineA + washA * (1.0 - lineA);
+        if (aOut <= 0.0015) discard;
         vec3 lineCol = mix(vColor.rgb, vec3(1.0), 0.85);
-        vec3 washCol = vColor.rgb * 0.88;
-        float washA = vColor.a - 1.0;
-        vec3 col = washCol * washA * c + lineCol * edge * 2.3;
-        float aOut = max(c * washA, min(edge * 1.5, 1.0));
+        vec3 col = lineCol * (0.85 + 1.9 * g) * lineA
+                 + vColor.rgb * 0.88 * washA * (1.0 - lineA);
         frag = vec4(col / max(aOut, 1e-4), aOut);
     } else {
+        if (c <= 0.0015) discard;
         frag = vec4(vColor.rgb, c * vColor.a);
     }
 })";
@@ -98,10 +107,14 @@ const char *kBrightFs = R"(#version 330 core
 in vec2 vUv;
 out vec4 frag;
 uniform sampler2D tex;
+uniform float exposure;
 void main(){
     vec3 c = texture(tex, vUv).rgb;
-    float l = dot(c, vec3(0.299, 0.587, 0.114));
-    frag = vec4(c * smoothstep(0.85, 1.70, l), 1.0);
+    // Threshold the EXPOSED luminance: when auto-exposure stops a dense
+    // field from blowing out, the bloom must adapt with it -- otherwise a
+    // uniformly-emissive screen re-fogs itself back to white.
+    float l = dot(c, vec3(0.299, 0.587, 0.114)) * exposure;
+    frag = vec4(c * smoothstep(0.55, 1.30, l), 1.0);
 })";
 
 const char *kBloomBlurFs = R"(#version 330 core
@@ -147,7 +160,7 @@ void main(){
     frag = vec4(m, 1.0);
 })";
 
-constexpr int kWantLayers = 8192;     // 8192 x 64x64 R8 = 32 MB, allocated once
+constexpr int kWantLayers = 8192;     // 8192 x 64x64 RG8 = 64 MB, allocated once
 constexpr double kUploadMsBudget = 3.0; // per-frame time budget for normal uploads
 constexpr double kFadeMs = 120.0;       // refinement crossfade duration
 
@@ -187,7 +200,7 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_R8, tilePx_, tilePx_, layersPerArray_, 0, GL_RED,
+        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RG8, tilePx_, tilePx_, layersPerArray_, 0, GL_RG,
                      GL_UNSIGNED_BYTE, nullptr);
         tileArrays_.push_back(tex);
     }
@@ -226,6 +239,7 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     blurProg_ = compile(kTriVs, kBloomBlurFs);
     tonemapProg_ = compile(kTriVs, kTonemapFs);
     uBrightTex_ = glGetUniformLocation(brightProg_, "tex");
+    uBrExposure_ = glGetUniformLocation(brightProg_, "exposure");
     uBlurTex_ = glGetUniformLocation(blurProg_, "tex");
     uBlurDir_ = glGetUniformLocation(blurProg_, "dir");
     uTmScene_ = glGetUniformLocation(tonemapProg_, "scene");
@@ -370,16 +384,20 @@ int GlPresenter::ensureSlot(const CoverageTilePtr &cov, int &budget, int &critic
     const int slot = freeLayers_.front().first;
     freeLayers_.pop_front();
     const size_t count = cov->alpha.size();
-    upload8_.resize(count);
+    upload8_.resize(count * 2); // RG interleaved: R = region, G = boundary band
+    const bool hasBand = cov->band.size() == count;
     for (size_t i = 0; i < count; ++i)
     {
         const float a = cov->alpha[i];
-        upload8_[i] = static_cast<unsigned char>(
+        upload8_[i * 2] = static_cast<unsigned char>(
             a <= 0.0f ? 0 : a >= 1.0f ? 255 : static_cast<int>(a * 255.0f + 0.5f));
+        const float bnd = hasBand ? cov->band[i] : 0.0f;
+        upload8_[i * 2 + 1] = static_cast<unsigned char>(
+            bnd <= 0.0f ? 0 : bnd >= 1.0f ? 255 : static_cast<int>(bnd * 255.0f + 0.5f));
     }
     glBindTexture(GL_TEXTURE_2D_ARRAY, tileArrays_[static_cast<size_t>(slot / layersPerArray_)]);
     glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, slot % layersPerArray_, tilePx_, tilePx_, 1,
-                    GL_RED, GL_UNSIGNED_BYTE, upload8_.data());
+                    GL_RG, GL_UNSIGNED_BYTE, upload8_.data());
     layers_.emplace(cov->payloadId, TileTex{slot, frame});
     --budget;
     ++uploads_;
@@ -441,7 +459,7 @@ void GlPresenter::hdrPost()
     float avg[3] = {0.05f, 0.05f, 0.05f};
     glGetTexImage(GL_TEXTURE_2D, top, GL_RGB, GL_FLOAT, avg);
     const float lum = 0.299f * avg[0] + 0.587f * avg[1] + 0.114f * avg[2];
-    exposureTarget_ = std::clamp(0.42f / (lum + 0.20f), 0.50f, 1.45f);
+    exposureTarget_ = std::clamp(0.42f / (lum + 0.20f), 0.30f, 1.45f);
     const auto nowS = std::chrono::steady_clock::now().time_since_epoch();
     const double nowT = std::chrono::duration<double>(nowS).count();
     const double dt = lastExpT_ > 0.0 ? std::min(nowT - lastExpT_, 0.1) : 0.016;
@@ -470,6 +488,7 @@ void GlPresenter::hdrPost()
     // bright-pass + two blur iterations at quarter res
     glUseProgram(brightProg_);
     glUniform1i(uBrightTex_, 0);
+    glUniform1f(uBrExposure_, exposure_);
     glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[1]);
     glBindTexture(GL_TEXTURE_2D, bloomTex_[0]);
     glDrawArrays(GL_TRIANGLES, 0, 3);

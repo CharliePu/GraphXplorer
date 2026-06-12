@@ -12,12 +12,14 @@
 
 namespace gxr
 {
-// OpenGL 3.3 compositor. All resident tile rasters live as R8 layers of ONE
-// texture array (allocated once -- uploads are glTexSubImage3D into existing
-// storage, so there is no per-tile allocation churn), and every tile quad of a
-// frame is drawn by a single instanced draw call with per-instance attributes
-// (rect, uv+layer, crossfade source, flat fill). All GL calls happen on the
-// thread that constructs and drives it. Requires a current GL context.
+// OpenGL 3.3 compositor. All resident tile rasters live as RG8 layers (R =
+// region coverage, G = closed-inequality boundary band) of a few texture
+// arrays (allocated once -- uploads are glTexSubImage3D into existing
+// storage, so there is no per-tile allocation churn), and the frame's tile
+// quads draw as one instanced call per (own, fade-source) array bucket with
+// per-instance attributes (rect, uv+layer, crossfade source, flat fill). All
+// GL calls happen on the thread that constructs and drives it. Requires a
+// current GL context.
 class GlPresenter : public Presenter
 {
 public:
@@ -100,7 +102,7 @@ private:
     unsigned int sceneFbo_{0}, sceneTex_{0}; // full-res RGBA16F: the scene in HDR
     unsigned int triVao_{0}, triVbo_{0};     // fullscreen triangle for post passes
     int bw_{1}, bh_{1};
-    int uBrightTex_{-1}, uBlurTex_{-1}, uBlurDir_{-1};
+    int uBrightTex_{-1}, uBrExposure_{-1}, uBlurTex_{-1}, uBlurDir_{-1};
     int uTmScene_{-1}, uTmBloom_{-1}, uTmExposure_{-1}, uTmBlurScene_{-1}, uTmFb_{-1};
     float exposure_{1.0f}, exposureTarget_{1.0f};
     double lastExpT_{0.0};

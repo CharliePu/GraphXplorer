@@ -302,3 +302,77 @@ TEST_CASE("grid-resonant density (~1 strand/pixel) renders the honest wash",
     CoverageTile t = solveTile(r, rect, p, s);
     REQUIRE(coverageFraction(t) > 0.9);
 }
+
+TEST_CASE("closed inequalities carry a certified boundary-band plane", "[solver]")
+{
+    EvalScratch s;
+    SolveParams p;
+    p.tilePx = 64;
+    p.subBits = 3;
+    const WorldRect rect{-1, -1, 1, 1};
+
+    // strict inequality: no band plane at all
+    CoverageTile strict = solveTile(must("y > x"), rect, p, s);
+    REQUIRE(strict.band.empty());
+
+    // closed, via BOTH solver paths: explicit 1-D and general subdivision
+    CoverageTile oneD = solveTile(must("y >= x"), rect, p, s);
+    SolveParams gen = p;
+    gen.analytic = false;
+    CoverageTile dfs = solveTile(must("y >= x"), rect, gen, s);
+
+    const double wpp = rect.width() / p.tilePx;
+    for (const CoverageTile *t : {&oneD, &dfs})
+    {
+        REQUIRE(t->band.size() == t->alpha.size());
+        double onLine = 0.0;
+        int n = 0;
+        float farMax = 0.0f;
+        for (int y = 0; y < t->height; ++y)
+            for (int x = 0; x < t->width; ++x)
+            {
+                const double wx = rect.x0 + (x + 0.5) * wpp;
+                const double wy = rect.y0 + (y + 0.5) * wpp;
+                const double distPx = std::abs(wy - wx) / (wpp * std::sqrt(2.0));
+                const float b = t->band[static_cast<size_t>(y) * t->width + x];
+                if (distPx < 0.3)
+                {
+                    onLine += b;
+                    ++n;
+                }
+                if (distPx > 3.0) farMax = std::max(farMax, b);
+            }
+        REQUIRE(n > 0);
+        REQUIRE(onLine / n > 0.45); // present and bright along the locus
+        REQUIRE(farMax == 0.0f);    // and exactly nowhere else
+    }
+}
+
+TEST_CASE("closed band survives a tile-edge-aligned boundary (y >= 0)", "[solver]")
+{
+    // y = 0 is a quadtree edge at every level: the tile ABOVE proves uniform
+    // true (no raster), so the tile BELOW must carry the line in its band
+    // plane -- the region raster transition does not exist on either side.
+    EvalScratch s;
+    SolveParams p;
+    p.tilePx = 64;
+    p.subBits = 3;
+    const WorldRect below{0, -1, 1, 0};
+    CoverageTile t = solveTile(must("y >= 0"), below, p, s);
+    REQUIRE(t.band.size() == t.alpha.size());
+    double topRow = 0.0;
+    for (int x = 0; x < t.width; ++x)
+        topRow += t.band[static_cast<size_t>(t.height - 1) * t.width + x];
+    topRow /= t.width;
+    REQUIRE(topRow > 0.3); // this side's half of the band is present
+
+    // and the general path agrees
+    SolveParams gen = p;
+    gen.analytic = false;
+    CoverageTile t2 = solveTile(must("y >= 0"), below, gen, s);
+    double topRow2 = 0.0;
+    for (int x = 0; x < t2.width; ++x)
+        topRow2 += t2.band[static_cast<size_t>(t2.height - 1) * t2.width + x];
+    topRow2 /= t2.width;
+    REQUIRE(topRow2 > 0.3);
+}

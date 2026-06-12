@@ -118,7 +118,7 @@ private:
     unsigned int expFbo_{0}, expTex_{0};     // 256^2 POT auto-exposure metering target
     unsigned int triVao_{0}, triVbo_{0};     // fullscreen triangle for post passes
     int bw_{1}, bh_{1};
-    int uBrightTex_{-1}, uBrExposure_{-1}, uBlurTex_{-1}, uBlurDir_{-1};
+    int uBrightTex_{-1}, uBrExposure_{-1}, uBrDens_{-1}, uBlurTex_{-1}, uBlurDir_{-1};
     int uTmScene_{-1}, uTmBloom_{-1}, uTmExposure_{-1}, uTmGrain_{-1}, uTmVig_{-1},
         uTmBlurScene_{-1}, uTmFb_{-1};
     float exposure_{1.0f}, exposureTarget_{1.0f};

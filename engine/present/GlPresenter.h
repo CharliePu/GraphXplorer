@@ -100,6 +100,7 @@ private:
     unsigned int bloomFbo_[3] = {0, 0, 0};
     unsigned int bloomTex_[3] = {0, 0, 0}; // [2] = blurred scene for local contrast
     unsigned int sceneFbo_{0}, sceneTex_{0}; // full-res RGBA16F: the scene in HDR
+    unsigned int expFbo_{0}, expTex_{0};     // 256^2 POT auto-exposure metering target
     unsigned int triVao_{0}, triVbo_{0};     // fullscreen triangle for post passes
     int bw_{1}, bh_{1};
     int uBrightTex_{-1}, uBrExposure_{-1}, uBlurTex_{-1}, uBlurDir_{-1};

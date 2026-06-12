@@ -162,6 +162,7 @@ void main(){
 
 constexpr int kWantLayers = 8192;     // 8192 x 64x64 RG8 = 64 MB, allocated once
 constexpr double kUploadMsBudget = 3.0; // per-frame time budget for normal uploads
+constexpr int kExpTex = 256;            // POT auto-exposure metering target
 constexpr double kFadeMs = 120.0;       // refinement crossfade duration
 
 void worldToNdc(const Viewport &vp, int fbW, int fbH, double wx, double wy, float &nx, float &ny)
@@ -249,6 +250,21 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     uTmFb_ = glGetUniformLocation(tonemapProg_, "fbSize");
     glGenFramebuffers(1, &sceneFbo_);
     glGenTextures(1, &sceneTex_);
+    // fixed 256^2 POT metering target: its mip chain weights every pixel
+    // equally (an NPOT chain floor-halves, which can drop frame edges from
+    // the average on some drivers)
+    glGenFramebuffers(1, &expFbo_);
+    glGenTextures(1, &expTex_);
+    glBindTexture(GL_TEXTURE_2D, expTex_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, kExpTex, kExpTex, 0, GL_RGBA, GL_HALF_FLOAT,
+                 nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindFramebuffer(GL_FRAMEBUFFER, expFbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, expTex_, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
     constexpr float tri[6] = {-1, -1, 3, -1, -1, 3};
     glGenVertexArrays(1, &triVao_);
     glGenBuffers(1, &triVbo_);
@@ -302,6 +318,8 @@ GlPresenter::~GlPresenter()
     glDeleteProgram(tonemapProg_);
     glDeleteFramebuffers(1, &sceneFbo_);
     glDeleteTextures(1, &sceneTex_);
+    glDeleteFramebuffers(1, &expFbo_);
+    glDeleteTextures(1, &expTex_);
     glDeleteVertexArrays(1, &triVao_);
     glDeleteBuffers(1, &triVbo_);
     glDeleteFramebuffers(3, bloomFbo_);
@@ -451,15 +469,41 @@ void GlPresenter::hdrPost()
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bloomFbo_[0]);
     glBlitFramebuffer(0, 0, fbW_, fbH_, 0, 0, bw_, bh_, GL_COLOR_BUFFER_BIT, GL_LINEAR);
 
-    // auto-exposure: mean scene luminance via the quarter mip chain
-    glBindTexture(GL_TEXTURE_2D, bloomTex_[0]);
+    // auto-exposure METERING: the quarter scene squashes into the fixed
+    // 256^2 POT target, and its 64x64 mip level is read back. The mean
+    // drives the brightness target; the ~p98.5 BLOCK (a sustained region
+    // >= ~1.5% of the frame) caps exposure so a luminous
+    // slab parked ANYWHERE in the frame never blows out. A plain mean
+    // cannot do this: a band high in the frame surrounded by darkness
+    // pulls the mean down and the ceiling exposure clips it to white.
+    // Thin filaments stay a tiny fraction of any block, never trip the
+    // cap, and keep their white-hot look.
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, bloomFbo_[0]);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, expFbo_);
+    glBlitFramebuffer(0, 0, bw_, bh_, 0, 0, kExpTex, kExpTex, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    glBindTexture(GL_TEXTURE_2D, expTex_);
     glGenerateMipmap(GL_TEXTURE_2D);
-    int top = 0;
-    for (int m = std::max(bw_, bh_); m > 1; m >>= 1) ++top;
-    float avg[3] = {0.05f, 0.05f, 0.05f};
-    glGetTexImage(GL_TEXTURE_2D, top, GL_RGB, GL_FLOAT, avg);
-    const float lum = 0.299f * avg[0] + 0.587f * avg[1] + 0.114f * avg[2];
-    exposureTarget_ = std::clamp(0.42f / (lum + 0.20f), 0.30f, 1.45f);
+    // 64x64 blocks (~31x18 px on a 2000x1150 frame): fine enough that a
+    // boundary band ~20px or thicker owns whole blocks at any alignment,
+    // coarse enough that a 1-2px filament stays a small fraction of one.
+    float blocks[64 * 64 * 3];
+    glGetTexImage(GL_TEXTURE_2D, 2, GL_RGB, GL_FLOAT, blocks);
+    float bl[64 * 64];
+    float mean = 0.0f;
+    for (int i = 0; i < 64 * 64; ++i)
+    {
+        bl[i] = 0.299f * blocks[i * 3] + 0.587f * blocks[i * 3 + 1] +
+                0.114f * blocks[i * 3 + 2];
+        mean += bl[i];
+    }
+    mean *= 1.0f / (64.0f * 64.0f);
+    std::nth_element(bl, bl + (64 * 64 - 61), bl + 64 * 64); // ~p98.5
+    const float hot = std::max(bl[64 * 64 - 61], 1e-3f);
+    float target = std::clamp(0.42f / (mean + 0.20f), 0.30f, 1.45f);
+    // highlight protection: the hottest sustained region tonemaps to <= ~0.93
+    // (1.44 = -ln(1 - 0.93) shared with its own bloom contribution)
+    target = std::max(std::min(target, 1.44f / hot), 0.30f);
+    exposureTarget_ = target;
     const auto nowS = std::chrono::steady_clock::now().time_since_epoch();
     const double nowT = std::chrono::duration<double>(nowS).count();
     const double dt = lastExpT_ > 0.0 ? std::min(nowT - lastExpT_, 0.1) : 0.016;
@@ -467,8 +511,6 @@ void GlPresenter::hdrPost()
     exposure_ += (exposureTarget_ - exposure_) *
                  static_cast<float>(1.0 - std::exp(-dt / 0.45));
     if (!adapting()) exposure_ = exposureTarget_;
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); // no mip sampling later
-
     // blurred SCENE copy for the tonemap's local-contrast term
     glDisable(GL_BLEND);
     glViewport(0, 0, bw_, bh_);

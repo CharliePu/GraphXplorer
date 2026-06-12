@@ -73,3 +73,36 @@ TEST_CASE("trace is deterministic and certified at deep zoom", "[trace]")
     REQUIRE(a.y == b.y);
     REQUIRE(std::abs(a.y - std::sin(a.x)) < 1e-12);
 }
+
+TEST_CASE("trace holds its branch and declines dense fields", "[trace]")
+{
+    EvalScratch s;
+    const double wpp = 0.01;
+
+    // two parallel branches 6 px apart: a fresh search picks the nearer,
+    // but a held branch is NEVER hopped on a small cursor move
+    Relation two = must("(y - x)(y - x - 0.06) = 0");
+    TraceHit fresh = traceCurve(two, 0.0, 0.045, wpp, wpp, s);
+    REQUIRE(fresh.traced);
+    REQUIRE(std::abs(fresh.y - fresh.x - 0.06) < 1e-5); // nearer: upper branch
+
+    TraceHit held{};
+    held.traced = true;
+    held.x = 0.0;
+    held.y = 0.0; // locked on the LOWER branch
+    TraceHit cont = traceCurve(two, 0.0, 0.045, wpp, wpp, s, 26.0, &held);
+    REQUIRE(cont.traced);
+    REQUIRE(std::abs(cont.y - cont.x) < 1e-5); // stays on its line
+
+    // and the walk follows the branch tangentially toward the cursor
+    cont = traceCurve(two, 0.12, 0.13, wpp, wpp, s, 26.0, &held);
+    REQUIRE(cont.traced);
+    REQUIRE(std::abs(cont.y - cont.x) < 1e-5);
+    REQUIRE(cont.x > 0.05); // it moved along the line, not just reprojected
+
+    // a strand thicket (many crossings under the cursor) refuses to trace:
+    // the click must remain a pan
+    Relation dense = must("y = sin(100 x)");
+    TraceHit field = traceCurve(dense, 0.0, 0.3, wpp, wpp, s);
+    REQUIRE_FALSE(field.traced);
+}

@@ -924,6 +924,9 @@ int main(int argc, char **argv)
     double pinWx = 0, pinWy = 0;
     bool pinCert = false;
     TraceHit frameTrace{}; // last frame's trace, sampled by the click handler
+    TraceHit lastHover{};  // branch-continuity memory for the hover trace
+    size_t hoverSel = static_cast<size_t>(-1);
+    const void *hoverRel = nullptr;
     double pressMx = 0, pressMy = 0;
     TraceHit pressTrace{}; // trace state at mouse-press
     double lastX = 0, lastY = 0;
@@ -1226,7 +1229,15 @@ int main(int argc, char **argv)
                 (rels[selected]->isEquality() || rels[selected]->isClosedInequality()))
             {
                 static EvalScratch ts2; // main thread only
-                th = traceCurve(*rels[selected], wx, wyc, vp.wppX(), vp.wppY(), ts2);
+                if (selected != hoverSel || rels[selected].get() != hoverRel)
+                {
+                    lastHover = TraceHit{}; // new relation: drop the branch lock
+                    hoverSel = selected;
+                    hoverRel = rels[selected].get();
+                }
+                th = traceCurve(*rels[selected], wx, wyc, vp.wppX(), vp.wppY(), ts2, 26.0,
+                                lastHover.traced ? &lastHover : nullptr);
+                lastHover = th;
             }
             frameTrace = th;
             const bool traced = th.traced, certified = th.certified;
@@ -1708,8 +1719,13 @@ int main(int argc, char **argv)
                 static EvalScratch dragTraceScratch;
                 const double wx = vp.centerX + (cx - fbW * 0.5) * vp.wppX();
                 const double wyc = vp.centerY - (cy - fbH * 0.5) * vp.wppY();
+                TraceHit prevPin{};
+                prevPin.traced = pinActive;
+                prevPin.x = pinWx;
+                prevPin.y = pinWy;
                 TraceHit th = traceCurve(*rels[selected], wx, wyc, vp.wppX(), vp.wppY(),
-                                         dragTraceScratch, 240.0);
+                                         dragTraceScratch, 240.0,
+                                         prevPin.traced ? &prevPin : nullptr);
                 if (th.traced)
                 {
                     pinActive = true;

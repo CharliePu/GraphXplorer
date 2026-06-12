@@ -6,7 +6,7 @@
 namespace gxr
 {
 TraceHit traceCurve(const Relation &rel, double cursorX, double cursorY, double wppX,
-                    double wppY, EvalScratch &scratch, double reachPx)
+                    double wppY, EvalScratch &scratch, double reachPx, const TraceHit *prev)
 {
     TraceHit hit;
     const double wppM = std::max(wppX, wppY);
@@ -99,6 +99,86 @@ TraceHit traceCurve(const Relation &rel, double cursorX, double cursorY, double 
         return bD;
     };
 
+    // BRANCH CONTINUITY: walk the previously-held branch toward the cursor.
+    // Each step moves along the local tangent (never further than ~2.5 px,
+    // so the walk cannot tunnel across a neighboring strand) and Newton-
+    // reprojects onto the curve. The hit stays on ITS line until the cursor
+    // genuinely leaves the reach.
+    if (prev && prev->traced && std::isfinite(prev->x) && std::isfinite(prev->y) &&
+        std::abs(prev->x - cursorX) <= reach * 2.0 && std::abs(prev->y - cursorY) <= reach * 2.0)
+    {
+        double qx = prev->x, qy = prev->y;
+        const double stepMax = 2.5 * wppM;
+        const double need = std::hypot(cursorX - qx, cursorY - qy);
+        const int iters = std::clamp(static_cast<int>(need / stepMax) + 4, 6, 48);
+        bool ok = false;
+        for (int it = 0; it < iters; ++it)
+        {
+            Interval v, gx, gy;
+            rel.valueAndGrad(Interval{qx, qx}, Interval{qy, qy}, scratch, v, gx, gy);
+            if (v.undef) break;
+            const double f = v.mid(), dx = gx.mid(), dy = gy.mid();
+            const double g2 = dx * dx + dy * dy;
+            if (!std::isfinite(f) || !(g2 > 1e-300)) break;
+            // tangential pull toward the cursor, then reproject
+            const double inv = 1.0 / std::sqrt(g2);
+            const double nx = dx * inv, ny = dy * inv;
+            double tx = (cursorX - qx), ty = (cursorY - qy);
+            const double along = tx * nx + ty * ny;
+            tx -= along * nx;
+            ty -= along * ny;
+            const double tl = std::hypot(tx, ty);
+            if (tl > stepMax)
+            {
+                tx *= stepMax / tl;
+                ty *= stepMax / tl;
+            }
+            qx += tx - f * dx / g2;
+            qy += ty - f * dy / g2;
+            if (!std::isfinite(qx) || !std::isfinite(qy)) break;
+            if (tl <= 0.05 * wppM && std::abs(f) <= std::sqrt(g2) * tolD(qx, qy))
+            {
+                ok = true;
+                break;
+            }
+        }
+        if (ok)
+        {
+            // accept only while the branch point still serves the cursor
+            if (std::hypot(qx - cursorX, qy - cursorY) <= reach * 1.5)
+            {
+                hit.x = qx;
+                hit.y = qy;
+                hit.traced = true;
+            }
+        }
+        if (hit.traced) goto certify;
+    }
+
+    // FRESH search: refuse dense neighborhoods -- if the axis scans see many
+    // strands inside the window, this is a field; panning must win the click.
+    if (!prev)
+    {
+        int crossings = 0;
+        for (int axis = 0; axis < 2; ++axis)
+        {
+            const double span = 18.0 * (axis == 0 ? wppY : wppX);
+            const double c0 = axis == 0 ? cursorY : cursorX;
+            double pf = axis == 0 ? rel.fValue(cursorX, c0 - span, scratch)
+                                  : rel.fValue(c0 - span, cursorY, scratch);
+            for (int i = 1; i <= 24; ++i)
+            {
+                const double tt = c0 - span + 2.0 * span * i / 24;
+                const double ff = axis == 0 ? rel.fValue(cursorX, tt, scratch)
+                                            : rel.fValue(tt, cursorY, scratch);
+                if (std::isfinite(pf) && std::isfinite(ff) && (pf < 0.0) != (ff < 0.0))
+                    ++crossings;
+                pf = ff;
+            }
+        }
+        if (crossings >= 5) return hit; // a thicket: trace declines, pan wins
+    }
+
     hit.traced = newtonGlide(cursorX, cursorY, 14);
     if (!hit.traced)
     {
@@ -115,6 +195,7 @@ TraceHit traceCurve(const Relation &rel, double cursorX, double cursorY, double 
     }
     if (!hit.traced) return hit;
 
+certify:
     // Certificate: on [hit +- d], one gradient component is bounded off zero
     // AND the two edge slabs across that axis carry opposite PROVEN signs ->
     // by IVT a crossing lies inside the box. The first box is sized to the

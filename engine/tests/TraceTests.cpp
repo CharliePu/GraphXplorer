@@ -79,12 +79,16 @@ TEST_CASE("trace holds its branch and declines dense fields", "[trace]")
     EvalScratch s;
     const double wpp = 0.01;
 
-    // two parallel branches 6 px apart: a fresh search picks the nearer,
-    // but a held branch is NEVER hopped on a small cursor move
-    Relation two = must("(y - x)(y - x - 0.06) = 0");
-    TraceHit fresh = traceCurve(two, 0.0, 0.045, wpp, wpp, s);
+    // Two sparse parallel branches: a fresh search picks the nearer. The 6 px
+    // pair below is deliberately a thicket, so it only appears in held-branch
+    // checks where the fresh density gate is not allowed to interfere.
+    Relation twoSparse = must("(y - x)(y - x - 0.6) = 0");
+    TraceHit fresh = traceCurve(twoSparse, 0.0, 0.45, wpp, wpp, s);
     REQUIRE(fresh.traced);
-    REQUIRE(std::abs(fresh.y - fresh.x - 0.06) < 1e-5); // nearer: upper branch
+    REQUIRE(std::abs(fresh.y - fresh.x - 0.6) < 1e-5); // nearer: upper branch
+
+    Relation two = must("(y - x)(y - x - 0.06) = 0");
+    REQUIRE_FALSE(traceCurve(two, 0.0, 0.045, wpp, wpp, s).traced);
 
     TraceHit held{};
     held.traced = true;
@@ -99,6 +103,10 @@ TEST_CASE("trace holds its branch and declines dense fields", "[trace]")
     REQUIRE(cont.traced);
     REQUIRE(std::abs(cont.y - cont.x) < 1e-5);
     REQUIRE(cont.x > 0.05); // it moved along the line, not just reprojected
+
+    Relation circle = must("x^2 + y^2 = 25");
+    TraceHit c = traceCurve(circle, 5.02, 0.3, wpp, wpp, s);
+    REQUIRE(c.traced);
 
     // a strand thicket (many crossings under the cursor) refuses to trace:
     // the click must remain a pan

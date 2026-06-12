@@ -1,10 +1,15 @@
 #include "Trace.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace gxr
 {
+constexpr double kGateSpanPx = 48.0; // A wider look sees neighborhoods, not just the hovered strand.
+constexpr double kGateMinGapPx = 24.0; // Packed strands steal the grab gesture from panning.
+constexpr int kGateMaxCrossings = 7; // Pathological crossing counts still mean "field, not point".
+
 TraceHit traceCurve(const Relation &rel, double cursorX, double cursorY, double wppX,
                     double wppY, EvalScratch &scratch, double reachPx, const TraceHit *prev)
 {
@@ -155,28 +160,40 @@ TraceHit traceCurve(const Relation &rel, double cursorX, double cursorY, double 
         if (hit.traced) goto certify;
     }
 
-    // FRESH search: refuse dense neighborhoods -- if the axis scans see many
-    // strands inside the window, this is a field; panning must win the click.
+    // FRESH search: refuse dense neighborhoods by spacing, not raw crossing
+    // count. A closed curve may cross the two scans several times and still be
+    // a single draggable object; tightly-spaced strands are the field.
     if (!prev)
     {
-        int crossings = 0;
+        int totalCrossings = 0;
         for (int axis = 0; axis < 2; ++axis)
         {
-            const double span = 18.0 * (axis == 0 ? wppY : wppX);
+            constexpr int N = 48;
+            const double span = kGateSpanPx * (axis == 0 ? wppY : wppX);
             const double c0 = axis == 0 ? cursorY : cursorX;
             double pf = axis == 0 ? rel.fValue(cursorX, c0 - span, scratch)
                                   : rel.fValue(c0 - span, cursorY, scratch);
-            for (int i = 1; i <= 24; ++i)
+            std::array<double, N> posPx{};
+            int axisCrossings = 0;
+            for (int i = 1; i <= N; ++i)
             {
-                const double tt = c0 - span + 2.0 * span * i / 24;
+                const double tt = c0 - span + 2.0 * span * i / N;
                 const double ff = axis == 0 ? rel.fValue(cursorX, tt, scratch)
                                             : rel.fValue(tt, cursorY, scratch);
                 if (std::isfinite(pf) && std::isfinite(ff) && (pf < 0.0) != (ff < 0.0))
-                    ++crossings;
+                {
+                    const double prevPx = -kGateSpanPx + 2.0 * kGateSpanPx * (i - 1) / N;
+                    const double curPx = -kGateSpanPx + 2.0 * kGateSpanPx * i / N;
+                    posPx[axisCrossings++] = 0.5 * (prevPx + curPx);
+                    if (axisCrossings >= 2 &&
+                        posPx[axisCrossings - 1] - posPx[axisCrossings - 2] < kGateMinGapPx)
+                        return hit;
+                }
                 pf = ff;
             }
+            totalCrossings += axisCrossings;
         }
-        if (crossings >= 5) return hit; // a thicket: trace declines, pan wins
+        if (totalCrossings >= kGateMaxCrossings) return hit;
     }
 
     hit.traced = newtonGlide(cursorX, cursorY, 14);

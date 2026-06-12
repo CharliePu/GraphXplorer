@@ -123,10 +123,28 @@ in vec2 vUv;
 out vec4 frag;
 uniform sampler2D scene;
 uniform sampler2D bloom;
+uniform sampler2D blurScene; // soft copy of the scene, for local contrast
 uniform float exposure;
+uniform vec2 fbSize;
 void main(){
-    vec3 hdr = texture(scene, vUv).rgb + texture(bloom, vUv).rgb * 0.85;
-    frag = vec4(vec3(1.0) - exp(-hdr * exposure), 1.0);
+    vec3 s = texture(scene, vUv).rgb;
+    vec3 soft = texture(blurScene, vUv).rgb;
+    // local contrast ("shadowing"): regions darken where they meet darkness
+    // and lift toward their luminous boundaries -- depth without geometry
+    s = max(s + (s - soft) * 0.24, 0.0);
+    vec3 hdr = s + texture(bloom, vUv).rgb * 0.85;
+    vec3 m = vec3(1.0) - exp(-hdr * exposure);
+    // film grain, luminance-graded: tooth in the mid-tone fills only; the
+    // deep background and the white-hot filaments stay clean. Static hash
+    // (no time input) -- zero shimmer, zero idle cost.
+    float lum = dot(m, vec3(0.299, 0.587, 0.114));
+    float g = fract(sin(dot(floor(vUv * fbSize), vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+    float amp = 0.16 * smoothstep(0.015, 0.10, lum) * (1.0 - smoothstep(0.55, 0.90, lum));
+    m *= 1.0 + g * amp;
+    // quiet vignette: focus, not drama
+    vec2 q = vUv - 0.5;
+    m *= 1.0 - 0.11 * pow(dot(q, q) * 2.6, 1.4);
+    frag = vec4(m, 1.0);
 })";
 
 constexpr int kWantLayers = 8192;     // 8192 x 64x64 R8 = 32 MB, allocated once
@@ -213,6 +231,8 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     uTmScene_ = glGetUniformLocation(tonemapProg_, "scene");
     uTmBloom_ = glGetUniformLocation(tonemapProg_, "bloom");
     uTmExposure_ = glGetUniformLocation(tonemapProg_, "exposure");
+    uTmBlurScene_ = glGetUniformLocation(tonemapProg_, "blurScene");
+    uTmFb_ = glGetUniformLocation(tonemapProg_, "fbSize");
     glGenFramebuffers(1, &sceneFbo_);
     glGenTextures(1, &sceneTex_);
     constexpr float tri[6] = {-1, -1, 3, -1, -1, 3};
@@ -223,8 +243,8 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     glBufferData(GL_ARRAY_BUFFER, sizeof(tri), tri, GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
-    glGenFramebuffers(2, bloomFbo_);
-    glGenTextures(2, bloomTex_);
+    glGenFramebuffers(3, bloomFbo_);
+    glGenTextures(3, bloomTex_);
     makeBloomTargets();
 
     glBindVertexArray(0);
@@ -243,7 +263,7 @@ void GlPresenter::makeBloomTargets()
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindFramebuffer(GL_FRAMEBUFFER, sceneFbo_);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, sceneTex_, 0);
-    for (int i = 0; i < 2; ++i)
+    for (int i = 0; i < 3; ++i)
     {
         glBindTexture(GL_TEXTURE_2D, bloomTex_[i]);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, bw_, bh_, 0, GL_RGB, GL_HALF_FLOAT, nullptr);
@@ -270,8 +290,8 @@ GlPresenter::~GlPresenter()
     glDeleteTextures(1, &sceneTex_);
     glDeleteVertexArrays(1, &triVao_);
     glDeleteBuffers(1, &triVbo_);
-    glDeleteFramebuffers(2, bloomFbo_);
-    glDeleteTextures(2, bloomTex_);
+    glDeleteFramebuffers(3, bloomFbo_);
+    glDeleteTextures(3, bloomTex_);
     glDeleteVertexArrays(1, &quadVao_);
     glDeleteBuffers(1, &quadVbo_);
     glDeleteBuffers(1, &instVbo_);
@@ -431,11 +451,23 @@ void GlPresenter::hdrPost()
     if (!adapting()) exposure_ = exposureTarget_;
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); // no mip sampling later
 
-    // bright-pass + two blur iterations at quarter res
+    // blurred SCENE copy for the tonemap's local-contrast term
     glDisable(GL_BLEND);
     glViewport(0, 0, bw_, bh_);
     glBindVertexArray(triVao_);
     glActiveTexture(GL_TEXTURE0);
+    glUseProgram(blurProg_);
+    glUniform1i(uBlurTex_, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[1]);
+    glBindTexture(GL_TEXTURE_2D, bloomTex_[0]);
+    glUniform2f(uBlurDir_, 1.0f / static_cast<float>(bw_), 0.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[2]);
+    glBindTexture(GL_TEXTURE_2D, bloomTex_[1]);
+    glUniform2f(uBlurDir_, 0.0f, 1.0f / static_cast<float>(bh_));
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    // bright-pass + two blur iterations at quarter res
     glUseProgram(brightProg_);
     glUniform1i(uBrightTex_, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[1]);
@@ -461,11 +493,15 @@ void GlPresenter::hdrPost()
     glUseProgram(tonemapProg_);
     glUniform1i(uTmScene_, 0);
     glUniform1i(uTmBloom_, 1);
+    glUniform1i(uTmBlurScene_, 2);
     glUniform1f(uTmExposure_, exposure_);
+    glUniform2f(uTmFb_, static_cast<float>(fbW_), static_cast<float>(fbH_));
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, sceneTex_);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, bloomTex_[1]);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, bloomTex_[2]);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glActiveTexture(GL_TEXTURE0);
     glBindVertexArray(0);

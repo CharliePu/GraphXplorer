@@ -51,9 +51,11 @@ CmpOp flipOp(CmpOp op) // a op b  <=>  b flip(op) a
 }
 }
 
-std::optional<Relation> Relation::parse(const std::string &text, std::string &error)
+std::optional<Relation> Relation::parse(const std::string &text, std::string &error,
+                                        const std::unordered_map<char, double> *params,
+                                        std::vector<char> *usedParams)
 {
-    ParseResult pr = parseExpression(text);
+    ParseResult pr = parseExpression(text, params, usedParams);
     if (!pr.ok)
     {
         error = pr.error;

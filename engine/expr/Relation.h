@@ -1,6 +1,7 @@
 #ifndef GXR_EXPR_RELATION_H
 #define GXR_EXPR_RELATION_H
 
+#include <unordered_map>
 #include "Program.h"
 #include "math/Interval.h"
 
@@ -44,7 +45,10 @@ struct EvalScratch
 class Relation
 {
 public:
-    [[nodiscard]] static std::optional<Relation> parse(const std::string &text, std::string &error);
+    [[nodiscard]] static std::optional<Relation> parse(
+        const std::string &text, std::string &error,
+        const std::unordered_map<char, double> *params = nullptr,
+        std::vector<char> *usedParams = nullptr);
 
     [[nodiscard]] bool isEquality() const { return single_ && (op_ == CmpOp::Equal || op_ == CmpOp::NotEqual); }
     [[nodiscard]] bool isNotEqual() const { return single_ && op_ == CmpOp::NotEqual; }

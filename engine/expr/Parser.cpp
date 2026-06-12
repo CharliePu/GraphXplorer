@@ -332,28 +332,67 @@ private:
         if (name == "pi") return makeConst(std::numbers::pi);
         if (name == "e") return makeConst(std::numbers::e);
 
-        // pure variable runs split into products: xy -> x*y, xxy -> x*x*y
-        bool pureVars = name.size() > 1;
-        for (const char ch : name) pureVars = pureVars && (ch == 'x' || ch == 'y');
-        if (pureVars)
+        // PARAMETERS: any other lowercase letter is a free constant whose
+        // value comes from the caller's table (1.0 until a slider exists).
+        // Letter runs split into products (xy -> x*y, ax -> a*x, ab -> a*b)
+        // -- except when a function name hides inside: xsinx stays an error
+        // instead of silently becoming x*s*i*n*x.
+        auto letterFactor = [&](char ch) -> std::unique_ptr<Node> {
+            if (ch == 'x') return makeVar(0);
+            if (ch == 'y') return makeVar(1);
+            if (ch == 'e') return makeConst(std::numbers::e);
+            double v = 1.0;
+            if (params)
+            {
+                const auto pit = params->find(ch);
+                if (pit != params->end()) v = pit->second;
+            }
+            if (used)
+            {
+                bool seen = false;
+                for (const char u : *used) seen = seen || u == ch;
+                if (!seen) used->push_back(ch);
+            }
+            return makeConst(v);
+        };
+        bool allLower = !name.empty();
+        for (const char ch : name) allLower = allLower && ch >= 'a' && ch <= 'z';
+        if (allLower)
         {
-            auto prod = makeVar(name[0] == 'x' ? 0 : 1);
-            for (size_t i = 1; i < name.size(); ++i)
-                prod = makeBinary(NodeKind::Mul, std::move(prod),
-                                  makeVar(name[i] == 'x' ? 0 : 1));
-            return prod;
+            static const char *kFnNames[] = {"asin", "acos", "atan", "sin",   "cos",
+                                             "tan",  "log",  "ln",   "exp",   "sqrt",
+                                             "abs",  "min",  "max",  "floor", "ceil",
+                                             "sign", "pi"};
+            bool hidesFn = false;
+            for (const char *fn : kFnNames)
+                hidesFn = hidesFn || name.find(fn) != std::string::npos;
+            if (!hidesFn)
+            {
+                auto prod = letterFactor(name[0]);
+                for (size_t i = 1; i < name.size(); ++i)
+                    prod = makeBinary(NodeKind::Mul, std::move(prod), letterFactor(name[i]));
+                return prod;
+            }
         }
         fail("unknown identifier '" + name + "'");
     }
+
+public:
+    const std::unordered_map<char, double> *params{nullptr};
+    std::vector<char> *used{nullptr};
 };
 }
 
-ParseResult parseExpression(const std::string &text)
+ParseResult parseExpression(const std::string &text,
+                            const std::unordered_map<char, double> *params,
+                            std::vector<char> *usedParams)
 {
     ParseResult r;
     try
     {
         Parser p{text};
+        p.params = params;
+        p.used = usedParams;
         r.root = p.parse();
         r.ok = true;
     }

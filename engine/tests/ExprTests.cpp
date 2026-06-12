@@ -22,7 +22,7 @@ TEST_CASE("parser rejects garbage and accepts relations", "[expr]")
 {
     std::string err;
     REQUIRE_FALSE(Relation::parse("x +", err).has_value());
-    REQUIRE_FALSE(Relation::parse("foo(x)", err).has_value());
+    REQUIRE_FALSE(Relation::parse("Foo(x)", err).has_value());
     REQUIRE(Relation::parse("y > sin(2^x)", err).has_value());
     REQUIRE(Relation::parse("x^2 + y^2 < 1", err).has_value());
     REQUIRE(Relation::parse("y = x^2", err).has_value());
@@ -196,4 +196,36 @@ TEST_CASE("floor/ceil/sign/min/max: values match std and jumps are never proven 
     // and away from jumps the proof machinery still works
     REQUIRE(classifyRegion(*rl, WorldRect{1.2, 0.2, 1.8, 0.8}, s) == NodeClass::UniformTrue);
     REQUIRE(classifyRegion(*rl, WorldRect{0.2, 0.2, 0.8, 0.8}, s) == NodeClass::UniformFalse);
+}
+
+TEST_CASE("single-letter parameters parse against a value table", "[expr]")
+{
+    std::unordered_map<char, double> pv{{'a', 2.5}, {'b', -3.0}};
+    std::vector<char> used;
+    std::string err;
+    EvalScratch s;
+
+    auto r = Relation::parse("y = a x + b", err, &pv, &used);
+    REQUIRE(r.has_value());
+    REQUIRE(used == std::vector<char>{'a', 'b'});
+    // f = y - (a x + b): (2, 2.5*2 - 3) lies on the curve
+    REQUIRE(std::abs(r->fValue(2.0, 2.0, s)) < 1e-12);
+
+    // letter runs split into products: ab = a*b; missing letters read 1.0
+    used.clear();
+    auto r2 = Relation::parse("y = ab x", err, &pv, &used);
+    REQUIRE(r2.has_value());
+    REQUIRE(std::abs(r2->fValue(1.0, -7.5, s)) < 1e-12);
+
+    // a function name hiding inside a run stays an error -- no silent
+    // x*s*i*n*x out of a typo
+    auto r3 = Relation::parse("y = xsinx", err, &pv, &used);
+    REQUIRE_FALSE(r3.has_value());
+
+    // 'e' inside a run is Euler's number, never a parameter
+    used.clear();
+    auto r4 = Relation::parse("y = e a", err, nullptr, &used);
+    REQUIRE(r4.has_value());
+    REQUIRE(used == std::vector<char>{'a'});
+    REQUIRE(std::abs(r4->fValue(0.0, 2.718281828459045, s)) < 1e-12);
 }

@@ -25,8 +25,17 @@ struct TraceHit
 // `reachPx`: how far (screen px) the search may wander from the cursor.
 // Hover uses the default; dragging a pinned point along the curve passes a
 // generous reach so the point keeps following a distant cursor.
+//
+// `prev`: branch continuity. When the previous hit is supplied, the search
+// WALKS along that branch toward the cursor (tangential steps, reprojected
+// onto the curve) instead of searching fresh -- so a slight cursor move can
+// never hop to a different nearby strand, and a drag glides along the one
+// branch it grabbed. Without `prev`, a fresh search additionally refuses
+// DENSE neighborhoods (>= 5 crossings within the scan window): a field of
+// strands is for panning, not tracing.
 TraceHit traceCurve(const Relation &rel, double cursorX, double cursorY, double wppX,
-                    double wppY, EvalScratch &scratch, double reachPx = 26.0);
+                    double wppY, EvalScratch &scratch, double reachPx = 26.0,
+                    const TraceHit *prev = nullptr);
 }
 
 #endif // GXR_SOLVE_TRACE_H

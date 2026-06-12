@@ -135,7 +135,7 @@ private:
     int layersPerArray_{0};
     int slotCount_{0};
 
-    int uTiles_{-1}, uTilesFrom_{-1}, uLantern_{-1};
+    int uTiles_{-1}, uTilesFrom_{-1}, uLantern_{-1}, uLinePass_{-1};
     float lanternX_{-1e6f}, lanternY_{-1e6f}, lanternK_{0.0f};
     int uLineColor_{-1};
 

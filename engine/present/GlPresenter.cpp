@@ -44,6 +44,7 @@ out vec4 frag;
 uniform sampler2DArray tiles;     // the bucket's own-content array
 uniform sampler2DArray tilesFrom; // the bucket's crossfade-source array
 uniform vec3 lantern; // cursor x,y (fb px) + strength: light leans to the hand
+uniform int linePass; // 1 = LDR line-core overlay drawn AFTER the tonemap
 void main(){
     vec2 ld = gl_FragCoord.xy - lantern.xy;
     float lf = 1.0 + lantern.z * exp(-dot(ld, ld) / 24200.0); // sigma ~110px
@@ -53,6 +54,19 @@ void main(){
     // translucent quads would dip mid-fade; mixing coverages is exact.
     if (vFade < 1.0) cb = mix(texture(tilesFrom, vUvFrom).rg, cb, vFade);
     float c = cb.r;
+    if (linePass == 1) {
+        // LDR line-core overlay: drawn after the tonemap, so the core is the
+        // SAME near-white at every exposure -- HDR/auto-exposure may breathe
+        // only through the bloom underneath. Fills and washes stay in the
+        // (exposure-adaptive) scene pass; the lantern lives in the halo too.
+        if (vFlat >= 0.0 || vColor.a <= 1.001) discard;
+        // alpha LINEAR in coverage: the gradation of a dense field is the
+        // honest density itself, never an exposure artifact
+        float a2 = vColor.a > 2.5 ? min(c * 1.15, 1.0) : min(cb.g * 1.15, 1.0);
+        if (a2 <= 0.004) discard;
+        frag = vec4(mix(vColor.rgb, vec3(1.0), 0.85), a2);
+        return;
+    }
     if (vFlat >= 0.0) {
         if (c <= 0.0015) discard;
         // FLAT uniform region: proven-true interior -- pure wash
@@ -189,6 +203,7 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     uTiles_ = glGetUniformLocation(tileProgram_, "tiles");
     uTilesFrom_ = glGetUniformLocation(tileProgram_, "tilesFrom");
     uLantern_ = glGetUniformLocation(tileProgram_, "lantern");
+    uLinePass_ = glGetUniformLocation(tileProgram_, "linePass");
     uLineColor_ = glGetUniformLocation(lineProgram_, "color");
 
     // The tile atlas: enough R8 2D arrays for kWantLayers total slots (drivers
@@ -931,6 +946,8 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
         const GLsizeiptr bytes = static_cast<GLsizeiptr>(instUpload_.size() * sizeof(Inst));
         glBufferData(GL_ARRAY_BUFFER, bytes, nullptr, GL_STREAM_DRAW); // orphan
         glBufferSubData(GL_ARRAY_BUFFER, 0, bytes, instUpload_.data());
+    }
+    auto drawBuckets = [&]() {
         size_t offset = 0;
         for (size_t bi = 0; bi < buckets_.size(); ++bi)
         {
@@ -951,9 +968,27 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
             offset += n;
         }
         glActiveTexture(GL_TEXTURE0);
+    };
+    if (drawnTiles_ > 0)
+    {
+        glUniform1i(uLinePass_, 0);
+        drawBuckets();
     }
 
     hdrPost();
+
+    // The ink itself, AFTER the tonemap: the same instances redraw line
+    // coverage only, at constant near-white LDR. Exposure and HDR can never
+    // change the line's color -- they breathe only through the bloom the
+    // scene pass left underneath.
+    if (drawnTiles_ > 0)
+    {
+        glUseProgram(tileProgram_);
+        glUniform1i(uLinePass_, 1);
+        glBindVertexArray(quadVao_);
+        glBindBuffer(GL_ARRAY_BUFFER, instVbo_); // instance data still resident
+        drawBuckets();
+    }
 
     evictSlots(frame_);
     if (lastShown_.size() > 16384) lastShown_.clear();

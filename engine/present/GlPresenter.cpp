@@ -63,13 +63,16 @@ void main(){
     }
     if (vColor.a > 2.5) {
         if (c <= 0.0015) discard;
-        // EQUALITY band (marker a=3): one color at every density -- the
-        // white-mixed hue -- and EMISSION scales with per-pixel density.
-        // The scene is HDR: dense fields genuinely emit more light, the
-        // bloom glows in proportion, and auto-exposure keeps the frame
-        // from blowing out.
+        // EQUALITY band (marker a=3): the line is ALWAYS lit at full
+        // emission -- never dimmer ink. Density enters through coverage
+        // (alpha) alone, so the blended HDR light is LINEAR in c; the old
+        // law multiplied emission by density too, crushing mid-density
+        // zones quadratically into gray. Brightness differences now read
+        // as the EXTENT OF THE GLOW: bloom is linear in HDR, so a dense
+        // field pools a wide halo while a lone hairline keeps a tight one,
+        // and auto-exposure holds the frame.
         vec3 lineCol = mix(vColor.rgb, vec3(1.0), 0.85);
-        frag = vec4(lineCol * (0.85 + 1.9 * c) * lf, min(c * 1.45, 1.0));
+        frag = vec4(lineCol * 2.6 * lf, min(c * 2.2, 1.0));
     } else if (vColor.a > 1.001) {
         // CLOSED inequality: hue wash + the boundary drawn from its OWN
         // certified band plane (G), by the same emission law as equalities:
@@ -77,12 +80,12 @@ void main(){
         // line from the region raster was tried and starves wherever the
         // boundary hugs a tile edge -- y >= 0 lives BETWEEN two rasters.)
         float g = cb.g;
-        float lineA = min(g * 1.45, 1.0);
+        float lineA = min(g * 2.2, 1.0);
         float washA = (vColor.a - 1.0) * c;
         float aOut = lineA + washA * (1.0 - lineA);
         if (aOut <= 0.0015) discard;
         vec3 lineCol = mix(vColor.rgb, vec3(1.0), 0.85);
-        vec3 col = lineCol * (0.85 + 1.9 * g) * lf * lineA
+        vec3 col = lineCol * 2.6 * lf * lineA
                  + vColor.rgb * 0.88 * washA * (1.0 - lineA);
         frag = vec4(col / max(aOut, 1e-4), aOut);
     } else {

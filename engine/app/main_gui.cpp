@@ -379,30 +379,96 @@ void drawUi(Overlay &ui, Glass &glass, int fbW, int fbH, float s,
 
 // ---- Settings page: a frosted panel of widget rows (toggles + sliders),
 // keyboard-driven: Up/Down select, Left/Right adjust, S or Esc closes. ----
+constexpr int kSettingsRows = 7;
+constexpr int kSettingsFirstSlider = 2;
 struct AppSettings
 {
     bool grid = true;
     bool labels = true;
     float fillOpacity = 0.66f;
     float uiScaleMul = 1.0f;
+    float grain{0.16f};
+    float vignette{0.11f};
+    float lantern{0.45f};
 };
 
+float settingSliderValue01(const AppSettings &cfg, int row)
+{
+    switch (row)
+    {
+    case 2: return (cfg.fillOpacity - 0.20f) / 0.80f;
+    case 3: return (cfg.uiScaleMul - 0.75f) / 0.75f;
+    case 4: return cfg.grain / 0.30f;
+    case 5: return cfg.vignette / 0.25f;
+    case 6: return cfg.lantern;
+    default: return 0.0f;
+    }
+}
+
+void applySettingSlider(AppSettings &cfg, int row, float f)
+{
+    f = std::clamp(f, 0.0f, 1.0f);
+    switch (row)
+    {
+    case 2: cfg.fillOpacity = 0.20f + 0.80f * f; break;
+    case 3: cfg.uiScaleMul = 0.75f + 0.75f * f; break;
+    case 4: cfg.grain = 0.30f * f; break;
+    case 5: cfg.vignette = 0.25f * f; break;
+    case 6: cfg.lantern = f; break;
+    }
+}
+
+void nudgeSetting(AppSettings &cfg, int row, int dir)
+{
+    const float d = static_cast<float>(dir);
+    switch (row)
+    {
+    case 2: cfg.fillOpacity = std::clamp(cfg.fillOpacity + 0.05f * d, 0.20f, 1.00f); break;
+    case 3: cfg.uiScaleMul = std::clamp(cfg.uiScaleMul + 0.125f * d, 0.75f, 1.50f); break;
+    case 4: cfg.grain = std::clamp(cfg.grain + 0.01f * d, 0.00f, 0.30f); break;
+    case 5: cfg.vignette = std::clamp(cfg.vignette + 0.01f * d, 0.00f, 0.25f); break;
+    case 6: cfg.lantern = std::clamp(cfg.lantern + 0.05f * d, 0.00f, 1.00f); break;
+    }
+}
+
+void formatSettingValue(char *buf, size_t len, const AppSettings &cfg, int row)
+{
+    switch (row)
+    {
+    case 2: std::snprintf(buf, len, "%.0f%%", cfg.fillOpacity * 100.0f); break;
+    case 3: std::snprintf(buf, len, "%.2fx", cfg.uiScaleMul); break;
+    case 4: std::snprintf(buf, len, "%.2f", cfg.grain); break;
+    case 5: std::snprintf(buf, len, "%.2f", cfg.vignette); break;
+    case 6: std::snprintf(buf, len, "%.2f", cfg.lantern); break;
+    default:
+        if (len > 0) buf[0] = '\0';
+    }
+}
+
+void applySettingsToPresenter(GlPresenter &presenter, const AppSettings &cfg)
+{
+    presenter.setGridVisible(cfg.grid);
+    presenter.setFillOpacity(cfg.fillOpacity);
+    presenter.setGrade(cfg.grain, cfg.vignette);
+}
+
 void drawSettings(Overlay &ui, Glass &glass, int fbW, int fbH, float s, const AppSettings &cfg,
-                 int sel, std::array<float, 4> rowZones[4] = nullptr,
-                 std::array<float, 4> sliderZones[4] = nullptr)
+                 int sel, std::array<float, 4> rowZones[kSettingsRows] = nullptr,
+                 std::array<float, 4> sliderZones[kSettingsRows] = nullptr)
 {
     if (!ui.ok()) return;
     const float w = static_cast<float>(fbW), h = static_cast<float>(fbH);
     const float pw = 380 * s, rowH = 40 * s, titleH = 46 * s;
-    const float ph = titleH + rowH * 4 + 14 * s;
+    const float ph = titleH + rowH * kSettingsRows + 14 * s;
     const float x = (w - pw) * 0.5f, y = (h - ph) * 0.5f;
     glass.panel(x, y, pw, ph, 14 * s);
 
     ui.begin();
     ui.text(x + 20 * s, y + 12 * s, "Settings", 1.0f, {0.92f, 0.95f, 1.0f, 1.0f});
 
-    const char *names[4] = {"Grid", "Axis labels", "Fill opacity", "UI scale"};
-    for (int i = 0; i < 4; ++i)
+    const char *names[kSettingsRows] = {"Grid", "Axis labels", "Fill opacity", "UI scale",
+                                        "Film grain", "Vignette", "Cursor lantern"};
+    for (int i = 0; i < kSettingsRows; ++i)
     {
         const float ry = y + titleH + rowH * static_cast<float>(i);
         if (rowZones) rowZones[i] = {x + 8 * s, ry, pw - 16 * s, rowH - 6 * s};
@@ -415,7 +481,7 @@ void drawSettings(Overlay &ui, Glass &glass, int fbW, int fbH, float s, const Ap
                    : std::array<float, 4>{0.62f, 0.67f, 0.76f, 1.0f});
 
         const float vx = x + pw - 150 * s;
-        if (i <= 1) // toggle widget
+        if (i < kSettingsFirstSlider) // toggle widget
         {
             const bool v = i == 0 ? cfg.grid : cfg.labels;
             const float tx = x + pw - 66 * s, ty = ry + 9 * s, twW = 44 * s, twH = 20 * s;
@@ -428,8 +494,7 @@ void drawSettings(Overlay &ui, Glass &glass, int fbW, int fbH, float s, const Ap
         }
         else // slider widget
         {
-            const float v01 = i == 2 ? (cfg.fillOpacity - 0.20f) / 0.80f
-                                     : (cfg.uiScaleMul - 0.75f) / 0.75f;
+            const float v01 = settingSliderValue01(cfg, i);
             const float tx = vx, ty = ry + 17 * s, twW = 96 * s;
             if (sliderZones) sliderZones[i] = {tx, ty, twW, 4 * s};
             ui.fillRect(tx, ty, twW, 4 * s, {1.0f, 1.0f, 1.0f, 0.14f});
@@ -438,8 +503,7 @@ void drawSettings(Overlay &ui, Glass &glass, int fbW, int fbH, float s, const Ap
             const float kx = tx + twW * std::clamp(v01, 0.0f, 1.0f) - 4 * s;
             roundedRect(ui, kx, ty - 5 * s, 8 * s, 14 * s, 3 * s, {0.95f, 0.97f, 1.0f, 1.0f});
             char buf[16];
-            std::snprintf(buf, sizeof buf, i == 2 ? "%.0f%%" : "%.2fx",
-                          i == 2 ? cfg.fillOpacity * 100.0f : cfg.uiScaleMul);
+            formatSettingValue(buf, sizeof buf, cfg, i);
             ui.text(x + pw - 46 * s, ry + 8 * s, buf, 0.72f, {0.62f, 0.67f, 0.76f, 1.0f});
         }
     }
@@ -759,6 +823,61 @@ int main(int argc, char **argv)
     // re-parses only the slots that use the letter; setRelations
     // pointer-diffing keeps every other slot's cache warm.
     std::unordered_map<char, double> paramVals;
+    AppSettings cfg;
+#ifdef GXR_ASSET_DIR
+    const std::string cfgPath = std::string(GXR_ASSET_DIR) + "/out/gx_settings.ini";
+#else
+    const std::string cfgPath = "out/gx_settings.ini";
+#endif
+    auto paramKeyChar = [](const std::string &k) -> char {
+        if (k.size() != 7 || k.rfind("param.", 0) != 0) return 0;
+        const char c = k[6];
+        return c >= 'a' && c <= 'z' && c != 'x' && c != 'y' && c != 'e' ? c : 0;
+    };
+    auto loadCfg = [&]() {
+        std::ifstream in(cfgPath);
+        std::string line;
+        while (std::getline(in, line))
+        {
+            const size_t k0 = line.find_first_not_of(" \t");
+            if (k0 == std::string::npos || line[k0] == '#') continue;
+            const size_t sep = line.find_first_of("= \t", k0);
+            if (sep == std::string::npos) continue;
+            const size_t v0 = line.find_first_not_of("= \t", sep);
+            if (v0 == std::string::npos) continue;
+            const std::string k = line.substr(k0, sep - k0);
+            const double v = std::atof(line.c_str() + v0);
+            if (k == "grid") cfg.grid = v != 0;
+            else if (k == "labels") cfg.labels = v != 0;
+            else if (k == "fillOpacity")
+                cfg.fillOpacity = std::clamp(static_cast<float>(v), 0.20f, 1.00f);
+            else if (k == "uiScale")
+                cfg.uiScaleMul = std::clamp(static_cast<float>(v), 0.75f, 1.50f);
+            else if (k == "grain")
+                cfg.grain = std::clamp(static_cast<float>(v), 0.00f, 0.30f);
+            else if (k == "vignette")
+                cfg.vignette = std::clamp(static_cast<float>(v), 0.00f, 0.25f);
+            else if (k == "lantern")
+                cfg.lantern = std::clamp(static_cast<float>(v), 0.00f, 1.00f);
+            else if (const char c = paramKeyChar(k); c != 0)
+                paramVals[c] = std::clamp(v, -10.0, 10.0);
+        }
+        applySettingsToPresenter(presenter, cfg);
+    };
+    auto saveCfg = [&]() {
+        std::ofstream o(cfgPath, std::ios::trunc);
+        o << "grid " << (cfg.grid ? 1 : 0) << "\nlabels " << (cfg.labels ? 1 : 0)
+          << "\nfillOpacity " << cfg.fillOpacity << "\nuiScale " << cfg.uiScaleMul
+          << "\ngrain " << cfg.grain << "\nvignette " << cfg.vignette
+          << "\nlantern " << cfg.lantern << "\n";
+        for (char c = 'a'; c <= 'z'; ++c)
+        {
+            if (c == 'x' || c == 'y' || c == 'e') continue;
+            const auto it = paramVals.find(c);
+            if (it != paramVals.end()) o << "param." << c << "=" << it->second << "\n";
+        }
+    };
+    loadCfg();
     std::vector<std::vector<char>> slotParams;
     auto parseSlot = [&](size_t i) -> std::shared_ptr<const Relation> {
         if (slotParams.size() <= i) slotParams.resize(i + 1);
@@ -797,40 +916,13 @@ int main(int argc, char **argv)
     std::vector<std::array<float, 4>> zoomRects;     // zoom cluster hit zones
     std::array<float, 4> barRect{};                  // spotlight bar hit zone
     float barTextX = 0.0f;
-    std::array<float, 4> setRows[4]{};
-    std::array<float, 4> setSliders[4]{};
+    std::array<float, 4> setRows[kSettingsRows]{};
+    std::array<float, 4> setSliders[kSettingsRows]{};
     std::vector<std::array<float, 5>> paramZones; // x,y,w,h + the letter
     int dragSlider = -1;
-    AppSettings cfg;
     bool settingsOpen = false;
     int settingsSel = 0;
     auto uiS = [&]() { return dpiScale * cfg.uiScaleMul; };
-#ifdef GXR_ASSET_DIR
-    const std::string cfgPath = std::string(GXR_ASSET_DIR) + "/out/gx_settings.ini";
-#else
-    const std::string cfgPath = "out/gx_settings.ini";
-#endif
-    {
-        std::ifstream in(cfgPath);
-        std::string k;
-        double v;
-        while (in >> k >> v)
-        {
-            if (k == "grid") cfg.grid = v != 0;
-            else if (k == "labels") cfg.labels = v != 0;
-            else if (k == "fillOpacity")
-                cfg.fillOpacity = std::clamp(static_cast<float>(v), 0.20f, 1.00f);
-            else if (k == "uiScale")
-                cfg.uiScaleMul = std::clamp(static_cast<float>(v), 0.75f, 1.50f);
-        }
-        presenter.setGridVisible(cfg.grid);
-        presenter.setFillOpacity(cfg.fillOpacity);
-    }
-    auto saveCfg = [&]() {
-        std::ofstream o(cfgPath, std::ios::trunc);
-        o << "grid " << (cfg.grid ? 1 : 0) << "\nlabels " << (cfg.labels ? 1 : 0)
-          << "\nfillOpacity " << cfg.fillOpacity << "\nuiScale " << cfg.uiScaleMul << "\n";
-    };
 
     // eased view animation: scroll/reset move TARGETS; the loop glides vp
     // toward them (smooth zoom, fly-home), exponential approach in log space.
@@ -1054,7 +1146,7 @@ int main(int argc, char **argv)
             if (std::abs(wakeK - wakeTarget) < 0.005f) wakeK = wakeTarget;
             presenter.setChrome(wakeK, dpiScale);
             presenter.setLantern(static_cast<float>(mouseX),
-                                 static_cast<float>(fbH) - static_cast<float>(mouseY), 0.45f);
+                                 static_cast<float>(fbH) - static_cast<float>(mouseY), cfg.lantern);
         }
         const bool vpChangedThisFrame = viewportDirty;
 
@@ -1401,25 +1493,23 @@ int main(int argc, char **argv)
                 };
                 if (settingsOpen)
                 {
-                    for (int i = 0; i < 4; ++i)
+                    for (int i = 0; i < kSettingsRows; ++i)
                     {
                         if (!inside(setRows[i])) continue;
                         act();
                         settingsSel = i;
                         if (i == 0) cfg.grid = !cfg.grid;
                         if (i == 1) cfg.labels = !cfg.labels;
-                        if (i >= 2)
+                        if (i >= kSettingsFirstSlider)
                         {
                             dragSlider = i;
                             const auto &t = setSliders[i];
                             const float f2 = std::clamp(
                                 (static_cast<float>(mx2) - t[0]) / std::max(1.0f, t[2]), 0.0f,
                                 1.0f);
-                            if (i == 2) cfg.fillOpacity = 0.20f + 0.80f * f2;
-                            else cfg.uiScaleMul = 0.75f + 0.75f * f2;
+                            applySettingSlider(cfg, i, f2);
                         }
-                        presenter.setGridVisible(cfg.grid);
-                        presenter.setFillOpacity(cfg.fillOpacity);
+                        applySettingsToPresenter(presenter, cfg);
                         return;
                     }
                     return; // clicks under an open settings page never pan
@@ -1546,7 +1636,11 @@ int main(int argc, char **argv)
                     dragSlider = -1;
                     saveCfg();
                 }
-                if (s != glfw::MouseButtonState::Press) dragParam = 0;
+                if (s != glfw::MouseButtonState::Press && dragParam != 0)
+                {
+                    saveCfg();
+                    dragParam = 0;
+                }
             }
         });
 
@@ -1559,9 +1653,8 @@ int main(int argc, char **argv)
             const auto &t = setSliders[dragSlider];
             const float f2 = std::clamp(
                 (static_cast<float>(cx) - t[0]) / std::max(1.0f, t[2]), 0.0f, 1.0f);
-            if (dragSlider == 2) cfg.fillOpacity = 0.20f + 0.80f * f2;
-            else cfg.uiScaleMul = 0.75f + 0.75f * f2;
-            presenter.setFillOpacity(cfg.fillOpacity);
+            applySettingSlider(cfg, dragSlider, f2);
+            applySettingsToPresenter(presenter, cfg);
             return;
         }
         if (dragParam != 0)
@@ -1640,8 +1733,8 @@ int main(int argc, char **argv)
                     saveCfg();
                     return;
                 }
-                if (key == K::Up) settingsSel = (settingsSel + 3) % 4;
-                if (key == K::Down) settingsSel = (settingsSel + 1) % 4;
+                if (key == K::Up) settingsSel = (settingsSel + kSettingsRows - 1) % kSettingsRows;
+                if (key == K::Down) settingsSel = (settingsSel + 1) % kSettingsRows;
                 const int dir = key == K::Right ? 1 : key == K::Left ? -1 : 0;
                 if (dir != 0)
                 {
@@ -1649,17 +1742,9 @@ int main(int argc, char **argv)
                     {
                     case 0: if (press) cfg.grid = !cfg.grid; break;
                     case 1: if (press) cfg.labels = !cfg.labels; break;
-                    case 2:
-                        cfg.fillOpacity =
-                            std::clamp(cfg.fillOpacity + 0.05f * static_cast<float>(dir), 0.20f, 1.00f);
-                        break;
-                    case 3:
-                        cfg.uiScaleMul =
-                            std::clamp(cfg.uiScaleMul + 0.125f * static_cast<float>(dir), 0.75f, 1.50f);
-                        break;
+                    default: nudgeSetting(cfg, settingsSel, dir); break;
                     }
-                    presenter.setGridVisible(cfg.grid);
-                    presenter.setFillOpacity(cfg.fillOpacity);
+                    applySettingsToPresenter(presenter, cfg);
                 }
                 return;
             }
@@ -1846,6 +1931,7 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
     constexpr int tilePx = 64;
     Engine engine(tilePx);
     GlPresenter presenter(tilePx);
+    const AppSettings selfCfg;
     Glass glass;
     float s = gSelftestScale;
     if (s <= 0.0f) s = std::get<0>(window.getContentScale());
@@ -1898,7 +1984,7 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
                selfUsed.empty() ? nullptr : &selfUsed, &selfPv, nullptr);
         if (gSelftestCurX >= 0.0)
             presenter.setLantern(static_cast<float>(gSelftestCurX),
-                                 static_cast<float>(fbH - gSelftestCurY), 0.45f);
+                                 static_cast<float>(fbH - gSelftestCurY), selfCfg.lantern);
         if (gSelftestCurX >= 0.0 && !rels.empty() && rels[0] &&
             (rels[0]->isEquality() || rels[0]->isClosedInequality()))
         {

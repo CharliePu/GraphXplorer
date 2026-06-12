@@ -141,6 +141,8 @@ uniform sampler2D scene;
 uniform sampler2D bloom;
 uniform sampler2D blurScene; // soft copy of the scene, for local contrast
 uniform float exposure;
+uniform float grain;
+uniform float vignette;
 uniform vec2 fbSize;
 void main(){
     vec3 s = texture(scene, vUv).rgb;
@@ -155,11 +157,11 @@ void main(){
     // (no time input) -- zero shimmer, zero idle cost.
     float lum = dot(m, vec3(0.299, 0.587, 0.114));
     float g = fract(sin(dot(floor(vUv * fbSize), vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
-    float amp = 0.16 * smoothstep(0.015, 0.10, lum) * (1.0 - smoothstep(0.55, 0.90, lum));
+    float amp = grain * smoothstep(0.015, 0.10, lum) * (1.0 - smoothstep(0.55, 0.90, lum));
     m *= 1.0 + g * amp;
     // quiet vignette: focus, not drama
     vec2 q = vUv - 0.5;
-    m *= 1.0 - 0.11 * pow(dot(q, q) * 2.6, 1.4);
+    m *= 1.0 - vignette * pow(dot(q, q) * 2.6, 1.4);
     frag = vec4(m, 1.0);
 })";
 
@@ -262,6 +264,8 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     uTmScene_ = glGetUniformLocation(tonemapProg_, "scene");
     uTmBloom_ = glGetUniformLocation(tonemapProg_, "bloom");
     uTmExposure_ = glGetUniformLocation(tonemapProg_, "exposure");
+    uTmGrain_ = glGetUniformLocation(tonemapProg_, "grain");
+    uTmVig_ = glGetUniformLocation(tonemapProg_, "vignette");
     uTmBlurScene_ = glGetUniformLocation(tonemapProg_, "blurScene");
     uTmFb_ = glGetUniformLocation(tonemapProg_, "fbSize");
     glGenFramebuffers(1, &sceneFbo_);
@@ -577,6 +581,8 @@ void GlPresenter::hdrPost()
     glUniform1i(uTmBloom_, 1);
     glUniform1i(uTmBlurScene_, 2);
     glUniform1f(uTmExposure_, exposure_);
+    glUniform1f(uTmGrain_, grainAmp_);
+    glUniform1f(uTmVig_, vignette_);
     glUniform2f(uTmFb_, static_cast<float>(fbW_), static_cast<float>(fbH_));
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, sceneTex_);

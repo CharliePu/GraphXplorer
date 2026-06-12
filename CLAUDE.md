@@ -74,7 +74,12 @@ thread-safe store) â†’ `app` (engine: mailbox, scheduler thread, worker pool) â†
   audited vs numpy ground truth by `tools/audit_equality.py`). A marching-squares stroke overlay
   was tried and REMOVED 2026-06-11 -- every gate between two representations became a visible
   seam; do not reintroduce display-geometry extraction for rendering (cursor-value tracking should
-  use certified root-solving instead). Explicit
+  use certified root-solving instead). Closed inequalities (`>=`, `<=`) carry the boundary band of
+  f=0 as a SECOND plane (`CoverageTile::band`), produced by both solver paths (DFS: half-pixel band
+  cells hooked into the same traversal; 1-D: slope-corrected per-sample scatter) and drawn by the
+  equality emission law -- the line is solver truth, never reconstructed from the region raster
+  (a boundary hugging a tile edge, e.g. `y >= 0`, has no raster transition on either side to
+  reconstruct from). Explicit
   `v op g(w)` (both axes) use an exact-measure 1-D quadrature; the general 2-D path reaches the same
   smooth measure via sampling (`SolveParams.analytic=false` forces pure subdivision). Detail tiles
   refine through a fixed 4-pass ladder (`refinePassParams`): pass 0 first-paints in a few ms even on
@@ -101,10 +106,15 @@ thread-safe store) â†’ `app` (engine: mailbox, scheduler thread, worker pool) â†
   the queue orders visible > first-paint > newest > coarse-first. The pan-ahead ring (cull margin
   0.5) stays resident and first-painted; only the draw set (margin 0.1) is emitted, requested, and
   refined.
-- **Presentation.** `GlPresenter` (OpenGL 3.3): all resident tile rasters are R8 layers of ONE
-  texture array (allocated once -- uploads are `glTexSubImage3D` into existing storage, aged-pool
-  layer recycling, no allocation churn), and every tile quad of a frame is ONE instanced draw with
-  per-instance rect/uv/layer/fade attributes. Uploads are budgeted by count AND per-frame time
+- **Presentation.** `GlPresenter` (OpenGL 3.3): all resident tile rasters are RG8 layers (R = region
+  coverage, G = closed-boundary band) of a few texture arrays (allocated once -- drivers clamp
+  layers-per-array; uploads are `glTexSubImage3D` into existing storage, aged-pool layer recycling,
+  no allocation churn), and the frame's tile quads draw as one instanced call per
+  (own-array, fade-array) bucket with per-instance rect/uv/layer/fade attributes. The scene renders
+  HDR (RGBA16F): equality bands and closed boundaries are EMISSIVE (brightness scales with per-pixel
+  density), bloom is bright-passed on the EXPOSED luminance, auto-exposure eases toward a
+  mean-luminance target (floor 0.30), and a filmic tonemap + grain/local-contrast/vignette grade
+  lands it in the backbuffer. Uploads are budgeted by count AND per-frame time
   (~3 ms) so a refine storm slows sharpening instead of the frame; a tile whose only alternative is
   a hole gets a budget-exempt critical upload (capped); a residency-continuity map keeps each tile
   key drawing what it last showed (no downgrade, no pop), and payload changes crossfade over

@@ -59,8 +59,11 @@ public:
         wpp_ = rect_.width() / T_;
         equalityCurve_ = rel_.isEquality();
         notEqual_ = rel_.isNotEqual();
+        closedBand_ = rel_.isClosedInequality();
+        bandFloor_ = std::max(1, pixelSub_ / 2);
         acc_.assign(static_cast<size_t>(T_) * T_, 0.0);
         unc_.assign(static_cast<size_t>(T_) * T_, 0.0);
+        if (closedBand_) bandAcc_.assign(static_cast<size_t>(T_) * T_, 0.0);
     }
 
     CoverageTile run()
@@ -142,6 +145,9 @@ private:
     long long processed_{0};
     double stepX_, stepY_, wpp_;
     bool equalityCurve_, notEqual_;
+    bool closedBand_{false}; // closed inequality: also accumulate the boundary band
+    int bandFloor_{1};       // half-pixel band cells, same floor as the equality regime
+    std::vector<double> bandAcc_;
     bool useCentered_{true};
     long long centeredAttempts_{0};
     long long centeredWins_{0};
@@ -179,6 +185,12 @@ private:
     {
         const Interval ix = xInterval(b.x0, b.x1);
         const Interval iy = yInterval(b.y0, b.y1);
+        // CLOSED inequalities: every box that reaches half-pixel size scores
+        // the boundary band of f=0 for its cell -- INCLUDING boxes the region
+        // classify is about to prove uniform, which carry the band's outer
+        // feather. Boxes pruned at larger sizes sit >1px from the curve,
+        // where the band is zero anyway.
+        if (closedBand_ && (b.x1 - b.x0) == bandFloor_) addBandCell(b, ix, iy);
         const Sign sign = classifyAdaptive(ix, iy);
 
         if (sign == Sign::AllFalse || sign == Sign::Undefined) return;
@@ -392,6 +404,28 @@ private:
         unc_[idx] += area * area;
     }
 
+    // Boundary-band cell for a CLOSED inequality (>=, <=): the same certified
+    // band model the equality regime uses (pole-suppressed, oscillation-safe),
+    // accumulated into a separate plane the presenter draws as the luminous
+    // boundary. A >= line IS the = line, plus the fill.
+    void addBandCell(const Box &b, const Interval &ix, const Interval &iy)
+    {
+        const int px = b.x0 >> K_, py = b.y0 >> K_;
+        const size_t idx = static_cast<size_t>(py) * T_ + px;
+        const double cx = rect_.x0 + (b.x0 + b.x1) * 0.5 * stepX_;
+        const double cy = rect_.y0 + (b.y0 + b.y1) * 0.5 * stepY_;
+        const double area = static_cast<double>(b.x1 - b.x0) * (b.y1 - b.y0);
+        Interval val, gvx, gvy;
+        rel_.valueAndGrad(ix, iy, s_, val, gvx, gvy);
+        if (val.undef || val.disc) return; // undefined / pole-crossing: no line
+        double cov;
+        if (gvx.straddlesZero() && gvy.straddlesZero())
+            cov = val.straddlesZero() ? 1.0 : 0.0; // oscillatory: enclosure test
+        else
+            cov = bandCoverage(val, gvx, gvy, cx, cy);
+        bandAcc_[idx] += cov * area;
+    }
+
     // Coverage of a sub-cell by the ~1px-wide curve band of f=0 (the caller
     // already evaluated the cell's value/gradient intervals).
     double bandCoverage(const Interval &val, const Interval &gx, const Interval &gy, double cx,
@@ -425,6 +459,13 @@ private:
             worst = std::max(worst, static_cast<float>(std::sqrt(unc_[i]) / perPixel));
         }
         tile.worstUncertainty = worst;
+        if (closedBand_)
+        {
+            tile.band.resize(tile.alpha.size());
+            for (size_t i = 0; i < tile.band.size(); ++i)
+                tile.band[i] =
+                    static_cast<float>(std::clamp(bandAcc_[i] / perPixel, 0.0, 1.0));
+        }
         return tile;
     }
 };
@@ -479,6 +520,7 @@ bool solveExplicit1D(const Relation &rel, const WorldRect &rect, const SolvePara
     const Program &G = *rel.explicitG();
     const CmpOp op = rel.explicitOp();
     const bool greater = (op == CmpOp::Greater || op == CmpOp::GreaterEq);
+    const bool wantBand = (op == CmpOp::GreaterEq || op == CmpOp::LessEq);
     const bool yExplicit = rel.explicitIsY(); // y<op>g(x): sample over x. else x<op>g(y).
     // Samples per line scale with the refinement pass; more samples -> lower
     // per-line measure variance -> smoother gray in the sub-pixel regime.
@@ -496,7 +538,9 @@ bool solveExplicit1D(const Relation &rel, const WorldRect &rect, const SolvePara
     tile.subBits = params.subBits;
     tile.converged = true;
     tile.alpha.assign(static_cast<size_t>(T) * T, 0.0f);
+    if (wantBand) tile.band.assign(static_cast<size_t>(T) * T, 0.0f);
 
+    std::vector<double> colBand; // per-column band difference array (closed only)
     std::vector<double> g;
     std::vector<double> prefix;
     g.reserve(S);
@@ -539,6 +583,63 @@ bool solveExplicit1D(const Relation &rel, const WorldRect &rect, const SolvePara
             const size_t idx = yExplicit ? static_cast<size_t>(i) * T + o
                                          : static_cast<size_t>(o) * T + i;
             tile.alpha[idx] = static_cast<float>(cov);
+        }
+
+        if (wantBand)
+        {
+            // Boundary band for the CLOSED inequality, scattered per sample in
+            // O(S+T) with a difference array: sample k contributes its vertical
+            // slice [g-h, g+h], h slope-corrected so the PERPENDICULAR width
+            // matches the 2-D band model (a steep line must not thin out).
+            // Summed slices integrate to the band's true area measure, so a
+            // sub-pixel oscillation wall saturates honestly to a luminous slab
+            // while a smooth stretch stays a ~1px line.
+            colBand.assign(static_cast<size_t>(T) + 1, 0.0);
+            const double invS = 1.0 / S;
+            const double sampleDw = wStepPix / S;
+            for (int k = 0; k < S; ++k)
+            {
+                const int km = k > 0 ? k - 1 : 0;
+                const int kp = k < S - 1 ? k + 1 : S - 1;
+                const double dgdw = (vals[static_cast<size_t>(kp)] -
+                                     vals[static_cast<size_t>(km)]) /
+                                    ((kp - km) * sampleDw);
+                const double mPix = dgdw * wStepPix / vStepPix; // pixel-space slope
+                const double h = 0.6 * std::sqrt(1.0 + mPix * mPix) * vStepPix;
+                double lo = (vals[static_cast<size_t>(k)] - h - vOrigin) / vStepPix;
+                double hi = (vals[static_cast<size_t>(k)] + h - vOrigin) / vStepPix;
+                if (hi <= 0.0 || lo >= static_cast<double>(T)) continue;
+                lo = std::max(lo, 0.0);
+                hi = std::min(hi, static_cast<double>(T));
+                const int p0 = std::min(static_cast<int>(lo), T - 1);
+                const int p1 = std::min(static_cast<int>(hi), T - 1);
+                if (p0 == p1)
+                {
+                    const double v = (hi - lo) * invS;
+                    colBand[p0] += v;
+                    colBand[p0 + 1] -= v;
+                    continue;
+                }
+                const double part0 = (p0 + 1 - lo) * invS;
+                const double part1 = (hi - p1) * invS;
+                colBand[p0] += part0;
+                colBand[p0 + 1] -= part0;
+                colBand[p1] += part1;
+                colBand[p1 + 1] -= part1;
+                if (p1 - p0 >= 2) // full interior pixels
+                {
+                    colBand[p0 + 1] += invS;
+                    colBand[p1] -= invS;
+                }
+            }
+            double run = 0.0;
+            for (int i = 0; i < T; ++i)
+            {
+                run += colBand[static_cast<size_t>(i)];
+                const size_t idx = yExplicit ? static_cast<size_t>(i) * T + o
+                                             : static_cast<size_t>(o) * T + i;
+                tile.band[idx] = static_cast<float>(std::clamp(run, 0.0, 1.0));
+            }
         }
     }
     return true;

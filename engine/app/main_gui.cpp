@@ -18,6 +18,7 @@
 #include "present/Glass.h"
 #include "present/GlPresenter.h"
 #include "present/Overlay.h"
+#include "solve/Trace.h"
 
 #include <algorithm>
 #include <array>
@@ -49,21 +50,21 @@ std::shared_ptr<const Relation> parseOrNull(const std::string &src)
 }
 
 // Showcase presets (keys 1-6), each leaning on a renderer capability at its
-// limit. 1: the signature wall (curve degrading into the exact analytic-
-// measure gray). 2: min() interference of a lattice and a hyperbolic field.
-// 3: floor() staircase with parabolic arcs -- the jumps render DISCONNECTED
-// (the sound disc flag suppresses fake vertical connectors). 4: the implicit
-// curve web, written with implicit multiplication. 5: the topologist's sine
-// curve (infinite oscillation at x=0). 6: the wall with structure detection
-// DEFEATED (+y*0): the pathological 2-D path the responsiveness contract is
-// measured against.
+// limit. 1: the woven moire fabric -- density-emissive HDR at every scale.
+// 2: ring x hyperbola interference, dense families breathing with the
+// auto-exposure. 3: the signature wall -- a smooth certified boundary line
+// degrading into the exact analytic-measure gray. 4: kink-algebra lattice
+// whose closed boundaries draw as luminous lines. 5: a classic quartic
+// hairline (devil's curve) -- certified trace bait. 6: the double-
+// exponential lattice melting into proven gray toward +x/+y: the piece a
+// sampling plotter cannot draw honestly.
 const char *kPresets[] = {
-    "y > sin(2^x)",
-    "min(sin x + sin y, cos(x y)) > 0",
-    "y = floor(x) + (x - floor(x))^2",
     "sin x sin y = sin(x y)",
-    "y < sin(1/x)",
-    "y > sin(2^x) + y*0",
+    "sin(x^2 + y^2) = cos(x y)",
+    "y >= sin(2^x)",
+    "min(sin x + sin y, cos(x y)) >= 0",
+    "y^4 - 4y^2 = x^4 - 9x^2",
+    "sin(2^x) = sin(2^y)",
 };
 
 void saveFramebuffer(int fbW, int fbH, const std::string &path)
@@ -95,6 +96,19 @@ void roundedRect(Overlay &ui, float x, float y, float w, float h, float r,
 {
     ui.fillRect(x + r, y, w - 2 * r, h, c);
     ui.fillRect(x, y + r, w, h - 2 * r, c);
+}
+
+// A filled disc (row-sliced). roundedRect degenerates to NOTHING at r = w/2
+// (both cross rects go zero-area) -- the trace marker needs a true dot.
+void dot(Overlay &ui, float cx, float cy, float r, const std::array<float, 4> &c)
+{
+    const int n = std::max(3, static_cast<int>(r * 2.0f + 0.5f));
+    for (int i = 0; i < n; ++i)
+    {
+        const float yy = (i + 0.5f) * 2.0f * r / n - r;
+        const float hw = std::sqrt(std::max(0.0f, r * r - yy * yy));
+        ui.fillRect(cx - hw, cy + yy - r / n, 2.0f * hw, 2.0f * r / n, c);
+    }
 }
 
 // Pretty math for DISPLAY-mode formulas: '^' exponents render raised and
@@ -586,6 +600,7 @@ void drawAxisNumbers(Overlay &ui, const Viewport &vp, int fbW, int fbH, float ba
 float gSelftestScale = 0.0f;   // 0 = use the window content scale
 double gSelftestStretch = 1.0; // y-axis stretch for anisotropy screenshots
 double gSelftestCx = 0.0, gSelftestCy = 0.0, gSelftestSpan = 0.0;
+double gSelftestCurX = -1.0, gSelftestCurY = -1.0; // pixel cursor for trace shots
 int runSelftest(const std::string &outPng, const std::string &formula, bool debug,
                 int W, int H);
 // Drive the REAL render loop offscreen through small -> maximize -> zoom-out and
@@ -607,6 +622,16 @@ int main(int argc, char **argv)
             {
                 const std::string a = argv[i - 1];
                 if (a == "debug") dbg = true;
+                else if (a.rfind("cursor=", 0) == 0)
+                {
+                    const std::string c = a.substr(7);
+                    const size_t cm = c.find(',');
+                    if (cm != std::string::npos)
+                    {
+                        gSelftestCurX = std::atof(c.substr(0, cm).c_str());
+                        gSelftestCurY = std::atof(c.substr(cm + 1).c_str());
+                    }
+                }
                 else if (const size_t xPos = a.find('x'); xPos != std::string::npos)
                 {
                     W = std::max(64, std::atoi(a.substr(0, xPos).c_str()));
@@ -1008,75 +1033,37 @@ int main(int argc, char **argv)
                &barTextX);
         {
             // live cursor coordinates -- and when hovering near the SELECTED
-            // equality curve, a CERTIFIED trace: bracket a sign change of f
-            // along the vertical through the cursor, bisect to ~1 ulp, and
-            // read out the point ON the curve (a marker pins it).
+            // relation's curve (equality OR closed-inequality boundary), a
+            // marker pins the nearest curve point: certified root-solving
+            // in solve/Trace.cpp (Newton glide + interval certificate).
             const double wx = vp.centerX + (mouseX - fbW * 0.5) * vp.wppX();
             const double wyc = vp.centerY - (mouseY - fbH * 0.5) * vp.wppY();
-            bool traced = false;
-            double traceY = 0.0;
+            TraceHit th{};
             if (!editing && !settingsOpen && selected < rels.size() && rels[selected] &&
-                rels[selected]->isEquality())
+                (rels[selected]->isEquality() || rels[selected]->isClosedInequality()))
             {
                 static EvalScratch ts2; // main thread only
-                const Relation &R = *rels[selected];
-                const double span = 18.0 * vp.wppY();
-                constexpr int N = 24;
-                double py2 = wyc - span, pf = R.fValue(wx, py2, ts2);
-                double bLo = 0, bHi = 0, bD = 1e300;
-                for (int i2 = 1; i2 <= N; ++i2)
-                {
-                    const double yy = wyc - span + 2.0 * span * i2 / N;
-                    const double ff = R.fValue(wx, yy, ts2);
-                    if (std::isfinite(pf) && std::isfinite(ff) && (pf < 0.0) != (ff < 0.0))
-                    {
-                        const double d2 = std::abs(0.5 * (py2 + yy) - wyc);
-                        if (d2 < bD)
-                        {
-                            bD = d2;
-                            bLo = py2;
-                            bHi = yy;
-                            traced = true;
-                        }
-                    }
-                    py2 = yy;
-                    pf = ff;
-                }
-                if (traced)
-                {
-                    double lo = bLo, hi = bHi;
-                    double flo = R.fValue(wx, lo, ts2);
-                    for (int it2 = 0; it2 < 60; ++it2)
-                    {
-                        const double mid = 0.5 * (lo + hi);
-                        const double fm = R.fValue(wx, mid, ts2);
-                        if (!std::isfinite(fm)) break;
-                        if ((fm < 0.0) == (flo < 0.0))
-                        {
-                            lo = mid;
-                            flo = fm;
-                        }
-                        else hi = mid;
-                    }
-                    traceY = 0.5 * (lo + hi);
-                }
+                th = traceCurve(*rels[selected], wx, wyc, vp.wppX(), vp.wppY(), ts2);
             }
+            const bool traced = th.traced, certified = th.certified;
+            const double qx = th.x, qy = th.y;
             const float cs = uiS();
+            overlay.begin(); // glass panels may have left their program bound
             if (traced)
             {
                 const float sxp = static_cast<float>(
-                    fbW * 0.5 + (wx - vp.centerX) / vp.wppX());
+                    fbW * 0.5 + (qx - vp.centerX) / vp.wppX());
                 const float syp = static_cast<float>(
-                    fbH * 0.5 - (traceY - vp.centerY) / vp.wppY());
+                    fbH * 0.5 - (qy - vp.centerY) / vp.wppY());
                 const float *pal = kRelationPalette[selected & 7];
-                roundedRect(overlay, sxp - 5 * cs, syp - 5 * cs, 10 * cs, 10 * cs, 5 * cs,
-                            {pal[0], pal[1], pal[2], 0.95f});
-                roundedRect(overlay, sxp - 2 * cs, syp - 2 * cs, 4 * cs, 4 * cs, 2 * cs,
-                            {0.98f, 0.99f, 1.0f, 1.0f});
+                const float mA = certified ? 0.95f : 0.55f;
+                dot(overlay, sxp, syp, 5 * cs, {pal[0], pal[1], pal[2], mA});
+                dot(overlay, sxp, syp, 2 * cs,
+                    {0.98f, 0.99f, 1.0f, certified ? 1.0f : 0.7f});
             }
             char cbuf[80];
             if (traced)
-                std::snprintf(cbuf, sizeof cbuf, "%.8g, %.8g", wx, traceY);
+                std::snprintf(cbuf, sizeof cbuf, "%.9g, %.9g", qx, qy);
             else
                 std::snprintf(cbuf, sizeof cbuf, "%.6g, %.6g", wx, wyc);
             const float cw = overlay.textWidth(cbuf, 0.72f);
@@ -1084,7 +1071,8 @@ int main(int argc, char **argv)
             // hide rather than collide with the capsules on narrow windows
             if (rx > fbW * 0.5f + 260 * cs * 0.5f + 8 * cs)
                 overlay.text(rx, fbH - 40 * cs + 5 * cs, cbuf, 0.72f,
-                             traced ? std::array<float, 4>{0.78f, 0.82f, 0.90f, 0.95f}
+                             traced ? std::array<float, 4>{0.78f, 0.82f, 0.90f,
+                                                           certified ? 0.95f : 0.65f}
                                     : std::array<float, 4>{0.50f, 0.55f, 0.65f,
                                                            0.9f * (0.25f + 0.75f * wakeK)});
         }
@@ -1741,6 +1729,30 @@ int runSelftest(const std::string &outPng, const std::string &formula, bool debu
         drawAxisNumbers(overlay, vp, fbW, fbH, 18.0f * s, 1.0f);
         drawUi(overlay, glass, fbW, fbH, s, {formula}, 0, /*editing=*/false, "", 0, "", 1.0f,
                0.0f, false, nullptr, nullptr, nullptr, nullptr);
+        if (gSelftestCurX >= 0.0 && !rels.empty() && rels[0] &&
+            (rels[0]->isEquality() || rels[0]->isClosedInequality()))
+        {
+            static EvalScratch tcs;
+            const double twx = vp.centerX + (gSelftestCurX - fbW * 0.5) * vp.wppX();
+            const double twy = vp.centerY - (gSelftestCurY - fbH * 0.5) * vp.wppY();
+            const TraceHit th = traceCurve(*rels[0], twx, twy, vp.wppX(), vp.wppY(), tcs);
+            if (th.traced)
+            {
+                overlay.begin(); // drawUi's glass panels left their program bound
+                const float sxp =
+                    static_cast<float>(fbW * 0.5 + (th.x - vp.centerX) / vp.wppX());
+                const float syp =
+                    static_cast<float>(fbH * 0.5 - (th.y - vp.centerY) / vp.wppY());
+                const float *pal = kRelationPalette[0];
+                const float mA = th.certified ? 0.95f : 0.55f;
+                dot(overlay, sxp, syp, 5 * s, {pal[0], pal[1], pal[2], mA});
+                dot(overlay, sxp, syp, 2 * s,
+                    {0.98f, 0.99f, 1.0f, th.certified ? 1.0f : 0.7f});
+            }
+            if (f == 199) // settled: log the final hit for harness assertions
+                std::printf("selftest-trace: traced=%d certified=%d x=%.12g y=%.12g\n",
+                            th.traced ? 1 : 0, th.certified ? 1 : 0, th.x, th.y);
+        }
         if (debug)
         {
             engine.debugTiles(vp, dbgTiles);

@@ -211,6 +211,18 @@ GlPresenter::GlPresenter(int tilePx) : tilePx_(tilePx)
     }
     slotCount_ = static_cast<int>(tileArrays_.size()) * layersPerArray_;
     for (int i = 0; i < slotCount_; ++i) freeLayers_.emplace_back(i, 0);
+    // Slot 0 is the permanent ALL-ZERO layer: cold first content (a key with
+    // no ancestor ever shown -- the newly-revealed ring of a zoom-out)
+    // crossfades up from it instead of popping in at full brightness under
+    // a not-yet-adapted exposure. payloadId 0 is never produced by tiles.
+    freeLayers_.pop_front();
+    {
+        const std::vector<unsigned char> zeros(static_cast<size_t>(tilePx_) * tilePx_ * 2, 0);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, tileArrays_[0]);
+        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, tilePx_, tilePx_, 1, GL_RG,
+                        GL_UNSIGNED_BYTE, zeros.data());
+        layers_.emplace(0, TileTex{0, 0});
+    }
     buckets_.resize(tileArrays_.size() * tileArrays_.size());
 
     constexpr float quad[] = {0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1};
@@ -452,6 +464,7 @@ void GlPresenter::evictSlots(uint64_t frame)
         // drawn): under atlas pressure that cycled upload->evict->re-upload
         // forever and finality never latched. Soft cap, like the tile store.
         if (refs[i].first + 4 >= frame) break;
+        if (refs[i].second == 0) continue; // the zero layer is permanent
         auto it = layers_.find(refs[i].second);
         if (it != layers_.end())
         {
@@ -512,8 +525,12 @@ void GlPresenter::hdrPost()
     const double nowT = std::chrono::duration<double>(nowS).count();
     const double dt = lastExpT_ > 0.0 ? std::min(nowT - lastExpT_, 0.1) : 0.016;
     lastExpT_ = nowT;
+    // photographic asymmetry: adapt DOWN fast (dense content landing in a
+    // zoom-out otherwise renders ~300 ms at stale, too-high exposure -- a
+    // visible flash), and UP gently so dark pans never pump
+    const double expTau = exposureTarget_ < exposure_ ? 0.10 : 0.45;
     exposure_ += (exposureTarget_ - exposure_) *
-                 static_cast<float>(1.0 - std::exp(-dt / 0.45));
+                 static_cast<float>(1.0 - std::exp(-dt / expTau));
     if (!adapting()) exposure_ = exposureTarget_;
     // blurred SCENE copy for the tonemap's local-contrast term
     glDisable(GL_BLEND);
@@ -843,6 +860,12 @@ int GlPresenter::renderFrame(const Viewport &vp, const std::vector<PresentTile> 
                                                    ls->second.v0 + ah * t.sv0,
                                                    ls->second.u0 + aw * t.su1,
                                                    ls->second.v0 + ah * t.sv1, nowMs});
+                    }
+                    else if (ls == lastShown_.end())
+                    {
+                        // COLD first content: materialize from the zero layer
+                        // over the same fade -- never a popped bright slab
+                        fades_.emplace(t.key, Fade{0, 0, 0, 1, 1, nowMs});
                     }
                 }
                 if (const auto f = fades_.find(t.key); f != fades_.end())
